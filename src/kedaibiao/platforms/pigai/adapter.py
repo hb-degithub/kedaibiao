@@ -44,7 +44,12 @@ from datetime import datetime
 from urllib.parse import urlsplit, urljoin
 
 from kedaibiao.core.models import Assignment, Course, Credentials, TaskKind
-from kedaibiao.platforms.base import AdapterContext, Capabilities, PlatformAdapter
+from kedaibiao.platforms.base import (
+    AdapterContext,
+    Capabilities,
+    NotSupportedError,
+    PlatformAdapter,
+)
 from kedaibiao.platforms.pigai import protocol
 from kedaibiao.platforms.pigai.client import PigaiClient, PigaiError, PigaiResponseError
 from kedaibiao.platforms.pigai.parse import (
@@ -160,9 +165,10 @@ class PigaiAdapter(PlatformAdapter):
         login=True,
         list_courses=True,
         list_assignments=True,
-        # 只读范围：题目与提交都没有实现，靠基类抛 NotSupportedError
+        # 题目（作文题面）不通过接口取，仍为 False
         fetch_questions=False,
-        submit=False,
+        # 提交：编码形态已由真实探测确认（单次百分号编码），实现见 submit 方法
+        submit=True,
         course_playback=False,
     )
 
@@ -215,7 +221,7 @@ class PigaiAdapter(PlatformAdapter):
         html = await self.client.get(protocol.Endpoints.ASSIGNMENTS_PENDING)
         _guard_session(html)
         rows = parse_assignment_rows(html)
-        return [self._to_pending_assignment(row) for row in rows]
+        return [_to_pending_assignment(row) for row in rows]
 
     async def list_finished_essays(self) -> list[protocol.EssayRow]:
         """已提交作文（含成绩列、提交次数 = 稿次）。见 §6.2。"""
@@ -245,6 +251,73 @@ class PigaiAdapter(PlatformAdapter):
         return parse_write_page(html, rid=rid)
 
     # -- PlatformAdapter 契约 ---------------------------------------------
+
+    #: 提交载荷是否已由真实数据确认。
+    #:
+    #: 2026-10-19 用真实会话对草稿端点做探测、再用只读接口读回比对，
+    #: 确认了**单次百分号编码**（静态推断的二次编码是错的）。
+    #: 端点是静态读出的，响应契约（``eid=`` / ``msg:``）也来自静态 JS。
+    submit_payload_confirmed: bool = True
+
+    async def submit(
+        self, assignment: Assignment, answers: list[Answer]
+    ) -> SubmissionResult:
+        """提交一篇作文。
+
+        ⚠️ 这是**不可逆的写操作**。上层（控制台/流水线）必须先干跑让人确认。
+        作文是整篇文本，所以 ``answers`` 里取第一段非空 ``text`` 当正文；
+        选择题那套 ``choices`` 在这里没有意义。
+        """
+        from kedaibiao.platforms.pigai import submit as submit_mod
+
+        if not self.submit_payload_confirmed:
+            raise NotSupportedError(
+                "pigai 提交载荷尚未确认，拒绝发出写请求。"
+            )
+
+        essay = ""
+        for answer in answers:
+            if answer.text and answer.text.strip():
+                essay = answer.text
+                break
+        if not essay.strip():
+            raise PigaiError(
+                "提交内容为空。作文提交需要整篇正文（Answer.text），"
+                "题干/选项那套不适用。"
+            )
+
+        page = await self.client().get(
+            f"/index.php?c=v2&a=write&rid={assignment.remote_id}"
+        )
+        variables = _write_page_vars(page)
+        plan = submit_mod.build_submit_payload(
+            essay=essay,
+            title=str(assignment.title or ""),
+            rid=assignment.remote_id,
+            eid=variables.get("_eid", ""),
+            from_code=variables.get("_fromCode", ""),
+            engine=variables.get("_engine", ""),
+        )
+
+        http = self.ctx.client()
+        response = await http.request(
+            "POST",
+            protocol.BASE_URL + submit_mod.SUBMIT_PATH,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Referer": f"{protocol.BASE_URL}/index.php?c=v2&a=write&rid={assignment.remote_id}",
+                "Origin": protocol.BASE_URL,
+            },
+            body=submit_mod.encode_body(plan.payload),
+        )
+        result = submit_mod.parse_submit_response(response.text())
+        return SubmissionResult(
+            assignment_id=assignment.remote_id,
+            ok=result.ok,
+            score=None,  # 作文是整体评分，提交响应不带分数
+            message=result.summary(),
+            raw={"eid": result.eid, "raw": result.raw_text[:500]},
+        )
 
     async def list_courses(self) -> list[Course]:
         """返回**单一合成课程**。
@@ -300,20 +373,34 @@ class PigaiAdapter(PlatformAdapter):
 
     # -- 内部 -------------------------------------------------------------
 
-    @staticmethod
-    def _to_pending_assignment(row: protocol.AssignmentRow) -> Assignment:
-        return Assignment(
-            remote_id=row.rid,
-            title=row.title,
-            kind=TaskKind.HOMEWORK,
-            deadline=parse_deadline(row.deadline),
-            finished=False,
-            # 待完成作业的 href 指向**写作页**且不含 eid（实测），这里原样绝对化仅供展示
-            url=_absolute(row.url),
-            raw={
-                "kind_raw": row.kind,
-                "author": row.author,
-                "classes": row.classes,
-                "raw_cells": list(row.raw_cells),
-            },
-        )
+
+def _to_pending_assignment(row: protocol.AssignmentRow) -> Assignment:
+    return Assignment(
+        remote_id=row.rid,
+        title=row.title,
+        kind=TaskKind.HOMEWORK,
+        deadline=parse_deadline(row.deadline),
+        finished=False,
+        # 待完成作业的 href 指向**写作页**且不含 eid（实测），这里原样绝对化仅供展示
+        url=_absolute(row.url),
+        raw={
+            "kind_raw": row.kind,
+            "author": row.author,
+            "classes": row.classes,
+            "raw_cells": list(row.raw_cells),
+        },
+    )
+
+
+def _write_page_vars(html: str) -> dict[str, str]:
+    """从写作页里取提交需要的页面变量（``_eid`` / ``_fromCode`` / ``_engine``）。
+
+    取不到就返回空串 —— 首交时 ``_eid`` 本来就是空串。
+    """
+    import re
+
+    out: dict[str, str] = {}
+    for name in ("_eid", "_fromCode", "_engine", "_rid"):
+        match = re.search(rf"{name}\s*=\s*['\"]?([^'\"\n;]*)", html or "")
+        out[name] = match.group(1).strip() if match else ""
+    return out

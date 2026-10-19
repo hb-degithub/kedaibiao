@@ -49,20 +49,41 @@ class TestCapabilities(unittest.TestCase):
         self.assertEqual(PigaiAdapter.name, "pigai")
         self.assertEqual(PigaiAdapter.display_name, "批改网")
 
-    def test_read_only_capabilities(self) -> None:
+    def test_capabilities(self) -> None:
+        """提交已可用（编码形态经真实探测确认）；题面仍不可得。"""
         caps = PigaiAdapter.capabilities
-        self.assertFalse(caps.submit, "只读适配器绝不能声明提交能力")
-        self.assertFalse(caps.fetch_questions)
+        self.assertTrue(caps.submit, "提交已实现：编码已由真实数据确认")
+        self.assertFalse(caps.fetch_questions, "作文题面不通过接口取")
         self.assertTrue(caps.login)
         self.assertTrue(caps.list_courses)
         self.assertTrue(caps.list_assignments)
 
-    def test_submit_raises_not_supported(self) -> None:
+    def test_submit_requires_essay_text(self) -> None:
+        """作文提交要整篇正文；空的或只有 choices 的答案必须拒绝。"""
         import asyncio
 
+        from kedaibiao.core.models import Assignment, Answer
+
         adapter = _adapter()
+        assignment = Assignment(remote_id="1000001", title="t")
+        with self.assertRaises(Exception) as cm:
+            asyncio.run(adapter.submit(assignment, []))
+        self.assertIn("正文", str(cm.exception))
+
+        # 只有选项、没有 text 的答案也不行（选择题那套不适用）
+        with self.assertRaises(Exception):
+            asyncio.run(adapter.submit(assignment, [Answer(question=None, choices=[0])]))  # type: ignore[arg-type]
+
+    def test_submit_gate_can_be_closed(self) -> None:
+        """闸门关掉时必须以 NotSupportedError 拒绝 —— 保留紧急制动能力。"""
+        import asyncio
+
+        from kedaibiao.core.models import Assignment
+
+        adapter = _adapter()
+        adapter.submit_payload_confirmed = False
         with self.assertRaises(NotSupportedError):
-            asyncio.run(adapter.submit(None, []))  # type: ignore[arg-type]
+            asyncio.run(adapter.submit(Assignment(remote_id="1", title="t"), []))
 
     def test_fetch_questions_raises_not_supported(self) -> None:
         import asyncio
@@ -432,14 +453,42 @@ class TestNoWriteSurface(unittest.TestCase):
         self.assertIn("client.py", files)
         self.assertIn("protocol.py", files)
 
-    def test_no_write_endpoint_in_executable_code(self) -> None:
+    #: 唯一允许的写端点：提交作文（编码已由真实探测确认）。
+    ALLOWED_WRITE_TOKENS = ("a=postSave",)
+    #: 这些**绝不允许**出现在可执行字符串里（草稿/心跳/删除/课堂自动保存等）。
+    FORBIDDEN_WRITES = ("a=saveCaogao", "a=ketang", "a=htbt", "a=delete",
+                        "a=submit", "a=del")
+
+    def test_only_submit_is_a_write_surface(self) -> None:
+        """写面必须**恰好**是「提交作文」这一个动作。
+
+        原先是「一个写入端点都不许有」。提交功能落地后，这条守护改成白名单：
+        仍然禁止草稿/心跳/删除/课堂自动保存等其它写端点混进来 ——
+        每多一个写端点，就多一处不可逆操作的风险面。
+        """
         offenders: list[tuple[str, str, str]] = []
+        allowed: list[tuple[str, str]] = []
         for path in sorted(self.PACKAGE.glob("*.py")):
             for value in self._executable_strings(path):
-                for needle in self.FORBIDDEN:
-                    if needle in value:
-                        offenders.append((path.name, needle, value[:70]))
-        self.assertEqual(offenders, [], f"可执行字符串里出现写入端点: {offenders}")
+                for token in self.FORBIDDEN_WRITES:
+                    if token in value:
+                        offenders.append((path.name, token, value[:70]))
+                if any(token in value for token in self.ALLOWED_WRITE_TOKENS):
+                    allowed.append((path.name, value[:70]))
+        self.assertEqual(offenders, [], f"出现被禁止的写端点: {offenders}")
+        self.assertTrue(allowed, "提交端点应当存在")
+        self.assertTrue(
+            all(name == "submit.py" for name, _ in allowed),
+            f"写端点只应集中在 submit.py，实际: {allowed}",
+        )
+
+    def test_write_page_url_is_get_only(self) -> None:
+        """`a=write` 是**写作页**的 GET 地址，不是写接口 —— 不要误判也不要用它发 POST。"""
+        for path in sorted(self.PACKAGE.glob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            if "a=write" in text:
+                self.assertNotIn('"POST"', text.split("a=write")[0][-200:],
+                                 f"{path.name}: a=write 附近出现 POST")
 
 
 class TestDiscovery(unittest.TestCase):
