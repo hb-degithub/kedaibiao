@@ -115,11 +115,43 @@ PYTHONPATH=src python3 -m kedaibiao run <平台名> --live
 
 跑完可以用 `make bank-stats` 看题库命中率与执行记录。
 
+### Web 控制台
+
+```bash
+PYTHONPATH=src python3 -m kedaibiao web            # 默认绑 127.0.0.1:8765
+```
+
+左侧栏切平台，顶栏四个独立入口（概览 / 记录 / 统计 / 设置），**所有数据按当前
+平台过滤**，另有「全部平台」聚合视图。
+
+默认只绑回环地址。要绑到别的地址（例如 Tailscale 网内）用
+`--host <地址> --allow-host <主机名>`，启动时会打印警告 —— 能访问到该地址的设备
+都能操作控制台，包括触发跑批。
+
+### 平台只读动作（CLI）
+
+各平台除框架契约之外的只读能力（批改网的待办作业 / 历史作文 / 作文详情 /
+作业号查询等）走同一套通用机制，CLI 与控制台**共用**：
+
+```bash
+PYTHONPATH=src python3 -m kedaibiao actions pigai              # 看该平台有哪些动作
+PYTHONPATH=src python3 -m kedaibiao action pigai pending       # 待办作业
+PYTHONPATH=src python3 -m kedaibiao action pigai essay rid=200000004 eid=1000006
+```
+
+> 这套机制的设计目标是**接入新平台不用改前端**：适配器能力 → 统一「展示信封」
+> （`table` / `detail` / `message`），前端只按 `kind` 渲染。
+> 接口见 [docs/web-console-api.md](docs/web-console-api.md#L237)。
+
 ### 可选依赖
 
 ```bash
 make install-browser   # playwright + chromium，浏览器型平台需要
 ```
+
+> 控制台**不用 FastAPI**：本机装不上（没有 pip，`python3 -m venv` 缺 ensurepip），
+> 所以用标准库 `http.server`。逻辑全在 `api/service.py`，与 HTTP 框架无关 ——
+> 将来要换 FastAPI 只换外壳。
 
 ---
 
@@ -166,6 +198,8 @@ make install-browser   # playwright + chromium，浏览器型平台需要
 │   ├── bank/               题库与执行留痕（SQLite）
 │   ├── security/           凭据装载与脱敏
 │   ├── notify/             通知渠道
+│   ├── api/                Web 控制台（service.py 与 HTTP 框架无关）
+│   │   └── static/         零构建前端（纯 HTML + 原生 JS）
 │   └── config/             配置加载（TOML + .env + 环境变量）
 └── tests/                  单测：零外部依赖，可离线全量跑
 ```
