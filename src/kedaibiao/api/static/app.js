@@ -2322,7 +2322,8 @@
 
     var head = el('div', 'grader-job-head');
     head.appendChild(el('span', 'badge', job.status === 'running' ? '运行中'
-      : (job.stop_reason === 'reached' ? '完成' : '已停止')));
+      : ((job.stop_reason === 'reached' || job.stop_reason === 'fetched')
+         ? '完成' : '已停止')));
     head.appendChild(el('span', 'hint',
       '目标 ' + (job.target_score === undefined ? '—' : job.target_score) +
       ' · 最高 ' + (job.best_score === null || job.best_score === undefined
