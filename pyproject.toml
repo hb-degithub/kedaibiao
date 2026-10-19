@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kedaibiao"
+version = "0.1.0"
+description = "课代表 —— 多平台作业/课程一体化自动化框架"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "HB", email = "wzdshb@126.com" }]
+keywords = ["automation", "playwright", "framework", "courseware"]
+
+# 核心运行时只依赖标准库，保证骨架可离线导入与自测。
+dependencies = []
+
+[project.optional-dependencies]
+browser = ["playwright>=1.47"]
+api = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]
+db = ["sqlalchemy>=2.0"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7", "mypy>=1.13"]
+
+[project.scripts]
+kedaibiao = "kedaibiao.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kedaibiao"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["kedaibiao"]
+strict = true
+warn_unused_ignores = true
+
+# 平台适配器通过 entry point 注册，核心无需感知具体平台。
+[project.entry-points."kedaibiao.adapters"]
+# neusoft = "kedaibiao.platforms.neusoft:NeusoftAdapter"

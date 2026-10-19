@@ -1,0 +1,33 @@
+# 课代表默认配置（可提交）
+#
+# 优先级：内置默认值 < 本文件 < config/local.toml < 环境变量 KEDAIBIAO_*
+# 本地覆盖请写 config/local.toml（已被 .gitignore 忽略，不会进版本库）。
+#
+# 这里刻意把全部条目注释掉：默认值以 src/kedaibiao/config/settings.py 为准，
+# 避免两处各写一份默认值后逐渐漂移。需要改动时取消注释即可。
+
+[kedaibiao]
+
+# 运行环境与日志
+# env = "dev"
+# log_level = "INFO"
+
+# 存储（题库 + 执行留痕）
+# db_url = "sqlite:///./data/kedaibiao.db"
+
+# 安全开关：dry_run = true 表示只规划不提交。
+# 这是本项目最重要的开关 —— 真提交前请先用干跑确认它打算交什么。
+# dry_run = true
+# min_confidence = 0.75
+
+# 调度
+# max_concurrency = 3
+# min_interval = 0.0
+# max_attempts = 3
+
+# 浏览器
+# headless = true
+# session_dir = "./data/sessions"
+
+# 通知
+# notify = "console"

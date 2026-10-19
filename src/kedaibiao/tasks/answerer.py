@@ -1,0 +1,123 @@
+"""答题器：决定「这道题填什么」。
+
+三种实现，按可靠性排序：
+1. ``BankAnswerer``     —— 题库命中，可靠，但覆盖有限；
+2. ``RuleAnswerer``     —— 纯启发式兜底，置信度低，只用来避免空题；
+3. ``ChainAnswerer``    —— 组合器，逐级降级。
+
+LLM 答题器留了接口位（``answerers`` 注册表），等协议调研与成本评估
+之后再补，不在这版骨架里猜实现。
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import ClassVar
+
+from kedaibiao.core.models import Answer, AnswerSource, Question, QuestionType
+
+
+class Answerer(ABC):
+    name: ClassVar[str] = ""
+
+    @abstractmethod
+    async def answer(self, questions: list[Question]) -> list[Answer]:
+        """对一批题目作答，返回与输入等长的列表（未答出的用空 Answer 占位）。"""
+
+    async def answer_one(self, question: Question) -> Answer:
+        return (await self.answer([question]))[0]
+
+    @staticmethod
+    def _empty(question: Question) -> Answer:
+        return Answer(question=question, source=AnswerSource.UNKNOWN, confidence=0.0)
+
+
+class BankAnswerer(Answerer):
+    """只查题库，不做任何猜测。"""
+
+    name = "bank"
+
+    def __init__(self, bank: object) -> None:
+        self.bank = bank
+
+    async def answer(self, questions: list[Question]) -> list[Answer]:
+        results: list[Answer] = []
+        for q in questions:
+            found = self.bank.resolve(q)  # type: ignore[attr-defined]
+            results.append(found if found is not None else self._empty(q))
+        return results
+
+
+class RuleAnswerer(Answerer):
+    """启发式兜底。置信度刻意压低，好让上层拒绝自动提交。"""
+
+    name = "rule"
+
+    #: 题干含这些词时判断题倾向为「错」
+    _NEGATIVE_HINTS = ("不正确", "不属于", "错误", "不是", "不能", "不可以", "无效", "例外")
+
+    BASE_CONFIDENCE = 0.35
+
+    async def answer(self, questions: list[Question]) -> list[Answer]:
+        return [self._solve(q) for q in questions]
+
+    def _solve(self, question: Question) -> Answer:
+        qtype = question.type
+        if qtype is QuestionType.JUDGE:
+            is_true = not any(h in question.stem for h in self._NEGATIVE_HINTS)
+            return Answer(
+                question=question,
+                choices=[0 if is_true else 1],
+                source=AnswerSource.HEURISTIC,
+                confidence=self.BASE_CONFIDENCE,
+            )
+        if qtype is QuestionType.SINGLE and question.options:
+            # 兜底选「最长且含最多限定词」的选项：统计上比随机强
+            idx = max(range(len(question.options)), key=lambda i: len(question.options[i]))
+            return Answer(
+                question=question,
+                choices=[idx],
+                source=AnswerSource.HEURISTIC,
+                confidence=self.BASE_CONFIDENCE,
+            )
+        if qtype is QuestionType.MULTIPLE and question.options:
+            return Answer(
+                question=question,
+                choices=list(range(len(question.options))),
+                source=AnswerSource.HEURISTIC,
+                confidence=self.BASE_CONFIDENCE / 2,
+            )
+        return self._empty(question)
+
+
+class ChainAnswerer(Answerer):
+    """逐级降级：前一个答不出（空答案或低于阈值）才问下一个。"""
+
+    name = "chain"
+
+    def __init__(self, answerers: list[Answerer], *, min_confidence: float = 0.5) -> None:
+        if not answerers:
+            raise ValueError("ChainAnswerer 至少需要一个答题器")
+        self.answerers = answerers
+        self.min_confidence = min_confidence
+
+    async def answer(self, questions: list[Question]) -> list[Answer]:
+        remaining = list(range(len(questions)))
+        results: dict[int, Answer] = {}
+
+        for answerer in self.answerers:
+            if not remaining:
+                break
+            batch = [questions[i] for i in remaining]
+            produced = await answerer.answer(batch)
+            still: list[int] = []
+            for i, ans in zip(remaining, produced, strict=True):
+                if ans.is_empty() or ans.confidence < self.min_confidence:
+                    still.append(i)
+                else:
+                    results[i] = ans
+            remaining = still
+
+        for i in remaining:
+            results[i] = self._empty(questions[i])
+        return [results[i] for i in range(len(questions))]

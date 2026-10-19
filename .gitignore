@@ -1,0 +1,55 @@
+# ---- 凭据与本地配置（绝不入库）----
+.env
+.env.*
+!.env.example
+config/local.*
+*.cookie
+*.cookies.json
+storage_state*.json
+auth/*.json
+
+# ---- 运行期数据 ----
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- Playwright / 浏览器 ----
+.playwright/
+playwright-report/
+test-results/
+ms-playwright/
+*.har
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Node（预留 Web 控制台）----
+node_modules/
+pnpm-lock.yaml
+npm-debug.log*
+dist-web/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
