@@ -121,8 +121,17 @@ PYTHONPATH=src python3 -m kedaibiao run <平台名> --live
 PYTHONPATH=src python3 -m kedaibiao web            # 默认绑 127.0.0.1:8765
 ```
 
-左侧栏切平台，顶栏四个独立入口（概览 / 记录 / 统计 / 设置），**所有数据按当前
-平台过滤**，另有「全部平台」聚合视图。
+![控制台 · 概览](docs/screenshots/ui-overview-pigai.png)
+
+**左侧栏一列两段**：上半切平台，下半切该平台的功能。功能按任务命名 ——
+概览 / 课程 / 作业 / 题库 / 工具 / 运行日志 / 统计 / 账号。所有数据按「当前平台」
+过滤，另有「全部平台」聚合视图（跨平台对比只在「统计」页）。
+
+「课程」「作业」「工具」会**真的登录并读取平台数据**（只读 GET），因此带「只读」
+徽标与加载态；cookie 会落盘，同一次会话内后续访问会先探 `is_logged_in()`，
+有效就跳过登录。
+
+![控制台 · 作业](docs/screenshots/ui-assignments.png)
 
 默认只绑回环地址。要绑到别的地址（例如 Tailscale 网内）用
 `--host <地址> --allow-host <主机名>`，启动时会打印警告 —— 能访问到该地址的设备
