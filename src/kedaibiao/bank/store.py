@@ -376,6 +376,27 @@ class ProgressStore(_SqliteBase):
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def status_counts(self) -> dict[str, int]:
+        """按状态汇总执行记录。
+
+        给控制台/CLI 用：``{"total": 40, "succeeded": 30, ...}``。
+        未知状态不丢，照原样计数 —— 免得将来加了新状态这里悄悄漏掉。
+        """
+        with self._cursor() as cur:
+            rows = cur.execute(
+                "SELECT status, COUNT(*) AS c FROM runs GROUP BY status"
+            ).fetchall()
+        counts = {row["status"]: row["c"] for row in rows}
+        counts["total"] = sum(counts.values())
+        return counts
+
+    def recent_submissions(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._cursor() as cur:
+            rows = cur.execute(
+                "SELECT * FROM submissions ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
 
 def record_to_dict(record: RunRecord) -> dict[str, Any]:
     """给日志/事件用的扁平化。"""

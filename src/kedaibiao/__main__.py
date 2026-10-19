@@ -63,6 +63,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="只处理这些类型，逗号分隔：course,homework,exam,practice",
     )
 
+    web_p = sub.add_parser("web", parents=[root_parent], help="启动 Web 控制台")
+    web_p.add_argument(
+        "--host", default="127.0.0.1", help="绑定地址（默认只绑回环，不要随便改）"
+    )
+    web_p.add_argument("--port", type=int, default=8765, help="端口，0 表示随机空闲端口")
+    web_p.add_argument(
+        "--allow-host",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="额外允许的 Host 头（绑非回环地址、且打算用主机名访问时用）",
+    )
+
     stats = sub.add_parser("bank-stats", parents=[root_parent], help="题库与跑批统计")
     stats.add_argument("--db", default=None, help="覆盖配置里的数据库路径")
     stats.add_argument("--runs", type=int, default=10, help="显示最近多少条执行记录")
@@ -261,6 +274,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if report.failed == 0 else 1
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    # 延迟导入：不起控制台就不该加载 http.server
+    from kedaibiao.api.server import serve
+    from kedaibiao.api.service import ConsoleService
+
+    if not Path(args.root).is_dir():
+        print(f"✗ 项目根目录不存在: {args.root}")
+        return 2
+
+    service = ConsoleService(root=args.root)
+    serve(service, host=args.host, port=args.port, allow_hosts=args.allow_host)
+    return 0
+
+
 HANDLERS = {
     "platforms": cmd_platforms,
     "config": cmd_config,
@@ -269,6 +296,7 @@ HANDLERS = {
     "bank-export": cmd_bank_export,
     "bank-import": cmd_bank_import,
     "run": cmd_run,
+    "web": cmd_web,
 }
 
 
