@@ -23,11 +23,25 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
-from kedaibiao.core.models import Assignment, Course, Credentials, Question, TaskKind
-from kedaibiao.platforms.base import AdapterContext, Capabilities, PlatformAdapter
-from kedaibiao.platforms.unipus import parsing
+from kedaibiao.core.models import (
+    Answer,
+    Assignment,
+    Course,
+    Credentials,
+    Question,
+    SubmissionResult,
+    TaskKind,
+)
+from kedaibiao.platforms.base import (
+    AdapterContext,
+    Capabilities,
+    NotSupportedError,
+    PlatformAdapter,
+)
+from kedaibiao.platforms.unipus import parsing, submit as submit_mod
+from kedaibiao.platforms.unipus import endpoints
 from kedaibiao.platforms.unipus.client import UnipusClient
-from kedaibiao.platforms.unipus.errors import UnipusProtocolError
+from kedaibiao.platforms.unipus.errors import UnipusError, UnipusProtocolError
 from kedaibiao.platforms.unipus.parsing import (
     SCOPE_UCONTENT_LEAFS,
     BookshelfBook,
@@ -64,14 +78,24 @@ class UnipusAdapter(PlatformAdapter):
         course_playback=False,
     )
 
+    #: 提交载荷是否已由真实抓包确认。
+    #:
+    #: 规格 §8.1 给了完整的形状，但 ``isCompleted`` / ``thirdPartyJudges`` 的
+    #: **取值语义**没给。这两个字段猜错不会报错、只会静默判错，所以默认关闭。
+    #: 拿到一次真实提交请求、核对完这两个字段后，把它置 True 即可启用。
+    submit_payload_confirmed: bool = False
+
     def __init__(
         self,
         ctx: AdapterContext | None = None,
         *,
         timeout: float | None = None,
         clock: Any | None = None,
+        submit_payload_confirmed: bool | None = None,
     ) -> None:
         super().__init__(ctx)
+        if submit_payload_confirmed is not None:
+            self.submit_payload_confirmed = submit_payload_confirmed
         self._client: UnipusClient | None = None
         self._timeout = timeout
         self._clock = clock
@@ -223,6 +247,94 @@ class UnipusAdapter(PlatformAdapter):
         course_instance_id, group_id = split_assignment_id(assignment.remote_id)
         content = await self.client().fetch_content(course_instance_id, group_id)
         return [_to_question(item) for item in content]
+
+    async def submit(
+        self, assignment: Assignment, answers: list[Answer]
+    ) -> SubmissionResult:
+        """提交一个任务组。
+
+        ⚠️ **默认被闸门挡住**（``submit_payload_confirmed = False``）—— 见类属性
+        注释。闸门打开后，流程是：
+
+        1. 取内容（题目结构，用来算计分点数与子题数组）；
+        2. 取标准答案（规格 §7.3：答案是**服务端标准答案原样转发**，
+           本方法不用 ``answers`` 参数里的内容）；
+        3. 构造提交体（:mod:`kedaibiao.platforms.unipus.submit`）；
+        4. POST 提交端点；
+        5. 回读一次 ``progress/v2`` 确认（规格 §8.3：服务端接受不等于记下了成绩）。
+        """
+        instance_id, group_id = split_assignment_id(assignment.remote_id)
+
+        if not self.submit_payload_confirmed:
+            message = (
+                "提交载荷的取值语义尚未由真实抓包确认（isCompleted / "
+                "thirdPartyJudges），拒绝发出写请求。"
+            )
+            # 有网络客户端的话，顺手把「按规格能构造出的载荷」也演示出来 ——
+            # 让用户看到到底还差什么，比一句「不支持」有用。
+            if getattr(self.ctx, "http", None) is not None:
+                try:
+                    content = await self.client().fetch_content(instance_id, group_id)
+                    plan = submit_mod.build_submit_plan(
+                        course_id=self._course_v2(instance_id),
+                        group_id=group_id,
+                        open_id=self.session.open_id if self.session else "",
+                        questions=content,
+                    )
+                    message += (
+                        f"\n已按规格 §8.1 构造出载荷：{plan.summary()}"
+                        f"\n待确认项：{'；'.join(plan.warnings) or '无'}"
+                    )
+                except Exception as exc:  # noqa: BLE001 - 只是演示，失败不影响结论
+                    message += f"\n（顺带构造载荷时失败：{type(exc).__name__}）"
+            message += (
+                "\n拿到一次真实提交请求后，把 UnipusAdapter.submit_payload_confirmed "
+                "置 True 即可启用。"
+            )
+            raise NotSupportedError(message)
+
+        content = await self.client().fetch_content(instance_id, group_id)
+        standard = await self.client().fetch_answers(instance_id, group_id)
+        plan = submit_mod.build_submit_plan(
+            course_id=self._course_v2(instance_id),
+            group_id=group_id,
+            open_id=self.session.open_id if self.session else "",
+            questions=content,
+            standard_answers=standard,
+        )
+        if plan.warnings:
+            self.log.warning("提交前提示：%s", "；".join(plan.warnings))
+
+        document = await self.client().request(
+            endpoints.UnipusApp.UCONTENT,
+            "POST",
+            endpoints.UCONTENT_SUBMIT,
+            family="ucontent",
+            payload=plan.payload,
+        )
+        result = submit_mod.parse_submit_result(document)
+
+        # 回读一次，确认成绩真的记下了（规格 §8.3）
+        try:
+            state = await self.client().fetch_group_state(instance_id, group_id)
+            self.log.info(
+                "提交后回读 group state：first_pass=%s", getattr(state, "first_pass", None)
+            )
+        except Exception:  # noqa: BLE001 - 回读失败不影响「提交请求已被接受」的事实
+            self.log.warning("提交后回读状态失败（不影响提交结果）", exc_info=True)
+
+        return SubmissionResult(
+            assignment_id=assignment.remote_id,
+            ok=result.accepted,
+            score=result.score_pct,
+            message=result.summary(),
+            raw={"state": result.state, "score": result.score,
+                 "version": result.version, "submitType": plan.submit_type},
+        )
+
+    def _course_v2(self, instance_id: str) -> str:
+        """实例 ID → ``course-v2:...`` 形态（规格 §6.1）。"""
+        return ("course-v2:" + instance_id) if not instance_id.startswith("course-v2:") else instance_id
 
     async def fetch_standard_answers(
         self,
