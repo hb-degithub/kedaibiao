@@ -100,16 +100,21 @@ PYTHONPATH=src python3 -m kedaibiao doctor
 
 ### 跑一次任务
 
-```bash
-# 1. 配凭据（.env 已被 .gitignore 排除，不会入库）
-cp .env.example .env && $EDITOR .env
+平台账号**只在控制台「账号」页绑定** —— `.env` 不再保存任何平台凭据。
 
-# 2. 先干跑 —— 只规划、不产生任何写操作，看清楚它打算交什么
+```bash
+# 1. 起控制台，登录后左侧「账号」→ 添加平台账号（会真登录一次，只存会话）
+PYTHONPATH=src python3 -m kedaibiao web
+
+# 2. 干跑 —— 只规划、不产生任何写操作，看清楚它打算交什么
 PYTHONPATH=src python3 -m kedaibiao run <平台名>
 
 # 3. 确认无误后，才真正提交
 PYTHONPATH=src python3 -m kedaibiao run <平台名> --live
 ```
+
+命令行也用同一份账号（没有登录态，取该平台绑定过的号）。没绑定就直接报错，
+**不会回退去读 `.env`**。
 
 常用限定参数：`--limit 3`（本次最多 3 个作业）、`--kinds homework,exam`（只处理指定类型）。
 

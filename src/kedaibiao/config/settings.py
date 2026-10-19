@@ -110,9 +110,11 @@ def resolve_environ(
     优先级：``.env`` 文件 < 真实环境变量（CI/容器里临时导出的值永远压过文件）。
 
     为什么要有这个函数：``load_settings`` 只把合并结果用于自身的配置字段，
-    而凭据（``security.load_credentials``）与 ``doctor`` 的平台扫描都要读同一份
-    环境。早期版本让它们各自读 ``os.environ``，结果是 **``.env`` 里的凭据
-    根本到不了凭据层** —— 整合指南承诺的优先级形同虚设。
+    与 ``doctor`` 的配置扫描都要读同一份环境。早期版本让它们各自读
+    ``os.environ``，结果是 **``.env`` 里的值根本到不了使用方**。
+
+    ⚠️ 注意：**平台凭据已经不走环境变量了**（见 ``security/accounts.py``）。
+    这里只影响配置项（并发、headless 之类）。
 
     这里刻意**不回写 ``os.environ``**：全局副作用会让测试之间互相污染，
     也让「这次到底读了哪些环境变量」变得不可追踪。显式传下去更清楚。
@@ -136,8 +138,8 @@ def load_settings(
 
     显式传入 ``environ`` 时完全不读 ``.env``，便于测试。
 
-    ⚠️ 凭据不走这里。要读平台凭据请用 :func:`kedaibiao.config.resolve_environ`
-    拿到同一份环境，再传给 ``security.load_credentials(..., environ=...)``。
+    ⚠️ **平台凭据不走这里**。请在控制台「账号」页绑定平台账号
+    （``security.accounts``），凭据只从账号库来。
     """
     root = Path(root)
     resolved = resolve_environ(root, environ=environ, use_dotenv=use_dotenv)

@@ -96,7 +96,10 @@ _PASSWORD = "Hu7!Secret-P@ssw0rd-2026"  # noqa: secret-check - 故意的脱敏�
 
 ## 6. 代码层的约束
 
-- 凭据只从环境变量 / `.env` 读（`security.credentials`），不写死在代码里；
+- **平台凭据只来自控制台账号库**（`security.accounts`）：绑定时真登录一次换
+  cookie，密码用完即弃。`.env` 不再保存任何平台账号密码 —— 两套来源并存时
+  用户搞不清实际用的是哪个号，而且 `.env` 是明文；
+- `security.credentials`（环境变量那条路）已**弃用**，只留给没有登录态的独立脚本；
 - 控制台的平台账号**不存密码**，只存 cookie（会话失效让用户重输一次）；
 - `Credentials.__repr__` 屏蔽密码，日志里打 `security.describe(creds)`；
 - 用户密码用 `scrypt` + 随机盐存哈希，接口永不返回；

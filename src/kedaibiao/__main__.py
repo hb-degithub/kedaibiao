@@ -18,7 +18,7 @@ from kedaibiao.config.settings import load_settings, resolve_environ
 from kedaibiao.core.models import TaskKind
 from kedaibiao.platforms import load_builtin_adapters
 from kedaibiao.runtime import build_runtime
-from kedaibiao.security.credentials import CredentialError, available_platforms
+from kedaibiao.security.accounts import AccountError, AccountStore
 from kedaibiao.tasks.pipeline import PipelineConfig
 
 OPTIONAL_DEPS = {
@@ -172,11 +172,24 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"存储   : ✗ 不可写 {db}: {exc}")
         ok = False
 
-    configured = available_platforms(resolve_environ(args.root))
-    if configured:
-        print(f"凭据   : ✓ 已配置 {', '.join(configured)}（值不显示）")
+    try:
+        from kedaibiao.security.accounts import AccountStore as _AS
+
+        _store = _AS(settings.db_path)
+        try:
+            _accounts = _store.list_for()
+        finally:
+            _store.close()
+    except Exception:  # noqa: BLE001 - 还没建库时不该让 doctor 崩掉
+        _accounts = []
+    if _accounts:
+        by_platform: dict[str, int] = {}
+        for acc in _accounts:
+            by_platform[acc.platform] = by_platform.get(acc.platform, 0) + 1
+        detail = ", ".join(f"{k}×{v}" for k, v in sorted(by_platform.items()))
+        print(f"账号   : ✓ 已绑定 {detail}（密码不落盘，只存会话）")
     else:
-        print("凭据   : （未配置任何平台凭据，见 .env.example）")
+        print("账号   : （还没有绑定平台账号，去控制台「账号」页添加）")
 
     print("结论   : " + ("环境就绪" if ok else "环境不完整，见上方 ✗"))
     return 0 if ok else 1
@@ -270,9 +283,24 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_assignments=args.limit,
     )
 
-    runtime = build_runtime(root=args.root, settings=settings, config=config)
+    # 凭据只来自账号库（不再读 .env）
+    store = AccountStore(settings.db_path)
     try:
-        report = asyncio.run(runtime.run(args.platform))
+        creds, cookie_file = store.resolve_credentials(
+            args.platform, session_dir=settings.session_dir
+        )
+    except AccountError as exc:
+        store.close()
+        print(f"✗ {exc}")
+        return 2
+    finally:
+        store.close()
+
+    runtime = build_runtime(
+        root=args.root, settings=settings, config=config, cookie_file=cookie_file
+    )
+    try:
+        report = asyncio.run(runtime.run(args.platform, credentials=creds))
     except CredentialError as exc:
         print(f"✗ {exc}")
         return 2

@@ -9,7 +9,7 @@
 * 端点、表单字段名、cookie 名一律取自 ``protocol.py``（唯一出处）；
 * **不限速**：节流是 ``core.scheduler.Scheduler`` 的职责，本模块没有
   ``min_interval``、不 sleep；
-* 凭据由调用方传入（adapter 层走 ``security.load_credentials("pigai")``），
+* 凭据由调用方传入（正常路径是控制台绑定的平台账号，见 ``security.accounts``），
   本模块**不读 os.environ / .env**。
 
 **隐私红线**：密码、密文、cookie 值绝不进日志或异常。日志里只出现 cookie 的

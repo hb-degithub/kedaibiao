@@ -76,7 +76,7 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 | `unknown_platform` | 404 | 平台没注册 |
 | `unknown_action` | 404 | 该平台没有这个只读动作 |
 | `not_found` | 404 | 路由或对象不存在 |
-| `no_credentials` | 400 | 该平台没配凭据（`error` 里会写明期望的环境变量键名） |
+| `no_credentials` | 400 | 该平台还没绑定账号（`error` 会提示去「账号」页添加） |
 | `busy` | 409 | 已有跑批在跑，同一时刻只允许一个 |
 | `forbidden` | 403 | Host 或 Origin 被安全策略拒绝 |
 | `platform_error` | 502 | 平台侧失败（未登录、找不到内容、网络异常），另带 `detail` = 平台异常类名 |
@@ -164,7 +164,10 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
   "last_login_note": "" }
 ```
 
-> **不落盘平台密码。** 密码只在登录那一刻用来换 cookie，换完就丢；数据库里
+> **平台凭据只有这一个来源。** `.env` 里的 `KEDAIBIAO_<平台>_USER/_PASS`
+> 已不再被读取 —— 之前两套来源并存，用户无法判断实际用的是哪个号。
+>
+> **也不落盘平台密码。** 密码只在登录那一刻用来换 cookie，换完就丢；数据库里
 > 没有可解密的平台凭据。代价是会话过期后要重新输一次密码 —— 所以
 > `last_login_ok` / `last_login_at` 要显眼地显示出来，失效时明确提示用户重登。
 >

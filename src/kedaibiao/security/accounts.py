@@ -135,6 +135,21 @@ class AccountStore(SqliteStore):
         row = self.fetchone("SELECT * FROM platform_accounts WHERE id=?", (account_id,))
         return self._row(row) if row else None
 
+    def active_any(self, platform: str, owner_id: int | None = None) -> PlatformAccount | None:
+        """取该平台的一个可用账号。
+
+        ``owner_id`` 给了就只看那个人；没给（CLI / 内部路径）就按 id 取最早的一个。
+        这条路径存在是因为**命令行没有登录态**，但它仍然必须用账号库里
+        绑定过的号，而不是环境变量里的明文密码。
+        """
+        rows = self.list_for(owner_id, platform)
+        if not rows:
+            return None
+        for row in rows:
+            if row.is_active:
+                return row
+        return rows[0]
+
     def active_for(self, owner_id: int, platform: str) -> PlatformAccount | None:
         row = self.fetchone(
             """SELECT a.* FROM platform_accounts a
@@ -217,6 +232,29 @@ class AccountStore(SqliteStore):
             cur.execute(
                 "UPDATE platform_accounts SET is_active=1 WHERE id=?", (account_id,)
             )
+
+    def resolve_credentials(
+        self, platform: str, *, owner_id: int | None = None, session_dir: str | Path = "."
+    ) -> tuple[Any, str]:
+        """返回 ``(Credentials, cookie_file)``；没有绑定账号则抛 ``AccountError``。
+
+        密码留空 —— 这个号登录过之后，会话就在它自己的 cookie 文件里，
+        ``refresh_session`` 会先探 ``is_logged_in()``，有效就不用再登录。
+        真失效了会让用户重新输一次密码（``login_account``）。
+        """
+        from kedaibiao.core.models import Credentials
+
+        account = self.active_any(platform, owner_id)
+        if account is None:
+            raise AccountError(
+                f"{platform} 还没有绑定账号。请先在控制台「账号」页添加一个 "
+                f"{platform} 账号（会真登录一次），之后命令行也会用它。",
+                kind="no_credentials", status=400,
+            )
+        return (
+            Credentials(username=account.username or "", password=""),
+            str(account.cookie_path(session_dir)),
+        )
 
     def record_login(self, account_id: int, *, ok: bool, note: str = "") -> None:
         self.execute(

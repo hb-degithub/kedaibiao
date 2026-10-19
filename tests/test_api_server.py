@@ -93,6 +93,37 @@ class ServerTestBase(unittest.TestCase):
             self.addCleanup(adapters.unregister, cls.name)
 
         self.service = ConsoleService(root=self.root)
+        self._start_server()   # 先登录，拿到 user_id
+        # 凭据只来自账号库：给假平台绑到当前用户名下
+        for cls in (FakeAdapter, NoSubmitAdapter):
+            self.bind_account(cls.name)
+
+    def bind_account(self, platform: str, username: str = "stu", owner_id: int | None = None) -> int:
+        """给某平台绑定一个账号 —— 现在凭据**只**来自账号库，不再读 .env。
+
+        ``owner_id`` 必须与请求的登录用户一致，否则服务层按归属查不到。
+        """
+        from kedaibiao.security.accounts import AccountStore
+
+        owner = getattr(self, "user_id", 0) if owner_id is None else owner_id
+        store = AccountStore(self.root / ("api.db"))
+        try:
+            account = store.add(owner, platform, label="测试号", username=username)
+            return account.id
+        finally:
+            store.close()
+
+    def unbind_all(self, platform: str) -> None:
+        from kedaibiao.security.accounts import AccountStore
+
+        store = AccountStore(self.root / ("api.db"))
+        try:
+            for acc in store.list_for(None, platform):
+                store.delete(acc.id)
+        finally:
+            store.close()
+
+    def _start_server(self) -> None:
         self.httpd = make_server(self.service, host="127.0.0.1", port=0)
         self.port = self.httpd.server_address[1]
         # poll_interval 默认 0.5s，会让每个用例的 shutdown 白等半秒
@@ -120,7 +151,8 @@ class ServerTestBase(unittest.TestCase):
                 store.set_password(existing.id, password)
         finally:
             store.close()
-        _user, session = self.service.login(username, password)
+        user, session = self.service.login(username, password)
+        self.user_id = user["id"]
         return session.token
 
     def _stop(self) -> None:
@@ -279,10 +311,10 @@ class TestPostRun(ServerTestBase):
         self.assertEqual(json.loads(body)["kind"], "unknown_platform")
 
     def test_no_credentials(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
-            status, body, _ = self.call(
-                "/api/run", method="POST", json_body={"platform": PLATFORM}
-            )
+        self.unbind_all(PLATFORM)  # 凭据只来自账号库
+        status, body, _ = self.call(
+            "/api/run", method="POST", json_body={"platform": PLATFORM}
+        )
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["kind"], "no_credentials")
 
@@ -448,11 +480,11 @@ class TestActionRoutes(ServerTestBase):
         self.assertIn("对象", json.loads(body)["error"])
 
     def test_no_credentials(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
-            status, body, _ = self.call(
-                f"/api/platforms/{PLATFORM}/actions/echo",
-                method="POST", json_body={"who": "x"},
-            )
+        self.unbind_all(PLATFORM)
+        status, body, _ = self.call(
+            f"/api/platforms/{PLATFORM}/actions/echo",
+            method="POST", json_body={"who": "x"},
+        )
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["kind"], "no_credentials")
 

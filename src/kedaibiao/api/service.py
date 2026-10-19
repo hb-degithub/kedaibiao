@@ -48,7 +48,7 @@ from kedaibiao.security.auth import (
     Session,
     User,
 )
-from kedaibiao.security.credentials import CredentialError, env_key, load_credentials
+from kedaibiao.security.credentials import env_key
 from kedaibiao.tasks.pipeline import PipelineConfig
 
 log = logging.getLogger(__name__)
@@ -251,10 +251,10 @@ class ConsoleService:
             for key in ("total", "succeeded", "failed", "skipped", "running"):
                 run_counts.setdefault(key, 0)
 
-        credentialed = [
-            name for name in adapters.names()
-            if load_credentials(name, require=False, environ=self.environ) is not None
-        ]
+        bound = self._with_accounts(
+            lambda st: {a.platform for a in st.list_for(owner)}
+        )
+        credentialed = [name for name in adapters.names() if name in bound]
 
         return {
             "version": __version__,
@@ -276,6 +276,7 @@ class ConsoleService:
         }
 
     def platforms(self) -> dict[str, Any]:
+        bound = self._with_accounts(lambda st: {a.platform for a in st.list_for()})
         items = []
         for name in adapters.names():
             cls = adapters.get(name)
@@ -284,7 +285,7 @@ class ConsoleService:
                 "name": name,
                 "display_name": getattr(cls, "display_name", "") or name,
                 "capabilities": _jsonable(caps) if caps is not None else {},
-                "has_credentials": load_credentials(name, require=False, environ=self.environ) is not None,
+                "has_credentials": name in bound,
             })
         return {"platforms": items}
 
@@ -389,9 +390,9 @@ class ConsoleService:
             platforms.append({
                 "name": name,
                 "display_name": getattr(cls, "display_name", "") or name,
-                "has_credentials": load_credentials(
-                    name, require=False, environ=self.environ
-                ) is not None,
+                "has_credentials": self._with_accounts(
+                    lambda st, n=name: len(st.list_for(None, n)) > 0
+                ),
                 "credentials_hint": (
                     f"{env_key(name, 'user')} / {env_key(name, 'pass')}"
                     f"（或 {env_key(name, 'token')}）"
@@ -504,10 +505,7 @@ class ConsoleService:
 
         登录用「当前账号」的 cookie 文件；没有绑定账号时回退到 ``.env``。
         """
-        try:
-            creds, cookie_file = self._resolve_login(platform, viewer)
-        except CredentialError as exc:
-            raise ConsoleError(str(exc), kind="no_credentials", status=400) from exc
+        creds, cookie_file = self._resolve_login(platform, viewer)
 
         runtime = build_runtime(
             root=self.root, environ=self.environ, cookie_file=cookie_file,
@@ -833,23 +831,25 @@ class ConsoleService:
 
     def _resolve_login(
         self, platform: str, viewer: Viewer | None
-    ) -> tuple[Credentials, str | None]:
+    ) -> tuple[Credentials, str]:
         """这次请求用哪个号、哪个 cookie 文件。
 
-        有绑定账号就用绑定账号（会话来自它自己的 cookie 文件）；否则回退到
-        ``.env`` 里的平台凭据（单账号的老用法，仍然可用）。
+        **只认账号库里绑定过的账号**，不再回退到 ``.env``。
+
+        为什么去掉 .env 回退：两套来源并存时，用户永远搞不清「底部用的是哪个
+        号」，而且 .env 里是明文密码。现在只有一条路 —— 在控制台「账号」页绑定，
+        密码只在登录那一刻用一次，之后靠该账号自己的 cookie 文件。
         """
-        if viewer is not None and viewer.authenticated:
-            account = self._with_accounts(
-                lambda st: st.active_for(viewer.user_id, platform)  # type: ignore[arg-type]
-            )
-            if account is not None:
-                settings = load_settings(root=self.root, environ=self.environ)
-                return (
-                    Credentials(username=account.username or "", password=""),
-                    str(account.cookie_path(settings.session_dir)),
+        settings = load_settings(root=self.root, environ=self.environ)
+        owner = viewer.user_id if (viewer and viewer.authenticated) else None
+        try:
+            return self._with_accounts(
+                lambda st: st.resolve_credentials(
+                    platform, owner_id=owner, session_dir=settings.session_dir
                 )
-        return load_credentials(platform, require=True, environ=self.environ), None
+            )
+        except AccountError as exc:
+            raise ConsoleError(str(exc), kind=exc.kind, status=exc.status) from exc
 
     # -- 触发跑批 ---------------------------------------------------------
 
@@ -883,10 +883,7 @@ class ConsoleService:
 
         # 干跑也要登录（要拉课程才能规划），所以凭据一律前置校验 ——
         # 放在这里比让后台线程抛异常再标 failed 更容易排查。
-        try:
-            _creds, cookie_file = self._resolve_login(platform, viewer)
-        except CredentialError as exc:
-            raise ConsoleError(str(exc), kind="no_credentials", status=400) from exc
+        creds, cookie_file = self._resolve_login(platform, viewer)
         owner_id = viewer.user_id if (viewer and viewer.authenticated) else 0
 
         parsed_kinds = _parse_kinds(kinds or [])
@@ -925,7 +922,8 @@ class ConsoleService:
 
         thread = threading.Thread(
             target=self._execute,
-            args=(job_id, platform, bool(live), limit, parsed_kinds, owner_id, cookie_file),
+            args=(job_id, platform, bool(live), limit, parsed_kinds, owner_id,
+                  cookie_file, creds),
             name=f"kedaibiao-job-{job_id}",
             daemon=True,
         )
@@ -955,6 +953,7 @@ class ConsoleService:
         kinds: frozenset[TaskKind],
         owner_id: int = 0,
         cookie_file: str | None = None,
+        credentials: Any = None,
     ) -> None:
         """在后台线程里跑一次流水线。
 
@@ -978,7 +977,7 @@ class ConsoleService:
             )
             runtime.bus.on("*", self._record_event)
 
-            report = asyncio.run(runtime.run(platform))
+            report = asyncio.run(runtime.run(platform, credentials=credentials))
 
             with self._lock:
                 job = self._jobs_by_id[job_id]

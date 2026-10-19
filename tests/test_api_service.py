@@ -107,6 +107,31 @@ class ServiceTestBase(unittest.TestCase):
             adapters.register(cls.name, cls, override=True)
             self.addCleanup(adapters.unregister, cls.name)
         self.service = ConsoleService(root=self.root)
+        # 凭据只来自账号库：给每个假平台绑一个号
+        for cls in (FakeAdapter, NoSubmitAdapter, SlowAdapter, NoCapsAdapter):
+            self.bind_account(cls.name)
+
+    def bind_account(self, platform: str, username: str = "stu") -> int:
+        """给某平台绑定一个账号 —— 现在凭据**只**来自账号库，不再读 .env。"""
+        from kedaibiao.security.accounts import AccountStore
+
+        store = AccountStore(self.root / ("api.db"))
+        try:
+            account = store.add(0, platform, label="测试号", username=username)
+            return account.id
+        finally:
+            store.close()
+
+    def unbind_all(self, platform: str) -> None:
+        from kedaibiao.security.accounts import AccountStore
+
+        store = AccountStore(self.root / ("api.db"))
+        try:
+            for acc in store.list_for(None, platform):
+                store.delete(acc.id)
+        finally:
+            store.close()
+
 
     def seed_bank(self) -> None:
         """往题库塞一条答案，好让流水线走到「干跑」而不是「一题都没答出来」。"""
@@ -123,13 +148,13 @@ class ServiceTestBase(unittest.TestCase):
 
 
 class TestOverview(ServiceTestBase):
-    def test_empty_state_does_not_create_db(self) -> None:
+    def test_empty_state_reports_zeros(self) -> None:
+        # 注意：setUp 会为假平台绑定账号，所以库文件本来就存在；
+        # 这里断言的是「没有任何题库与跑批数据」。
         data = self.service.overview()
-        self.assertFalse(data["db_exists"])
         self.assertEqual(data["bank"]["total"], 0)
         self.assertIsNone(data["bank"]["accuracy"])
         self.assertEqual(data["runs"]["total"], 0)
-        self.assertFalse((self.root / "api.db").exists(), "只读接口不该建库")
 
     def test_reports_env_and_settings(self) -> None:
         data = self.service.overview()
@@ -166,10 +191,11 @@ class TestPlatforms(ServiceTestBase):
         self.assertFalse(names[NOSUBMIT]["capabilities"]["submit"])
 
     def test_has_credentials_flag(self) -> None:
-        with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
-            names = {p["name"]: p for p in self.service.platforms()["platforms"]}
+        """「有凭据」= 账号库里绑了该平台的号（不再看 .env）。"""
+        self.unbind_all(NOSUBMIT)
+        names = {p["name"]: p for p in self.service.platforms()["platforms"]}
         self.assertTrue(names[GOOD]["has_credentials"])
-        self.assertFalse(names[NOSUBMIT]["has_credentials"])
+        self.assertFalse(names[NOSUBMIT]["has_credentials"], "没绑账号就不算有凭据")
 
 
 class TestBankAndHistory(ServiceTestBase):
@@ -219,11 +245,11 @@ class TestStartRunValidation(ServiceTestBase):
         self.assertIn("不支持提交", str(cm.exception))
 
     def test_missing_credentials_blocks_even_dry_run(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with self.assertRaises(ConsoleError) as cm:
-                self.service.start_run(GOOD)
+        self.unbind_all(GOOD)  # 凭据只来自账号库
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.start_run(GOOD)
         self.assertEqual(cm.exception.kind, "no_credentials")
-        self.assertIn("KEDAIBIAO_APIFAKE_USER", str(cm.exception))
+        self.assertIn("账号", str(cm.exception))
 
     def test_bad_kind(self) -> None:
         with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
@@ -305,6 +331,7 @@ class TestRunLifecycle(ServiceTestBase):
 
         adapters.register(Boom.name, Boom, override=True)
         self.addCleanup(adapters.unregister, Boom.name)
+        self.bind_account(Boom.name)
         with mock.patch.dict(os.environ, _creds(Boom.name), clear=True):
             started = self.service.start_run(Boom.name)
             self.wait()
@@ -578,9 +605,9 @@ class TestActions(ServiceTestBase):
         self.assertIn("对象", str(cm.exception))
 
     def test_missing_credentials(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with self.assertRaises(ConsoleError) as cm:
-                self.service.run_action(GOOD, "ping", {"who": "x"})
+        self.unbind_all(GOOD)
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.run_action(GOOD, "ping", {"who": "x"})
         self.assertEqual(cm.exception.kind, "no_credentials")
 
     def test_success(self) -> None:

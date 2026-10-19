@@ -162,21 +162,24 @@ class CliRunIntegrationTest(unittest.TestCase):
         adapters.register(PLATFORM, FakeAdapter, override=True)
         self.addCleanup(adapters.unregister, PLATFORM)
 
+        # 凭据只来自账号库（不再读 .env）：给这个假平台绑一个号
+        from kedaibiao.security.accounts import AccountStore
+
+        store = AccountStore(self.root / "cli.db")
+        try:
+            store.add(0, PLATFORM, label="测试号", username="stu")
+        finally:
+            store.close()
+
     def _run(self, argv: list[str], env: dict[str, str]) -> int:
         with mock.patch.dict(os.environ, env, clear=True):
             return main(argv)
 
     def test_dry_run_skips_and_exits_zero(self) -> None:
-        code = self._run(
-            ["run", PLATFORM, "--root", str(self.root)],
-            {f"KEDAIBIAO_{PLATFORM.upper()}_USER": "u",
-             f"KEDAIBIAO_{PLATFORM.upper()}_PASS": "p"},
-        )
+        code = self._run(["run", PLATFORM, "--root", str(self.root)], {})
         self.assertEqual(code, 0)
 
-    def test_missing_credentials_exits_two(self) -> None:
-        code = self._run(["run", PLATFORM, "--root", str(self.root)], {})
-        self.assertEqual(code, 2)
+    # 「没有凭据时退出码 2」已由 test_cli_fails_when_platform_has_no_account 覆盖
 
     def test_unknown_platform_exits_two(self) -> None:
         code = self._run(
@@ -194,8 +197,7 @@ class CliRunIntegrationTest(unittest.TestCase):
 
     def test_limit_is_honoured(self) -> None:
         code = self._run(
-            ["run", PLATFORM, "--root", str(self.root), "--limit", "0"],
-            {f"KEDAIBIAO_{PLATFORM.upper()}_USER": "u"},
+            ["run", PLATFORM, "--root", str(self.root), "--limit", "0"], {}
         )
         self.assertEqual(code, 0)
 
@@ -220,20 +222,39 @@ class CliRunIntegrationTest(unittest.TestCase):
         report = asyncio.run(runtime.run(PLATFORM, credentials=Credentials("u", "p")))
         self.assertEqual(report.succeeded, 1)
 
-    def test_credentials_come_from_dotenv(self) -> None:
-        """回归测试：只写在 .env 里的凭据必须能被 CLI 取到。
+    def test_credentials_come_from_account_store(self) -> None:
+        """CLI 的凭据来自账号库，而不是 .env。
 
-        早期 `load_settings` 只把 `.env` 合进局部字典，而凭据层自己读
-        `os.environ`，结果是 `.env` 里配了凭据却报「未找到凭据」。
+        即使 .env 里写了平台账号密码，也不该被使用 —— 凭据只有一个来源。
         """
         (self.root / ".env").write_text(
-            f"KEDAIBIAO_{PLATFORM.upper()}_USER=fromfile\n"
-            f"KEDAIBIAO_{PLATFORM.upper()}_PASS=fromfile\n",
+            f"KEDAIBIAO_{PLATFORM.upper()}_USER=should-not-be-used\n"
+            f"KEDAIBIAO_{PLATFORM.upper()}_PASS=should-not-be-used\n",
             encoding="utf-8",
         )
-        # 环境里什么都没有，只有 .env 有
         code = self._run(["run", PLATFORM, "--root", str(self.root)], {})
-        self.assertEqual(code, 0, "只写在 .env 里的凭据必须生效")
+        self.assertEqual(code, 0)
+        # 库里的账号是唯一来源（用户名来自账号库那条）
+        from kedaibiao.security.accounts import AccountStore
+
+        store = AccountStore(self.root / "cli.db")
+        try:
+            accounts = store.list_for(None, PLATFORM)
+        finally:
+            store.close()
+        self.assertEqual(accounts[0].username, "stu", "用的必须是账号库里的号")
+
+    def test_cli_fails_when_platform_has_no_account(self) -> None:
+        from kedaibiao.security.accounts import AccountStore
+
+        store = AccountStore(self.root / "cli.db")
+        try:
+            for acc in store.list_for(None, PLATFORM):
+                store.delete(acc.id)
+        finally:
+            store.close()
+        code = self._run(["run", PLATFORM, "--root", str(self.root)], {})
+        self.assertEqual(code, 2, "没有绑定账号应当明确失败，而不是偷偷去读 .env")
 
     def test_dotenv_does_not_leak_into_os_environ(self) -> None:
         key = f"KEDAIBIAO_{PLATFORM.upper()}_USER"

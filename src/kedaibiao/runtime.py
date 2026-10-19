@@ -23,7 +23,6 @@ from kedaibiao.core.scheduler import Scheduler
 from kedaibiao.net.http import HttpClient, UrllibTransport
 from kedaibiao.notify.base import ConsoleNotifier, Notifier, NullNotifier, WebhookNotifier
 from kedaibiao.platforms.base import AdapterContext, PlatformAdapter
-from kedaibiao.security.credentials import load_credentials
 from kedaibiao.tasks.answerer import BankAnswerer, ChainAnswerer, RuleAnswerer
 from kedaibiao.tasks.pipeline import Pipeline, PipelineConfig, PipelineReport
 
@@ -138,11 +137,14 @@ class Runtime:
     async def run(self, platform: str, *, credentials: Any = None) -> PipelineReport:
         # 先确认平台存在，再要凭据 —— 否则没注册的平台会先报「缺凭据」，误导排查方向
         adapter = self.make_adapter(platform)
-        creds = (
-            credentials
-            if credentials is not None
-            else load_credentials(platform, require=True, environ=self.environ)
-        )
+        if credentials is None:
+            # 刻意不回退到 .env：凭据只有一个来源（控制台绑定的平台账号），
+            # 调用方必须先把它解析好再传进来。
+            raise RuntimeError(
+                f"未提供 {platform} 的凭据。请在控制台「账号」页绑定该平台账号，"
+                f"或调用方先解析出凭据再传入。"
+            )
+        creds = credentials
         try:
             return await self.pipeline.run(adapter, creds)
         finally:
