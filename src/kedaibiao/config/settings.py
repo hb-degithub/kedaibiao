@@ -99,6 +99,30 @@ def _coerce(declared: Any, raw: str) -> Any:
     return raw
 
 
+def resolve_environ(
+    root: str | Path = ".",
+    *,
+    environ: dict[str, str] | None = None,
+    use_dotenv: bool = True,
+) -> dict[str, str]:
+    """算出「本次运行到底认哪些环境变量」。
+
+    优先级：``.env`` 文件 < 真实环境变量（CI/容器里临时导出的值永远压过文件）。
+
+    为什么要有这个函数：``load_settings`` 只把合并结果用于自身的配置字段，
+    而凭据（``security.load_credentials``）与 ``doctor`` 的平台扫描都要读同一份
+    环境。早期版本让它们各自读 ``os.environ``，结果是 **``.env`` 里的凭据
+    根本到不了凭据层** —— 整合指南承诺的优先级形同虚设。
+
+    这里刻意**不回写 ``os.environ``**：全局副作用会让测试之间互相污染，
+    也让「这次到底读了哪些环境变量」变得不可追踪。显式传下去更清楚。
+    """
+    if environ is not None:
+        return dict(environ)
+    file_env = parse_dotenv(Path(root) / ".env") if use_dotenv else {}
+    return {**file_env, **os.environ}
+
+
 def load_settings(
     *,
     root: str | Path = ".",
@@ -111,11 +135,12 @@ def load_settings(
     优先** —— 这样 CI/容器里临时导出的值永远压过仓库里的文件。
 
     显式传入 ``environ`` 时完全不读 ``.env``，便于测试。
+
+    ⚠️ 凭据不走这里。要读平台凭据请用 :func:`kedaibiao.config.resolve_environ`
+    拿到同一份环境，再传给 ``security.load_credentials(..., environ=...)``。
     """
     root = Path(root)
-    if environ is None:
-        file_env = parse_dotenv(root / ".env") if use_dotenv else {}
-        environ = {**file_env, **os.environ}
+    resolved = resolve_environ(root, environ=environ, use_dotenv=use_dotenv)
 
     settings = Settings()
     for rel in ("config/default.toml", "config/local.toml"):
@@ -127,4 +152,4 @@ def load_settings(
         # 允许 [kedaibiao] 包裹，也允许平铺
         section = data.get("kedaibiao", data)
         settings = settings.merged({k: v for k, v in section.items() if not isinstance(v, dict)})
-    return settings.with_env(environ)
+    return settings.with_env(resolved)

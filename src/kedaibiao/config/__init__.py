@@ -5,7 +5,7 @@ from kedaibiao.config.dotenv import (
     load_dotenv,
     parse_dotenv,
 )
-from kedaibiao.config.settings import Settings, load_settings
+from kedaibiao.config.settings import Settings, load_settings, resolve_environ
 
 __all__ = [
     "DotEnvSyntaxError",
@@ -13,4 +13,5 @@ __all__ = [
     "load_dotenv",
     "load_settings",
     "parse_dotenv",
+    "resolve_environ",
 ]

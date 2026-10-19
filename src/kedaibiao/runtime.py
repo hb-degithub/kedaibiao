@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from kedaibiao import adapters
 from kedaibiao.bank.store import ProgressStore, QuestionBank
-from kedaibiao.config.settings import Settings, load_settings
+from kedaibiao.config.settings import Settings, load_settings, resolve_environ
 from kedaibiao.core.events import EventBus
 from kedaibiao.core.scheduler import Scheduler
 from kedaibiao.net.http import HttpClient, UrllibTransport
@@ -83,6 +83,10 @@ class Runtime:
     bus: EventBus
     pipeline: Pipeline
     notifier: Notifier
+    #: 本次运行认的环境变量快照（``.env`` + 真实环境变量）。
+    #: 凭据必须走这一份，不能各自去读 ``os.environ`` —— 否则 ``.env`` 里的
+    #: 凭据到不了凭据层。
+    environ: dict[str, str] = field(default_factory=dict)
 
     def make_adapter(self, platform: str) -> PlatformAdapter:
         if platform not in adapters:
@@ -102,7 +106,11 @@ class Runtime:
     async def run(self, platform: str, *, credentials: Any = None) -> PipelineReport:
         # 先确认平台存在，再要凭据 —— 否则没注册的平台会先报「缺凭据」，误导排查方向
         adapter = self.make_adapter(platform)
-        creds = credentials if credentials is not None else load_credentials(platform, require=True)
+        creds = (
+            credentials
+            if credentials is not None
+            else load_credentials(platform, require=True, environ=self.environ)
+        )
         try:
             return await self.pipeline.run(adapter, creds)
         finally:
@@ -125,8 +133,11 @@ def build_runtime(
     root: str | Path = ".",
     settings: Settings | None = None,
     config: PipelineConfig | None = None,
+    environ: dict[str, str] | None = None,
 ) -> Runtime:
-    settings = settings or load_settings(root=root)
+    # 先算一次「本次认哪些环境变量」，配置与凭据共用同一份
+    resolved_env = resolve_environ(root, environ=environ)
+    settings = settings or load_settings(root=root, environ=resolved_env)
 
     bus = EventBus()
     bank = QuestionBank(settings.db_path)
@@ -157,4 +168,5 @@ def build_runtime(
         bus=bus,
         pipeline=pipeline,
         notifier=notifier,
+        environ=resolved_env,
     )

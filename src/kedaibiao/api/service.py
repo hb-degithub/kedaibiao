@@ -21,7 +21,7 @@ from typing import Any
 
 from kedaibiao import __version__, adapters
 from kedaibiao.bank.store import ProgressStore, QuestionBank, record_to_dict
-from kedaibiao.config.settings import Settings, load_settings
+from kedaibiao.config.settings import Settings, load_settings, resolve_environ
 from kedaibiao.core.models import TaskKind
 from kedaibiao.runtime import build_runtime
 from kedaibiao.security.credentials import CredentialError, load_credentials
@@ -74,6 +74,7 @@ class ConsoleService:
     def __init__(self, *, root: str | Path = ".", settings: Settings | None = None) -> None:
         self.root = Path(root)
         self._settings = settings  # 懒加载；每次跑批都会重新读配置
+        self._environ: dict[str, str] | None = None
         self._lock = threading.RLock()
         self._jobs: list[dict[str, Any]] = []
         self._jobs_by_id: dict[str, dict[str, Any]] = {}
@@ -86,8 +87,19 @@ class ConsoleService:
     @property
     def settings(self) -> Settings:
         if self._settings is None:
-            self._settings = load_settings(root=self.root)
+            self._settings = load_settings(root=self.root, environ=self.environ)
         return self._settings
+
+    @property
+    def environ(self) -> dict[str, str]:
+        """本次运行认的环境变量快照（``.env`` + 真实环境变量）。
+
+        凭据与平台扫描都要走这一份，不能各自去读 ``os.environ`` ——
+        否则 ``.env`` 里配的凭据在控制台上会显示成「未配置」。
+        """
+        if self._environ is None:
+            self._environ = resolve_environ(self.root)
+        return self._environ
 
     def _db_path(self) -> Path:
         return self.settings.db_path
@@ -141,7 +153,7 @@ class ConsoleService:
 
         credentialed = [
             name for name in adapters.names()
-            if load_credentials(name, require=False) is not None
+            if load_credentials(name, require=False, environ=self.environ) is not None
         ]
 
         return {
@@ -171,7 +183,7 @@ class ConsoleService:
                 "name": name,
                 "display_name": getattr(cls, "display_name", "") or name,
                 "capabilities": _jsonable(caps) if caps is not None else {},
-                "has_credentials": load_credentials(name, require=False) is not None,
+                "has_credentials": load_credentials(name, require=False, environ=self.environ) is not None,
             })
         return {"platforms": items}
 
@@ -243,7 +255,7 @@ class ConsoleService:
         # 干跑也要登录（要拉课程才能规划），所以凭据一律前置校验 ——
         # 放在这里比让后台线程抛异常再标 failed 更容易排查。
         try:
-            load_credentials(platform, require=True)
+            load_credentials(platform, require=True, environ=self.environ)
         except CredentialError as exc:
             raise ConsoleError(str(exc), kind="no_credentials", status=400) from exc
 

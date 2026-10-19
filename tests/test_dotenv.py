@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest import mock
 
 from kedaibiao.config.dotenv import DotEnvSyntaxError, load_dotenv, parse_dotenv
-from kedaibiao.config.settings import load_settings
+from kedaibiao.config.settings import load_settings, resolve_environ
+from kedaibiao.security.credentials import load_credentials
 
 
 def _write(tmp: str, content: str) -> Path:
@@ -149,6 +150,59 @@ class TestLoadSettingsWithDotenv(unittest.TestCase):
             )
             settings = load_settings(root=tmp, environ={})
             self.assertEqual(settings.max_concurrency, 3)
+
+
+class TestResolveEnviron(unittest.TestCase):
+    """`resolve_environ` 是配置与凭据共用的唯一环境来源。
+
+    回归背景：早期 `load_settings` 只把 `.env` 合进局部字典，凭据层却自己读
+    `os.environ`，导致 `.env` 里配的凭据在 CLI/控制台上完全看不见。
+    """
+
+    def test_file_then_real_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".env").write_text(
+                "KEDAIBIAO_A=from_file\nKEDAIBIAO_B=from_file\n", encoding="utf-8"
+            )
+            with mock.patch.dict(os.environ, {"KEDAIBIAO_B": "from_shell"}, clear=True):
+                env = resolve_environ(tmp)
+            self.assertEqual(env["KEDAIBIAO_A"], "from_file")
+            self.assertEqual(env["KEDAIBIAO_B"], "from_shell", "真实环境变量优先")
+
+    def test_explicit_environ_ignores_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".env").write_text("KEDAIBIAO_A=from_file\n", encoding="utf-8")
+            self.assertEqual(resolve_environ(tmp, environ={"X": "1"}), {"X": "1"})
+
+    def test_use_dotenv_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".env").write_text("KEDAIBIAO_A=from_file\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertNotIn("KEDAIBIAO_A", resolve_environ(tmp, use_dotenv=False))
+
+    def test_does_not_mutate_os_environ(self) -> None:
+        """刻意不回写 os.environ —— 全局副作用会污染测试与调用方。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".env").write_text("KEDAIBIAO_SIDE_EFFECT=1\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                resolve_environ(tmp)
+                self.assertNotIn("KEDAIBIAO_SIDE_EFFECT", os.environ)
+
+    def test_settings_and_credentials_share_one_source(self) -> None:
+        """同一个 root 下，配置与凭据必须看到同一份环境。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".env").write_text(
+                "KEDAIBIAO_MAX_CONCURRENCY=9\nKEDAIBIAO_UNIPUS_USER=stu\n"
+                "KEDAIBIAO_UNIPUS_PASS=pw\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {}, clear=True):
+                env = resolve_environ(tmp)
+                settings = load_settings(root=tmp, environ=env)
+                creds = load_credentials("unipus", environ=env)
+            self.assertEqual(settings.max_concurrency, 9)
+            assert creds is not None
+            self.assertEqual(creds.username, "stu")
 
 
 if __name__ == "__main__":

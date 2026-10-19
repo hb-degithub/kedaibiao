@@ -220,6 +220,37 @@ class CliRunIntegrationTest(unittest.TestCase):
         report = asyncio.run(runtime.run(PLATFORM, credentials=Credentials("u", "p")))
         self.assertEqual(report.succeeded, 1)
 
+    def test_credentials_come_from_dotenv(self) -> None:
+        """回归测试：只写在 .env 里的凭据必须能被 CLI 取到。
+
+        早期 `load_settings` 只把 `.env` 合进局部字典，而凭据层自己读
+        `os.environ`，结果是 `.env` 里配了凭据却报「未找到凭据」。
+        """
+        (self.root / ".env").write_text(
+            f"KEDAIBIAO_{PLATFORM.upper()}_USER=fromfile\n"
+            f"KEDAIBIAO_{PLATFORM.upper()}_PASS=fromfile\n",
+            encoding="utf-8",
+        )
+        # 环境里什么都没有，只有 .env 有
+        code = self._run(["run", PLATFORM, "--root", str(self.root)], {})
+        self.assertEqual(code, 0, "只写在 .env 里的凭据必须生效")
+
+    def test_dotenv_does_not_leak_into_os_environ(self) -> None:
+        key = f"KEDAIBIAO_{PLATFORM.upper()}_USER"
+        (self.root / ".env").write_text(f"{key}=fromfile\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self._run(["run", PLATFORM, "--root", str(self.root)], {})
+            self.assertNotIn(key, os.environ, "不该有全局副作用")
+
+    def test_resolve_environ_explicit_wins_over_dotenv(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            runtime = build_runtime(
+                root=self.root,
+                environ={f"KEDAIBIAO_{PLATFORM.upper()}_USER": "explicit"},
+            )
+        self.addCleanup(runtime.close)
+        self.assertEqual(runtime.environ[f"KEDAIBIAO_{PLATFORM.upper()}_USER"], "explicit")
+
 
 if __name__ == "__main__":
     unittest.main()

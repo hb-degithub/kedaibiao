@@ -14,7 +14,7 @@ from pathlib import Path
 
 from kedaibiao import __version__, adapters
 from kedaibiao.bank.store import QuestionBank, ProgressStore
-from kedaibiao.config.settings import load_settings
+from kedaibiao.config.settings import load_settings, resolve_environ
 from kedaibiao.core.models import TaskKind
 from kedaibiao.platforms import load_builtin_adapters
 from kedaibiao.runtime import build_runtime
@@ -155,7 +155,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"存储   : ✗ 不可写 {db}: {exc}")
         ok = False
 
-    configured = available_platforms()
+    configured = available_platforms(resolve_environ(args.root))
     if configured:
         print(f"凭据   : ✓ 已配置 {', '.join(configured)}（值不显示）")
     else:
