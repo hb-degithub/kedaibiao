@@ -2197,6 +2197,7 @@
   };
 
   var GRADER_EVENT_TEXT = {
+    'attempt.existing': '发现已有稿件（{eid}，{raw_state}）—— 先取分，不提交',
     'attempt.start': '开始第 {attempt} 轮',
     'attempt.submitted': '已提交（稿件号 {eid}）',
     'attempt.analysis': '分析中… （{tick}）',
@@ -2447,9 +2448,9 @@
 
   function graderAttemptCard(a) {
     var card = el('details', 'grader-attempt');
-    var summary = '第 ' + a.attempt + ' 轮 · ' +
-      (a.graded ? (a.score_label + ' 分') : (a.raw_state || '未出分')) +
-      ' · ' + (a.word_count || 0) + ' 词';
+    var summary = (a.attempt === 0 ? '现有稿件（未重新提交）' : ('第 ' + a.attempt + ' 轮')) +
+      ' · ' + (a.graded ? (a.score_label + ' 分') : (a.raw_state || '未出分')) +
+      (a.word_count ? (' · ' + a.word_count + ' 词') : '');
     card.appendChild(el('summary', '', summary));
 
     if (a.dimensions && a.dimensions.length) {
@@ -2488,7 +2489,8 @@
   function graderStart() {
     if (!grader.platform || !grader.rid) { return; }
     var msg = '这会真的反复提交作文（最多 ' + grader.maxAttempts + ' 轮），' +
-      '直到达到 ' + grader.target + ' 分或轮次用尽。\n\n提交不可撤销，确定继续？';
+      '会先读取已有稿件的分数：分够了就停、不会重交；只有低于 ' + grader.target +
+      ' 分且拿到批注时，才改写后再提交。\n\n提交不可撤销，确定继续？';
     if (!window.confirm(msg)) { return; }
 
     grader.busy = true; grader.error = ''; grader.note = '';
@@ -2505,7 +2507,7 @@
       graderPoll(job.job_id);
     }).catch(function (err) {
       grader.busy = false;
-      grader.error = err && err.message ? err.message : String(err);
+      grader.error = describeError(err, { platform: grader.platform });
       graderRender();
     });
   }
@@ -2525,7 +2527,7 @@
     }).catch(function (err) {
       graderStopPolling();
       grader.busy = false;
-      grader.error = err && err.message ? err.message : String(err);
+      grader.error = describeError(err, { platform: grader.platform });
       graderRender();
     });
   }
@@ -2550,7 +2552,7 @@
       graderRender();
     }).catch(function (err) {
       grader.busy = false; grader.note = '';
-      grader.error = err && err.message ? err.message : String(err);
+      grader.error = describeError(err, { platform: grader.platform });
       graderRender();
     });
   }
@@ -5791,7 +5793,8 @@
   /* 自测钩子（只在 ?debug=1 时挂）：把自动化标成「运行中」，用来验证切换拦截。
      正常访问时不存在，不参与任何业务逻辑。 */
   if (/[?&]debug=1\b/.test(location.search)) {
-    window.__kdbGraderDebug = function (stopReason) {
+    window.__kdbGraderDebug = function (stopReason, fakeErr) {
+      grader.error = fakeErr ? describeError(fakeErr, { platform: 'pigai' }) : '';
       grader.job = {
         job_id: 'debug-grade', status: 'failed', stop_reason: stopReason || 'timeout',
         message: '等待分析超时（180s）。稿件号 900000001 已提交，可以「继续等待 N 秒」或「手动获取一次」。',

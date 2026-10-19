@@ -195,19 +195,110 @@ class GradeLoop:
             log.debug("on_event 回调失败", exc_info=True)
 
     async def run(self, *, rid: str, topic: str, initial_essay: str) -> GradeLoopResult:
+        """跑一轮「取分 → 看分 → 决定是否改写重交」的循环。
+
+        **顺序很重要**：先读已有稿件的分数并展示，分够了就停、绝不重交；
+        只有「确实低于目标分」且「拿到了批注」时，才会改写后再提交。
+        """
         from kedaibiao.platforms.pigai import grading
 
         result = GradeLoopResult(rid=rid, target_score=self.target_score,
                                  stop_reason=STOP_ERROR)
         essay = initial_essay
         eid = ""
+        current: Any = None
+
+        # ① 先看有没有已经交过的稿子（有就先取分，不提交）
+        existing = await self._probe_existing(rid)
+        if existing is not None:
+            eid = str(getattr(existing, "eid", "") or "")
+            state = str(getattr(existing, "score_raw", "") or "")
+            self._emit("attempt.existing", eid=eid, raw_state=state,
+                       submit_count=getattr(existing, "submit_count", 0))
+            try:
+                current = await grading.fetch_snapshot(self.adapter, rid=rid, eid=eid)
+                if not current.graded and current.raw_state in grading.PENDING_STATES:
+                    # 交过但还没出分：再等等看（超时不算失败，交给用户决定）
+                    current = await grading.wait_for_grade(
+                        self.adapter, self.http, base=self.base, rid=rid, eid=eid,
+                        timeout=self.analysis_timeout,
+                        on_tick=lambda i, st, _t: self._emit(
+                            "attempt.analysis", attempt=0, tick=i, state=st),
+                    )
+            except grading.AnalysisTimeout as exc:
+                result.final_eid = eid
+                result.stop_reason = STOP_TIMEOUT
+                result.message = (
+                    f"已有稿件（{eid}）还没出分：{exc}。"
+                    "可以「继续等待 N 秒」或「手动获取一次」，不需要重新提交。"
+                )
+                self._emit("attempt.timeout", attempt=0, eid=eid, error=str(exc))
+                self._emit("loop.finish", stop_reason=result.stop_reason,
+                           best_score=None, message=result.message)
+                return result
+            except Exception as exc:  # noqa: BLE001 - 读不到分就按未出分处理
+                self._emit("attempt.error", attempt=0,
+                           error=f"{type(exc).__name__}: {exc}")
+                current = None
+
+            if current is not None and current.graded:
+                record = self._record_from_snapshot(0, current, eid)
+                result.attempts.append(record)
+                result.final_eid = eid
+                result.best_score = record.score
+                self._emit("attempt.graded", attempt=0, existing=True,
+                           score=record.score, graded=True,
+                           raw_state=record.raw_state,
+                           feedback_count=len(record.feedback))
+                if record.score is not None and record.score >= self.target_score:
+                    result.stop_reason = STOP_REACHED
+                    result.message = (
+                        f"已有稿件 {record.score:g} 分，已达目标 {self.target_score:g} —— "
+                        "不需要重新提交。"
+                    )
+                    self._emit("loop.finish", stop_reason=result.stop_reason,
+                               best_score=result.best_score, message=result.message)
+                    return result
+                # 低于目标：基于原稿改写（拿得到正文就用原稿）
+                if current.essay_text.strip():
+                    essay = current.essay_text
+            elif current is not None:
+                result.stop_reason = STOP_UNAVAILABLE
+                result.message = (
+                    f"已有稿件（{eid}）平台还没给分（{current.raw_state or '待分析'}）。"
+                    "未到截止时间的作业不公布分数 —— 继续交也不会有分，先别重交。"
+                )
+                self._emit("loop.finish", stop_reason=result.stop_reason,
+                           best_score=None, message=result.message)
+                return result
 
         for attempt in range(1, self.max_attempts + 1):
+            # ② 分已经看到了：够了就停，不够才改写重交
+            if current is not None and current.graded:
+                if self.rewrite is None:
+                    result.stop_reason = STOP_EXHAUSTED
+                    result.message = (
+                        f"当前 {current.score:g} 分，未达目标 {self.target_score:g}；"
+                        "没有配置改写器，无法继续提高分数"
+                    )
+                    break
+                self._emit("attempt.rewriting", attempt=attempt,
+                           score=current.score)
+                try:
+                    essay = await self.rewrite(current, essay, attempt)
+                except Exception as exc:  # noqa: BLE001
+                    result.stop_reason = STOP_ERROR
+                    result.message = f"改写失败：{type(exc).__name__}: {exc}"
+                    break
+                if not essay or not essay.strip():
+                    result.stop_reason = STOP_ERROR
+                    result.message = "改写返回了空正文"
+                    break
+
             self._emit("attempt.start", attempt=attempt, word_count=_word_count(essay))
             record = AttemptRecord(attempt=attempt, essay_text=essay)
 
             try:
-                # 交
                 from kedaibiao.core.models import Answer, AnswerSource
 
                 assignment = await self._assignment(rid)
@@ -228,15 +319,14 @@ class GradeLoop:
                     result.message = record.note
                     break
 
-                # 等分
                 snapshot = await grading.wait_for_grade(
                     self.adapter, self.http, base=self.base, rid=rid, eid=eid,
                     timeout=self.analysis_timeout,
-                    on_tick=lambda i, s, _t: self._emit("attempt.analysis",
-                                                        attempt=attempt, tick=i, state=s),
+                    on_tick=lambda i, s2, _t: self._emit("attempt.analysis",
+                                                         attempt=attempt, tick=i,
+                                                         state=s2),
                 )
             except grading.AnalysisTimeout as exc:
-                # 超时不是失败：稿子已经交了，只是还没批完 → 停下让用户决定再等多久
                 record.note = f"等批改超时：{exc}"
                 result.attempts.append(record)
                 self._emit("attempt.timeout", attempt=attempt, eid=eid,
@@ -266,6 +356,7 @@ class GradeLoop:
             record.overall = str(data.get("overall_comment") or "")
             result.attempts.append(record)
             result.final_eid = eid
+            current = snapshot
 
             if record.graded and record.score is not None:
                 if result.best_score is None or record.score > result.best_score:
@@ -274,7 +365,7 @@ class GradeLoop:
                        graded=record.graded, raw_state=record.raw_state,
                        feedback_count=len(record.feedback))
 
-            # 判停
+            # ③ 看到分之后再决定停 / 继续
             if record.graded and record.score is not None and record.score >= self.target_score:
                 result.stop_reason = STOP_REACHED
                 result.message = (
@@ -296,26 +387,36 @@ class GradeLoop:
                 )
                 break
 
-            # 改写进入下一轮
-            if self.rewrite is None:
-                result.stop_reason = STOP_EXHAUSTED
-                result.message = "没有配置改写器，无法继续提高分数"
-                break
-            self._emit("attempt.rewriting", attempt=attempt)
-            try:
-                essay = await self.rewrite(snapshot, essay, attempt + 1)
-            except Exception as exc:  # noqa: BLE001
-                result.stop_reason = STOP_ERROR
-                result.message = f"改写失败：{type(exc).__name__}: {exc}"
-                break
-            if not essay or not essay.strip():
-                result.stop_reason = STOP_ERROR
-                result.message = "改写返回了空正文"
-                break
-
         self._emit("loop.finish", stop_reason=result.stop_reason,
                    best_score=result.best_score, message=result.message)
         return result
+
+    async def _probe_existing(self, rid: str) -> Any:
+        """已提交作文列表里属于这个 rid 的最新一行（没有返回 None）。"""
+        try:
+            rows = await self.adapter.list_finished_essays()
+        except Exception:  # noqa: BLE001 - 探测失败就当作没有旧稿
+            return None
+        for row in rows:
+            if str(getattr(row, "rid", "")) == str(rid):
+                return row
+        return None
+
+    @staticmethod
+    def _record_from_snapshot(attempt: int, snapshot: Any, eid: str) -> AttemptRecord:
+        data = snapshot.to_dict()
+        return AttemptRecord(
+            attempt=attempt,
+            eid=eid,
+            score=data.get("score"),
+            full_marks=data.get("full_marks"),
+            graded=bool(data.get("graded")),
+            raw_state=str(data.get("raw_state") or ""),
+            essay_text=str(getattr(snapshot, "essay_text", "") or ""),
+            feedback=list(data.get("feedback_lines") or []),
+            dimensions=list(data.get("dimensions") or []),
+            overall=str(data.get("overall_comment") or ""),
+        )
 
     async def _assignment(self, rid: str) -> Any:
         """把 rid 还原成 Assignment（提交只需要 remote_id 与 title）。"""
