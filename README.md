@@ -211,6 +211,34 @@ M1 的验收标准是「只读跑通」—— 在没有任何一次写操作的�
 
 ## 10. 许可
 
-**待定。** 当前 `pyproject.toml` 标记为 `Proprietary`（保留所有权利），
-尚未选定开源许可。选定前请勿分发。
+**GNU Affero General Public License v3.0（AGPL-3.0-only）**，全文见 [LICENSE](LICENSE)。
+
+```
+Copyright (C) 2026  HB <wzdshb@126.com>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, version 3 of the License.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+```
+
+### 这对「接入别的平台」意味着什么
+
+AGPL-3.0 是**强传染**许可，且覆盖网络服务（第 13 条：通过网络提供服务也算分发，
+必须向用户提供完整源码）。因此：
+
+- ✅ 并入的第三方代码必须是 **AGPL 兼容**的（MIT / BSD / Apache-2.0 / ISC / GPL 都可以）；
+- ❌ **不能**并入带附加限制的代码 —— 包括「禁止商用」「衍生作品须同等条款」
+  「仅限非商业使用」这类条款。AGPL-3.0 第 7 条明确不允许附加限制。
+  具体到本项目：[`Yunlk/uai-core`](https://github.com/Yunlk/uai-core) 就属于这一类，
+  **不能并入本仓库**，详见 [docs/license-policy.md](docs/license-policy.md)。
+
+接入新平台时，请先过一遍 [docs/license-policy.md](docs/license-policy.md) 的决策流程。
+
+> 想改用 `AGPL-3.0-or-later`（允许未来升到 AGPL-4.0）：把 `pyproject.toml` 的
+> `license` 改成 `"AGPL-3.0-or-later"` 即可，其余不变。
 

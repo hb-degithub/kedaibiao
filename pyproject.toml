@@ -8,7 +8,10 @@ version = "0.1.0"
 description = "课代表 —— 多平台作业/课程一体化自动化框架"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
+# SPDX 表达式（PEP 639）。注意：AGPL-3.0-only 意味着任何并入本项目的
+# 第三方代码都必须是 AGPL 兼容的 —— 非商业/附加限制类协议（如 uai-core）不可并入。
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 authors = [{ name = "HB", email = "wzdshb@126.com" }]
 keywords = ["automation", "playwright", "framework", "courseware"]
 

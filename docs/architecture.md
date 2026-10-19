@@ -181,8 +181,8 @@ Pipeline.run(adapter, credentials)
 
 ## 7. 已知待办
 
-- 仓库尚无 `LICENSE` 文件，`pyproject.toml` 标记 `Proprietary`，许可待定。
-- `pyproject.toml` 的 `license = { text = ... }` 是 PEP 639 之前的写法，
-  选定许可后应改为 SPDX 表达式字符串。
 - 东软系具体平台清单未落地：`platforms/neusoft/` 目前只有包占位。
   接入前需要先做一次平台调研（登录协议、题型、端点），产出放进 `docs/research/`。
+- 本项目许可已定为 `AGPL-3.0-only`（见 `LICENSE` 与
+  [license-policy.md](license-policy.md)）。**接入任何第三方代码前必须先过
+  兼容性检查** —— AGPL 第 7 条禁止附加限制，非商业/同等条款类协议一律不可并入。
