@@ -8,7 +8,7 @@
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'none'; base-uri 'none'">
 <title>课代表 kedaibiao · 控制台</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=20261019c">
 </head>
 <body>
 
@@ -340,6 +340,7 @@
               <div class="action-submit">
                 <button id="assignments-submit" class="btn btn-run" type="submit">加载作业</button>
                 <button id="assignments-reload" class="btn" type="button">清空并重新加载全部</button>
+                <button id="auto-reopen" class="btn" type="button" hidden>继续查看自动化</button>
                 <span id="assignments-state" class="field-hint"></span>
               </div>
             </form>
@@ -989,6 +990,6 @@
   });
 })();
 </script>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20261019c"></script>
 </body>
 </html>

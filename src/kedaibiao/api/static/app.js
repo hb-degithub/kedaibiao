@@ -1059,6 +1059,8 @@
     }
     /* 抽屉里的详情/提交是「某个平台某个作业」的，切平台或切页就关掉，避免张冠李戴。 */
     if (changedPage || changedPlat) { closeDrawer(); }
+    /* 一键自动化同理：面板属于「某个平台某场考试」，切走就收起（后台任务不动）。 */
+    if (changedPage || changedPlat) { closeAuto(true); }
     renderChrome();
     showPage();
     if (changedPage || changedPlat) { loadPageData(); }
@@ -1243,6 +1245,7 @@
       : '未选择平台';
     setText('courses-scope', platHint);
     setText('assignments-scope', platHint);
+    if (typeof renderAutoReopen === 'function') { renderAutoReopen(); }
     setText('bank-scope', platHint);
     setText('tools-scope', platHint);
     setText('logs-scope', '作用域：' + scope +
@@ -1919,7 +1922,15 @@
     var title = assignmentTitleOf(rowObj);
     var out = [];
 
-    /* iTEST 的作答/交卷在浏览器里完成，给它一个「一键自动化」入口 */
+    var bDetail = el('button', 'btn btn-sm', '详情');
+    bDetail.type = 'button';
+    bDetail.title = '查看作业详情（只读，POST /api/assignments/detail）；双击这一行同样可以';
+    bDetail.addEventListener('click', function () { openAssignmentDetail(plt, id, rowObj); });
+    out.push(bDetail);
+
+    var reason = submitBlockReason(plt);
+
+    /* iTEST 的作答/交卷在浏览器里完成：给它一个「一键自动化」入口（放在「详情」右边） */
     if (plt === 'itest' && !reason) {
       var bAuto = el('button', 'btn btn-sm btn-warn', '一键自动化');
       bAuto.type = 'button';
@@ -1929,13 +1940,6 @@
       out.push(bAuto);
     }
 
-    var bDetail = el('button', 'btn btn-sm', '详情');
-    bDetail.type = 'button';
-    bDetail.title = '查看作业详情（只读，POST /api/assignments/detail）；双击这一行同样可以';
-    bDetail.addEventListener('click', function () { openAssignmentDetail(plt, id, rowObj); });
-    out.push(bDetail);
-
-    var reason = submitBlockReason(plt);
     var bSub = el('button', 'btn btn-sm ' + (reason ? 'btn-ghost' : 'btn-warn'), '提交');
     bSub.type = 'button';
     bSub.setAttribute('data-submit-for', id);
@@ -5163,6 +5167,7 @@
   function startAuto(plt, examId, rowObj) {
     var a = state.auto;
     if (a.timer) { clearTimeout(a.timer); a.timer = null; }
+    a.last = null;
     a.jobId = null;
     a.job = null;
     a.logCount = 0;
@@ -5506,11 +5511,53 @@
       });
   }
 
-  function closeAuto() {
+  /**
+   * 收起自动化面板。
+   * keepRef=true 时保留 last（job 还在后台跑），作业页会显示「继续查看自动化」入口；
+   * 用户主动点「关闭」则连 last 一起清掉。
+   */
+  function closeAuto(keepRef) {
     var a = state.auto;
     if (a.timer) { clearTimeout(a.timer); a.timer = null; }
     var panel = autoEl('auto-panel');
     if (panel) { panel.hidden = true; }
+    if (a.jobId) {
+      a.last = keepRef ? {
+        jobId: a.jobId, platform: a.platform, examId: a.examId,
+        title: a.title, status: (a.job && a.job.status) || 'running'
+      } : null;
+    }
+    a.jobId = keepRef ? a.jobId : null;
+    if (!keepRef) { a.job = null; a.manual = {}; }
+    renderAutoReopen();
+  }
+
+  /* 作业页顶部的「继续查看自动化」入口：只在 iTEST 且有上一次任务时出现 */
+  function renderAutoReopen() {
+    var btn = $('auto-reopen');
+    if (!btn) { return; }
+    var last = state.auto.last;
+    var show = !!(last && state.platform === 'itest');
+    btn.hidden = !show;
+    if (show) {
+      btn.textContent = '继续查看自动化 · ' + (last.title || last.examId);
+      btn.title = '任务 ' + last.jobId + '（' + (last.status || 'running') + '）仍在后台，点开看日志';
+    }
+  }
+
+  function reopenAuto() {
+    var a = state.auto;
+    var last = a.last;
+    if (!last) { return; }
+    a.jobId = last.jobId;
+    a.platform = last.platform || 'itest';
+    a.examId = last.examId;
+    a.title = last.title;
+    var panel = autoEl('auto-panel');
+    if (panel) { panel.hidden = false; panel.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    setText('auto-hint', 'iTEST · ' + (last.title || last.examId));
+    setText('auto-status', '恢复查看 · ' + last.jobId);
+    pollAuto();
   }
 
   function bindEvents() {
@@ -5546,7 +5593,8 @@
     window.addEventListener('hashchange', function () { applyRoute(); });
 
     /* 一键自动化面板 */
-    if ($('auto-close')) { $('auto-close').addEventListener('click', closeAuto); }
+    if ($('auto-close')) { $('auto-close').addEventListener('click', function () { closeAuto(false); }); }
+    if ($('auto-reopen')) { $('auto-reopen').addEventListener('click', reopenAuto); }
     if ($('auto-manual-save')) { $('auto-manual-save').addEventListener('click', saveManual); }
     if ($('auto-submit')) { $('auto-submit').addEventListener('click', submitAuto); }
 
