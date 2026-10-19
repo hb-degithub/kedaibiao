@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from importlib.util import find_spec
@@ -14,7 +15,10 @@ from pathlib import Path
 from kedaibiao import __version__, adapters
 from kedaibiao.bank.store import QuestionBank, ProgressStore
 from kedaibiao.config.settings import load_settings
-from kedaibiao.security.credentials import available_platforms
+from kedaibiao.core.models import TaskKind
+from kedaibiao.runtime import build_runtime
+from kedaibiao.security.credentials import CredentialError, available_platforms
+from kedaibiao.tasks.pipeline import PipelineConfig
 
 OPTIONAL_DEPS = {
     "playwright": "浏览器自动化（必需，才能真跑平台）",
@@ -25,27 +29,48 @@ OPTIONAL_DEPS = {
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # ``--root`` 允许出现在子命令前后两个位置。
+    # 子命令那一份用 SUPPRESS 作默认值，这样「没写」时不会把全局那份的值冲掉。
+    root_parent = argparse.ArgumentParser(add_help=False)
+    root_parent.add_argument("--root", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+
     parser = argparse.ArgumentParser(
         prog="kedaibiao",
         description="课代表 —— 多平台作业/课程一体化自动化框架",
     )
     parser.add_argument("--version", action="version", version=f"kedaibiao {__version__}")
-    parser.add_argument("--root", default=".", help="项目根目录（读取 config/ 用）")
+    parser.add_argument("--root", default=".", help="项目根目录（读取 config/ 与 .env）")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("platforms", help="列出已注册的平台适配器")
-    sub.add_parser("doctor", help="自检运行环境")
-    sub.add_parser("config", help="打印生效配置（已脱敏）")
+    sub.add_parser("platforms", parents=[root_parent], help="列出已注册的平台适配器")
+    sub.add_parser("doctor", parents=[root_parent], help="自检运行环境")
+    sub.add_parser("config", parents=[root_parent], help="打印生效配置（已脱敏）")
 
-    stats = sub.add_parser("bank-stats", help="题库与跑批统计")
+    run_p = sub.add_parser(
+        "run", parents=[root_parent], help="对某个平台跑一次任务流水线"
+    )
+    run_p.add_argument("platform", help="平台机器名（先用 platforms 子命令查看）")
+    run_p.add_argument(
+        "--live",
+        action="store_true",
+        help="真正提交（不加则干跑：只规划、不产生任何写操作）",
+    )
+    run_p.add_argument("--limit", type=int, default=0, help="最多处理多少个作业，0 表示不限")
+    run_p.add_argument(
+        "--kinds",
+        default="",
+        help="只处理这些类型，逗号分隔：course,homework,exam,practice",
+    )
+
+    stats = sub.add_parser("bank-stats", parents=[root_parent], help="题库与跑批统计")
     stats.add_argument("--db", default=None, help="覆盖配置里的数据库路径")
     stats.add_argument("--runs", type=int, default=10, help="显示最近多少条执行记录")
 
-    export = sub.add_parser("bank-export", help="导出题库为 JSONL")
+    export = sub.add_parser("bank-export", parents=[root_parent], help="导出题库为 JSONL")
     export.add_argument("out", help="输出文件路径")
     export.add_argument("--db", default=None)
 
-    imp = sub.add_parser("bank-import", help="从 JSONL 导入题库")
+    imp = sub.add_parser("bank-import", parents=[root_parent], help="从 JSONL 导入题库")
     imp.add_argument("src", help="输入文件路径")
     imp.add_argument("--db", default=None)
 
@@ -173,6 +198,68 @@ def cmd_bank_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_kinds(raw: str) -> frozenset[TaskKind]:
+    if not raw.strip():
+        return frozenset()
+    kinds = set()
+    for part in raw.split(","):
+        name = part.strip()
+        if name:
+            kinds.add(TaskKind(name))  # 非法值抛 ValueError，由调用方转成友好提示
+    return frozenset(kinds)
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    settings = load_settings(root=args.root)
+
+    try:
+        kinds = _parse_kinds(args.kinds)
+    except ValueError as exc:
+        valid = ", ".join(k.value for k in TaskKind)
+        print(f"✗ 未知的任务类型 {exc}；可选：{valid}")
+        return 2
+
+    if args.live:
+        # 这一步之后所有写操作都不可撤销，所以把将要发生的事先摆出来
+        settings = settings.merged({"dry_run": False})
+        print("=" * 64)
+        print("⚠️  --live：本次会**真正提交**作业，写操作不可撤销。")
+        print(f"    平台={args.platform}  并发={settings.max_concurrency}  "
+              f"置信度阈值={settings.min_confidence}")
+        if args.limit:
+            print(f"    本次最多处理 {args.limit} 个作业")
+        print("=" * 64)
+    else:
+        print("干跑模式：只规划不提交（要真提交请加 --live）")
+
+    config = PipelineConfig(
+        dry_run=settings.dry_run,
+        min_confidence=settings.min_confidence,
+        kinds=kinds,
+        max_assignments=args.limit,
+    )
+
+    runtime = build_runtime(root=args.root, settings=settings, config=config)
+    try:
+        report = asyncio.run(runtime.run(args.platform))
+    except CredentialError as exc:
+        print(f"✗ {exc}")
+        return 2
+    except KeyError as exc:
+        # KeyError 的 str() 会给消息再套一层引号，这里取原始消息
+        print(f"✗ {exc.args[0] if exc.args else exc}")
+        return 2
+    finally:
+        runtime.close()
+
+    print()
+    print(report.summary())
+    for record in report.records:
+        note = record.error or str(record.detail.get("reason", ""))
+        print(f"  [{record.status.value:<9s}] {record.assignment_id:<28s} {note}")
+    return 0 if report.failed == 0 else 1
+
+
 HANDLERS = {
     "platforms": cmd_platforms,
     "config": cmd_config,
@@ -180,6 +267,7 @@ HANDLERS = {
     "bank-stats": cmd_bank_stats,
     "bank-export": cmd_bank_export,
     "bank-import": cmd_bank_import,
+    "run": cmd_run,
 }
 
 

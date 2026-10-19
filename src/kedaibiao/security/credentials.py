@@ -77,9 +77,9 @@ def load_credentials(
         if require:
             raise CredentialError(
                 f"未找到 {platform} 的凭据。请在 .env 或环境变量中设置 "
-                f"{env_key(platform, 'user')}"
-                f"{' 或 ' + env_key(platform, 'token') if platform else ''}"
-                f"（.env.example 有模板，.env 已被 .gitignore 排除）。"
+                f"{env_key(platform, 'user')}（密码用 {env_key(platform, 'pass')}，"
+                f"若平台用令牌则设 {env_key(platform, 'token')}）。"
+                f".env.example 有模板；.env 已被 .gitignore 排除，不会入库。"
             )
         return None
 
