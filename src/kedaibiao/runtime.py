@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -80,6 +81,57 @@ def build_context(
     )
 
 
+
+def session_path(cookie_file: str | Path) -> Path:
+    """会话快照文件路径 —— 与 cookie 文件同目录、同保护级别。"""
+    cookie = Path(cookie_file)
+    return cookie.with_suffix(cookie.suffix + ".session.json")
+
+
+def save_adapter_session(adapter: PlatformAdapter, cookie_file: str | Path) -> bool:
+    """把适配器的会话导出来落盘（没有可导出的就返回 False）。
+
+    有些平台的会话不只在 cookie 里（bearer token / 平台自己的登录态载荷），
+    只存 cookie 的话进程重启就得重新登录 —— 而账号库刻意不存密码，
+    于是这类平台会卡在「需要账号密码」上。
+    """
+    export = getattr(adapter, "export_session", None)
+    if export is None:
+        return False
+    data = export()
+    if not data:
+        return False
+    path = session_path(cookie_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return True
+
+
+def restore_adapter_session(adapter: PlatformAdapter, cookie_file: str | Path) -> bool:
+    """从磁盘恢复会话；文件不存在或恢复失败返回 False（调用方照常走登录）。"""
+    path = session_path(cookie_file)
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    import_session = getattr(adapter, "import_session", None)
+    if import_session is None:
+        return False
+    try:
+        return bool(import_session(data))
+    except Exception:  # noqa: BLE001 - 恢复失败就当没有会话
+        log.debug("恢复会话失败: %s", path, exc_info=True)
+        return False
+
+
 def persist_http_cookies(adapter: PlatformAdapter, settings: Settings) -> bool:
     """把协议型适配器的 cookie 落盘，返回是否真的写了。
 
@@ -145,6 +197,9 @@ class Runtime:
                 f"或调用方先解析出凭据再传入。"
             )
         creds = credentials
+        if self.cookie_file:
+            # 有落盘的会话就先恢复（账号库不存密码，没有会话就只能重新登录）
+            restore_adapter_session(adapter, self.cookie_file)
         try:
             return await self.pipeline.run(adapter, creds)
         finally:

@@ -101,6 +101,26 @@ class PlatformAdapter(ABC):
     async def close(self) -> None:
         """释放资源。默认无操作。"""
 
+    # -- 会话持久化（可选钩子）--------------------------------------------
+
+    def export_session(self) -> dict[str, Any] | None:
+        """把当前会话导出成可落盘的 JSON；不支持就返回 ``None``。
+
+        为什么要这个钩子：有的平台会话不只在 cookie 里（例如 bearer token 或
+        平台自己的登录态载荷）。只落盘 cookie 的话，进程一重启就得重新登录，
+        而账号库**不存密码** —— 于是这类平台会卡在「需要账号密码」上。
+
+        导出的是**会话**，不是密码。落盘位置与 cookie 文件同目录、同样的保护级别。
+        """
+        return None
+
+    def import_session(self, data: dict[str, Any]) -> bool:
+        """从 :meth:`export_session` 的产物恢复会话；恢复成功返回 True。
+
+        默认不实现。调用方应当把返回 False 当作「没有可用会话」，照常走登录。
+        """
+        return False
+
     async def __aenter__(self) -> PlatformAdapter:
         return self
 

@@ -38,7 +38,12 @@ from kedaibiao.config.settings import (
 )
 from kedaibiao.core.models import Credentials, TaskKind
 from kedaibiao.platforms import load_builtin_adapters
-from kedaibiao.runtime import build_runtime, persist_http_cookies
+from kedaibiao.runtime import (
+    build_runtime,
+    persist_http_cookies,
+    restore_adapter_session,
+    save_adapter_session,
+)
 from kedaibiao.security.accounts import AccountError, AccountStore, PlatformAccount
 from kedaibiao.security.auth import (
     ROLE_SUPERADMIN,
@@ -535,6 +540,8 @@ class ConsoleService:
         try:
             adapter = runtime.make_adapter(platform)
 
+            # 有落盘的会话就先恢复：账号库不存密码，没有会话就只能要求重新登录
+            restore_adapter_session(adapter, cookie_file)
             try:
                 logged_in = await adapter.refresh_session(creds)
             except Exception as exc:  # noqa: BLE001 - 平台异常一律翻成 502
@@ -838,6 +845,9 @@ class ConsoleService:
             ok = asyncio.run(adapter.login(creds))
             if ok:
                 persist_http_cookies(adapter, settings)
+                # 有些平台的会话不只在 cookie 里（bearer token 等），
+                # 不把会话本身存下来，下次调用就只剩空密码 → 报「需要账号密码」
+                save_adapter_session(adapter, cookie_file)
                 return True, ""
             return False, "平台拒绝了这次登录（账号或密码不对？）"
         except Exception as exc:  # noqa: BLE001 - 平台异常统一成失败原因
@@ -998,6 +1008,9 @@ class ConsoleService:
                 cookie_file=cookie_file,
             )
             runtime.bus.on("*", self._record_event)
+            if cookie_file:
+                # 跑批同样使用「恢复会话」这条路，避免明明登录过却报缺凭据
+                pass
 
             report = asyncio.run(runtime.run(platform, credentials=credentials))
 

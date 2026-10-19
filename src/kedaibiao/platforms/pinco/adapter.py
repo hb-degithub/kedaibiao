@@ -19,6 +19,7 @@ from __future__ import annotations
 import http.cookiejar
 import logging
 import os
+from datetime import datetime
 from typing import Any
 
 from kedaibiao.core.models import (
@@ -288,6 +289,44 @@ class PincoAdapter(PlatformAdapter):
 
     async def is_logged_in(self) -> bool:
         return self._session is not None and self._session.logged_in
+
+    def export_session(self) -> dict[str, Any] | None:
+        """导出会话（令牌在 ``storage`` 里，**不是密码**）。
+
+        没有它的话，控制台每次调用都会新建适配器 → 内存里的会话丢掉 →
+        只剩空密码 → 报「品课登录需要账号密码」。账号库刻意不存密码，
+        所以必须把会话本身存下来。
+        """
+        if self._session is None or not self._session.logged_in:
+            return None
+        return {
+            "username": self._session.username,
+            "logged_in": True,
+            "storage": dict(self._session.storage),
+            "expires_at": (
+                self._session.expires_at.isoformat() if self._session.expires_at else None
+            ),
+        }
+
+    def import_session(self, data: dict[str, Any]) -> bool:
+        """从导出的会话恢复；``storage`` 为空就当没恢复。"""
+        storage = data.get("storage") or {}
+        if not isinstance(storage, dict) or not storage:
+            return False
+        expires_at = None
+        raw_expiry = data.get("expires_at")
+        if raw_expiry:
+            try:
+                expires_at = datetime.fromisoformat(str(raw_expiry))
+            except ValueError:
+                expires_at = None
+        self._session = PincoSession(
+            username=str(data.get("username") or ""),
+            logged_in=True,
+            storage=dict(storage),
+            expires_at=expires_at,
+        )
+        return True
 
     async def health_check(self) -> bool:
         """匿名健康检查 —— 探「网络与协议通不通」，**验证不了登录态**（匿名也能过）。

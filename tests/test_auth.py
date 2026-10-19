@@ -584,5 +584,102 @@ class TestAccountDedupe(unittest.TestCase):
                 store.close()
 
 
+class TestSessionPersistence(unittest.TestCase):
+    """会话要落盘 —— 否则「密码登录成功过」也会在下次调用时报「需要账号密码」。
+
+    背景：账号库刻意不存密码。有的平台会话不只在 cookie 里（bearer token /
+    平台自己的登录态载荷），只落盘 cookie 的话进程一重启就只剩空密码。
+    """
+
+    PLATFORM = "sessionfake"
+
+    def setUp(self) -> None:
+        from kedaibiao import adapters
+        from kedaibiao.platforms.base import Capabilities, PlatformAdapter
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "config").mkdir()
+        (self.root / "config" / "local.toml").write_text(
+            "[kedaibiao]\n"
+            f'db_url = "sqlite:///{self.root}/x.db"\n'
+            f'session_dir = "{self.root}/s"\n',
+            encoding="utf-8",
+        )
+
+        class SessionAdapter(PlatformAdapter):
+            name = TestSessionPersistence.PLATFORM
+            display_name = "会话假平台"
+            capabilities = Capabilities()
+            restored = None
+            login_calls = 0
+
+            async def login(self, credentials):  # noqa: ANN001
+                if not credentials.password:
+                    # 就是真实平台那句「需要账号密码」
+                    raise RuntimeError("需要账号密码或注入的会话")
+                SessionAdapter.login_calls += 1
+                return True
+
+            async def is_logged_in(self) -> bool:
+                return SessionAdapter.restored is not None
+
+            def export_session(self):
+                return {"token": "T-1"} if SessionAdapter.login_calls else None
+
+            def import_session(self, data) -> bool:
+                SessionAdapter.restored = data
+                return bool(data.get("token"))
+
+            async def close(self) -> None:
+                return None
+
+        self.adapter_cls = SessionAdapter
+        adapters.register(self.PLATFORM, SessionAdapter, override=True)
+        self.addCleanup(adapters.unregister, self.PLATFORM)
+        self.service = ConsoleService(root=self.root)
+
+    def _viewer(self) -> Viewer:
+        user, _pw = self.service.bootstrap_admin()
+        assert user is not None
+        return Viewer(user_id=user["id"], is_superadmin=True, username="admin")
+
+    def test_session_written_after_login(self) -> None:
+        from kedaibiao.runtime import session_path
+
+        viewer = self._viewer()
+        account = self.service.add_account(
+            viewer, self.PLATFORM, username="u1", password="pw", login_now=True
+        )
+        self.assertTrue(account["last_login_ok"])
+        settings = self.service.settings
+        store_path = Path(settings.session_dir) / "accounts"
+        files = list(store_path.glob("*.session.json"))
+        self.assertEqual(len(files), 1, f"应当写出一个会话快照，实际: {files}")
+
+    def test_later_call_uses_restored_session(self) -> None:
+        """第一次用密码登录；其后不带密码的调用必须靠恢复的会话通过。"""
+        viewer = self._viewer()
+        self.service.add_account(
+            viewer, self.PLATFORM, username="u1", password="pw", login_now=True
+        )
+        self.assertEqual(self.adapter_cls.login_calls, 1)
+
+        # 模拟新进程：清掉内存里的恢复标记，靠磁盘快照恢复
+        self.adapter_cls.restored = None
+        from kedaibiao.api.actions import ActionSpec, register
+        from kedaibiao.api import actions as actions_mod
+
+        async def _ping(adapter, params):  # noqa: ANN001
+            return actions_mod.message(platform=self.PLATFORM, action="ping",
+                                       label="pong", message="ok")
+
+        register(ActionSpec(platform=self.PLATFORM, name="ping", label="pong"), _ping)
+        out = self.service.run_action(self.PLATFORM, "ping", {})
+        self.assertEqual(out["kind"], "message")
+        self.assertEqual(self.adapter_cls.login_calls, 1, "不该再登录一次")
+
+
 if __name__ == "__main__":
     unittest.main()
