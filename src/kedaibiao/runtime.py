@@ -71,6 +71,7 @@ def build_context(
     store: ProgressStore | None = None,
     notifier: Notifier | None = None,
     cookie_file: str | Path | None = None,
+    environ: dict[str, str] | None = None,
 ) -> AdapterContext:
     return AdapterContext(
         bus=bus or EventBus(),
@@ -79,6 +80,7 @@ def build_context(
         store=store,
         notifier=notifier,
         settings=settings,
+        environ=dict(environ or {}),
     )
 
 
@@ -184,6 +186,7 @@ class Runtime:
             store=self.store,
             notifier=self.notifier,
             cookie_file=self.cookie_file,
+            environ=self.environ,
         )
         adapter = cls(ctx)
         # 支持「浏览器求解验证码」的适配器需要知道 cookie 落盘位置

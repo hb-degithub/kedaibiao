@@ -44,6 +44,14 @@ log = logging.getLogger(__name__)
 #: 模型自报置信度的折扣系数。实测模型普遍高估自己，所以打折上报。
 CONFIDENCE_DISCOUNT = 0.85
 
+#: 默认 User-Agent：很多中转网关前面挂了 Cloudflare，Python 默认 UA 会被
+#: 直接 403（error code: 1010，浏览器完整性检查）。用浏览器 UA 才放行。
+#: 可用 ``KEDAIBIAO_LLM_USER_AGENT`` 覆盖。
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
 #: 单次请求最多带多少道题（太多会让模型漏题、格式跑偏）
 MAX_BATCH = 10
 
@@ -68,6 +76,7 @@ class LLMConfig:
     timeout: float = 60.0
     temperature: float = 0.0
     max_batch: int = MAX_BATCH
+    user_agent: str = DEFAULT_USER_AGENT
 
     @property
     def enabled(self) -> bool:
@@ -84,6 +93,7 @@ class LLMConfig:
             model=get("MODEL"),
             timeout=float(get("TIMEOUT", "60") or 60),
             temperature=float(get("TEMPERATURE", "0") or 0),
+            user_agent=get("USER_AGENT") or DEFAULT_USER_AGENT,
         )
 
     def describe(self) -> str:
@@ -180,7 +190,11 @@ class LLMAnswerer(Answerer):
                 {"role": "user", "content": body},
             ],
         }
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": self.config.user_agent,
+            "Accept": "application/json, text/plain, */*",
+        }
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
@@ -222,7 +236,11 @@ class LLMAnswerer(Answerer):
                 {"role": "user", "content": user},
             ],
         }
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": self.config.user_agent,
+            "Accept": "application/json, text/plain, */*",
+        }
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
         response = await self._http().post_json(

@@ -64,6 +64,9 @@ class AdapterContext:
     notifier: Any | None = None
     store: Any | None = None  # kedaibiao.bank.store.ProgressStore
     settings: Any | None = None
+    #: 本次运行认的环境变量快照（``.env`` + 真实环境）。
+    #: 动作层要用大模型这类「配置在环境里」的能力时，从这一份取，不各自读 os.environ。
+    environ: dict[str, str] = field(default_factory=dict)
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("kedaibiao"))
 
     def client(self) -> Any:

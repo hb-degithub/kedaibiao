@@ -556,14 +556,24 @@ def _register_itest() -> None:
     register(
         ActionSpec(
             platform="itest",
+            name="answers",
+            label="AI 答题",
+            description="用大模型按缓存的试卷生成答案单（填空+翻译；听力不代答）",
+            params=(ActionParam("exam_id", "考试号", required=True),),
+        ),
+        _itest_answers,
+    )
+    register(
+        ActionSpec(
+            platform="itest",
             name="fill",
             label="填答案",
             description="按答案单填进作答页并逐项核验（不进服务端；不会交卷）",
             params=(
                 ActionParam("exam_id", "考试号", required=True),
                 ActionParam(
-                    "answers", "答案单（JSON）", type="text", required=True,
-                    hint='{"qid": "字母串或整句译文"}，如 {"1001353740": "F I G C B E J D A H"}',
+                    "answers", "答案单（JSON，可留空用 AI 答题的缓存）", type="text",
+                    hint='{"qid": "字母串或整句译文"}；留空则读 data/itest/answers-<考试号>.json',
                 ),
             ),
             mutates=True,
@@ -578,7 +588,7 @@ def _register_itest() -> None:
             description="填答案 → 核验 → 交卷（不可逆，必须把确认串写成「交卷」）",
             params=(
                 ActionParam("exam_id", "考试号", required=True),
-                ActionParam("answers", "答案单（JSON）", type="text", required=True),
+                ActionParam("answers", "答案单（JSON，可留空用 AI 答题的缓存）", type="text"),
                 ActionParam(
                     "confirm", "确认串", required=True,
                     hint="必须输入「交卷」—— 交卷后不能再次作答",
@@ -631,6 +641,27 @@ def _itest_runner(adapter: Any) -> Any:
     from kedaibiao.platforms.itest.exam import ExamRunner
 
     return ExamRunner(_itest_exam_cookies(adapter))
+
+
+def _itest_cache(adapter: Any, kind: str, exam_id: str) -> Path:
+    return _itest_shot_dir(adapter) / f"{kind}-{exam_id}.json"
+
+
+def _itest_cached_answers(adapter: Any, exam_id: str) -> dict[str, str]:
+    """读 AI 答题落盘的答案单（``answers-<考试号>.json``）。"""
+    path = _itest_cache(adapter, "answers", exam_id)
+    if not path.is_file():
+        raise ActionInputError(
+            f"没有现成答案单：{path} 不存在 —— 先点「AI 答题」，或在参数里直接贴 JSON"
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ActionInputError(f"答案单文件坏了：{exc}") from exc
+    answers = data.get("answers") if isinstance(data, dict) else None
+    if not isinstance(answers, dict) or not answers:
+        raise ActionInputError("答案单文件里没有 answers")
+    return {str(k): str(v) for k, v in answers.items() if str(v).strip()}
 
 
 def _itest_shot_dir(adapter: Any) -> Path:
@@ -726,6 +757,11 @@ async def _itest_paper(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     data = await asyncio.to_thread(_itest_paper_blocking, adapter, exam_id, ks_id)
     paper = data["paper"]
     current: dict[str, str] = data["current"]
+    cache = _itest_cache(adapter, "paper", exam_id)
+    try:
+        cache.write_text(json.dumps(paper.to_dict(), ensure_ascii=False), encoding="utf-8")
+    except OSError:  # noqa: BLE001 - 缓存失败不该让取卷白跑
+        log.debug("试卷缓存写失败", exc_info=True)
 
     rows: list[dict[str, Any]] = []
     for section in paper.sections:
@@ -764,11 +800,91 @@ async def _itest_paper(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+async def _itest_answers(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """用大模型按「取卷」缓存生成答案单，并落盘给「填答案 / 交卷」用。
+
+    不碰平台：只读缓存试卷 + 调模型。听力题不代答（见 answer.py 的说明）。
+    """
+    from kedaibiao.platforms.itest.answer import AnswerError, answer_paper
+    from kedaibiao.platforms.itest.paper import Paper
+    from kedaibiao.tasks.llm import LLMAnswerer, LLMConfig
+
+    name = getattr(adapter, "name", "itest")
+    exam_id = _itest_require(params, "exam_id", "考试号")
+    cache = _itest_cache(adapter, "paper", exam_id)
+    if not cache.is_file():
+        raise ActionInputError(
+            f"还没有试卷缓存（{cache}）—— 先点「进考场取卷」，再让 AI 答题"
+        )
+    try:
+        paper = Paper.from_dict(json.loads(cache.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as exc:
+        raise ActionInputError(f"试卷缓存读不出来：{exc}") from exc
+
+    config = LLMConfig.from_env(getattr(adapter.ctx, "environ", {}) or {})
+    if not config.enabled:
+        raise ActionInputError(
+            "大模型没配置 —— 在 .env 里设置 KEDAIBIAO_LLM_BASE_URL / _API_KEY / _MODEL"
+        )
+    llm = LLMAnswerer(config)
+    try:
+        sheet = await answer_paper(paper, llm)
+    except AnswerError as exc:
+        raise ActionInputError(f"AI 答案不合法：{exc}") from exc
+
+    out = _itest_cache(adapter, "answers", exam_id)
+    try:
+        out.write_text(
+            json.dumps({"answers": sheet.answers, "skipped": sheet.skipped},
+                       ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+    except OSError:  # noqa: BLE001
+        log.debug("答案单落盘失败", exc_info=True)
+
+    rows = [
+        {
+            "qid": item["qid"],
+            "kind": _ITEST_KIND_LABEL.get(item["kind"], item["kind"]),
+            "answer": str(item["answer"])[:48],
+        }
+        for item in sheet.details
+    ]
+    for item in sheet.skipped:
+        rows.append({
+            "qid": item["qid"],
+            "kind": _ITEST_KIND_LABEL.get(item["kind"], item["kind"]),
+            "answer": "（跳过）" + item["reason"][:40],
+        })
+    note = (
+        f"模型 {config.model}；答出 {sheet.answered} 题、跳过 {len(sheet.skipped)} 题。"
+        "答案已存 " + str(out) + "，「填答案 / 交卷」留空 answers 就会用它。"
+    )
+    if sheet.skipped:
+        note += " 跳过的主要是听力 —— 文字模型听不到音频，需要转写或人工补。"
+    return table(
+        platform=name,
+        action="answers",
+        label="AI 答案单",
+        title=f"AI 答题 · {paper.title[:32] or exam_id}",
+        note=note,
+        columns=[
+            column("qid", "qid", mono=True),
+            column("kind", "题型"),
+            column("answer", "答案"),
+        ],
+        rows=rows,
+        empty_hint="这次一题都没答出来。",
+    )
+
+
 async def _itest_fill(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     """把答案填进作答页并逐项读回核验（不交卷）。"""
     name = getattr(adapter, "name", "itest")
     exam_id = _itest_require(params, "exam_id", "考试号")
-    answers = _itest_parse_answers(params.get("answers"))
+    raw_answers = str(params.get("answers") or "").strip()
+    answers = (_itest_parse_answers(raw_answers) if raw_answers
+               else _itest_cached_answers(adapter, exam_id))
     _title, ks_id = await _itest_exam_entry(adapter, exam_id)
     data = await asyncio.to_thread(
         _itest_fill_blocking, adapter, exam_id, answers, submit=False, ks_id=ks_id
@@ -818,7 +934,9 @@ async def _itest_submit(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     exam_id = _itest_require(params, "exam_id", "考试号")
     if str(params.get("confirm") or "").strip() != "交卷":
         raise ActionInputError("交卷是不可逆操作 —— 请在「确认串」里输入「交卷」")
-    answers = _itest_parse_answers(params.get("answers"))
+    raw_answers = str(params.get("answers") or "").strip()
+    answers = (_itest_parse_answers(raw_answers) if raw_answers
+               else _itest_cached_answers(adapter, exam_id))
     _title, ks_id = await _itest_exam_entry(adapter, exam_id)
     data = await asyncio.to_thread(
         _itest_fill_blocking, adapter, exam_id, answers, submit=True, ks_id=ks_id

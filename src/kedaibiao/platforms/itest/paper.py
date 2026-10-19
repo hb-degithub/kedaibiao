@@ -61,6 +61,11 @@ class Blank:
     def to_dict(self) -> dict[str, Any]:
         return {"index": self.index, "placeholder": self.placeholder}
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Blank:
+        return cls(index=int(data.get("index") or 0),
+                   placeholder=str(data.get("placeholder") or ""))
+
 
 @dataclass(slots=True)
 class Choice:
@@ -73,7 +78,16 @@ class Choice:
     value: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"letter": self.letter, "text": self.text}
+        # sub 必须带上：radio 的 slot_count 按小题数算，丢了 sub 会少算空位
+        return {"letter": self.letter, "text": self.text,
+                "sub": self.sub, "value": self.value}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Choice:
+        return cls(letter=str(data.get("letter") or ""),
+                   text=str(data.get("text") or ""),
+                   sub=int(data.get("sub") or 0),
+                   value=str(data.get("value") or ""))
 
 
 @dataclass(slots=True)
@@ -107,6 +121,20 @@ class Question:
         }
 
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Question:
+        return cls(
+            qid=str(data.get("qid") or ""),
+            kind=str(data.get("kind") or ""),
+            number=int(data.get("number") or 0),
+            text=str(data.get("text") or ""),
+            blanks=[Blank.from_dict(b) for b in data.get("blanks") or []],
+            choices=[Choice.from_dict(c) for c in data.get("choices") or []],
+            sentences=[str(x) for x in data.get("sentences") or []],
+            answer=str(data.get("answer") or ""),
+        )
+
+
 @dataclass(slots=True)
 class Section:
     index: int
@@ -129,6 +157,17 @@ class Section:
             "audios": self.audios,
             "questions": [q.to_dict() for q in self.questions],
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Section:
+        return cls(
+            index=int(data.get("index") or 0),
+            part1=str(data.get("part1") or ""),
+            part2=str(data.get("part2") or ""),
+            section_type=str(data.get("section_type") or ""),
+            audios=[str(x) for x in data.get("audios") or []],
+            questions=[Question.from_dict(q) for q in data.get("questions") or []],
+        )
 
 
 @dataclass(slots=True)
@@ -170,6 +209,19 @@ class Paper:
             "blank_count": self.blank_count,
             "sections": [s.to_dict() for s in self.sections],
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Paper:
+        """从 :meth:`to_dict` 的产物恢复（控制台缓存试卷用）。
+
+        注意：``choices[].value`` / ``sub`` 不在 ``to_dict`` 里 —— 只有填表才需要
+        它们，而填表是直接读页面 DOM 的，不靠缓存。
+        """
+        return cls(
+            sections=[Section.from_dict(s) for s in data.get("sections") or []],
+            title=str(data.get("title") or ""),
+            ksd_id=str(data.get("ksd_id") or ""),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -284,13 +336,19 @@ def _questions(raw: str) -> list[Question]:
     return out
 
 
+#: 原句里被考查的词用 ``<u>`` 标出来
+_UNDERLINE = re.compile(r"<u>(.*?)</u>", re.S | re.I)
+
+
 def _blank_sentences(block: str) -> tuple[str, list[str]]:
     """把「选项串 + 空 + 原句」拆开。
 
-    返回 ``(首句, 各空对应的原句列表)``。原句里被考查的词包在 ``<u>`` 里，
-    这正是推导答案的依据（实测 B2U5/B2U6 都有）。
+    返回 ``(选项说明, 各空对应的原句列表)``。原句里被考查的词包在 ``<u>`` 里，
+    这正是推导答案的依据（实测 B2U5/B2U6 都有）。解析时把它标成 ``[[词]]``，
+    否则把标签一剥，「要填哪个词」这条信息就丢了（AI 作答需要它）。
     """
-    body = re.sub(r"<input[^>]*>", "\n\x00\n", block)
+    body = _UNDERLINE.sub(lambda m: f"[[{_TAG.sub('', m.group(1)).strip()}]]", block)
+    body = re.sub(r"<input[^>]*>", "\n\x00\n", body)
     body = _SCRIPT.sub(" ", body)
     pieces = [html_mod.unescape(_TAG.sub(" ", p)).strip()
               for p in body.split("\x00")]
