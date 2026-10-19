@@ -1985,6 +1985,9 @@
   function closeDrawer() {
     var d = state.drawer;
     if (!d.open) { return; }
+    graderStopPolling();
+    var host = $('grader-host');
+    if (host && host.parentNode) { host.parentNode.removeChild(host); }
     d.open = false;
     d.seq++;                  // 丢弃还在路上的响应
     renderDrawer();
@@ -2053,6 +2056,10 @@
     }
 
     if (d.mode === 'detail') {
+      if (d.platform === 'pigai' && d.assignmentId) {
+        graderReset(d.platform, d.assignmentId);
+        graderRender();
+      }
       if (d.detail) {
         /* 标题已经在抽屉头上（还有平台 / 任务号 / kind 徽标），这里不再重复一遍。 */
         renderEnvelope(box, d.detail, { noTitle: true, emptyText: '详情响应里没有可渲染的内容。' });
@@ -2083,6 +2090,322 @@
         }
       }
     }
+  }
+
+
+  /* ===================== 评分循环（批改网） ===================== */
+
+  var grader = {
+    platform: '', rid: '', target: 90, maxAttempts: 3,
+    job: null, timer: null, history: null, busy: false, error: '', note: ''
+  };
+
+  var GRADER_STOP_TEXT = {
+    reached: '已达目标分',
+    exhausted: '轮次用尽，仍未达标',
+    unavailable: '平台未给分（作业未到期）',
+    error: '出错了'
+  };
+
+  var GRADER_EVENT_TEXT = {
+    'attempt.start': '开始第 {attempt} 轮',
+    'attempt.submitted': '已提交（稿件号 {eid}）',
+    'attempt.analysis': '分析中… （{tick}）',
+    'attempt.graded': '出分：{score}（批注 {feedback_count} 条）',
+    'attempt.rewriting': '按批注改写中…',
+    'attempt.error': '出错：{error}',
+    'loop.finish': '循环结束'
+  };
+
+  function graderStopPolling() {
+    if (grader.timer) { clearTimeout(grader.timer); grader.timer = null; }
+  }
+
+  function graderReset(platform, rid) {
+    graderStopPolling();
+    grader = {
+      platform: platform, rid: rid, target: 90, maxAttempts: 3,
+      job: null, timer: null, history: null, busy: false, error: '', note: ''
+    };
+  }
+
+  function graderApi(path, body) {
+    return api(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  }
+
+  function graderEventText(ev) {
+    var tpl = GRADER_EVENT_TEXT[ev.kind] || ev.kind;
+    return tpl.replace(/\{(\w+)\}/g, function (_m, key) {
+      var v = ev[key];
+      return v === undefined || v === null || v === '' ? '—' : String(v);
+    });
+  }
+
+  function graderPanel(container) {
+    var box = el('section', 'grader');
+    box.appendChild(el('h3', 'grader-title', '评分循环 · 批改网'));
+
+    var hint = el('p', 'hint',
+      '流程：提交 → 触发批改网分析 → 取分与批注 → 未达标则按批注改写 → 再交。' +
+      '「开始自动改写」会**真的反复提交作文**（不可撤销）。');
+    box.appendChild(hint);
+
+    /* 控制条 */
+    var controls = el('div', 'grader-controls');
+    controls.appendChild(graderNumber('目标分数', grader.target, 0, 100,
+      function (v) { grader.target = v; }));
+    controls.appendChild(graderNumber('轮次上限', grader.maxAttempts, 1, 10,
+      function (v) { grader.maxAttempts = v; }));
+    box.appendChild(controls);
+
+    var actions = el('div', 'grader-actions');
+    var startBtn = el('button', 'btn btn-danger btn-sm', '开始自动改写');
+    startBtn.type = 'button';
+    startBtn.addEventListener('click', graderStart);
+
+    var fetchBtn = el('button', 'btn btn-sm', '只取分（不提交）');
+    fetchBtn.type = 'button';
+    fetchBtn.addEventListener('click', graderFetch);
+
+    var histBtn = el('button', 'btn btn-ghost btn-sm', '历史提交');
+    histBtn.type = 'button';
+    histBtn.addEventListener('click', graderHistory);
+
+    actions.appendChild(startBtn);
+    actions.appendChild(fetchBtn);
+    actions.appendChild(histBtn);
+    box.appendChild(actions);
+
+    if (grader.busy) {
+      startBtn.disabled = true; fetchBtn.disabled = true;
+      startBtn.textContent = '运行中…';
+      box.appendChild(el('p', 'hint', '正在运行：每 1 秒刷新一次进度。'));
+    }
+    if (grader.error) {
+      var err = el('div', 'err-box');
+      err.appendChild(el('div', 'banner-title', '失败'));
+      err.appendChild(el('p', 'res-message', grader.error));
+      box.appendChild(err);
+    }
+    if (grader.note) { box.appendChild(el('p', 'hint', grader.note)); }
+
+    /* 任务进度 */
+    if (grader.job) { box.appendChild(graderJobBlock(grader.job)); }
+
+    /* 历史 */
+    if (grader.history) { box.appendChild(graderHistoryBlock(grader.history)); }
+
+    container.appendChild(box);
+  }
+
+  function graderNumber(label, value, min, max, onChange) {
+    var wrap = el('label', 'grader-field');
+    wrap.appendChild(el('span', '', label));
+    var input = document.createElement('input');
+    input.type = 'number';
+    input.min = String(min);
+    input.max = String(max);
+    input.value = String(value);
+    input.className = 'grader-input';
+    input.addEventListener('change', function () {
+      var v = Number(input.value);
+      if (isNaN(v)) { v = value; }
+      v = Math.max(min, Math.min(max, v));
+      input.value = String(v);
+      onChange(v);
+    });
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  function graderJobBlock(job) {
+    var box = el('div', 'grader-job');
+
+    var head = el('div', 'grader-job-head');
+    head.appendChild(el('span', 'badge', job.status === 'running' ? '运行中'
+      : (job.stop_reason === 'reached' ? '完成' : '已停止')));
+    head.appendChild(el('span', 'hint',
+      '目标 ' + (job.target_score === undefined ? '—' : job.target_score) +
+      ' · 最高 ' + (job.best_score === null || job.best_score === undefined
+        ? '—' : job.best_score) +
+      ' · 轮次 ' + (job.attempts ? job.attempts.length : 0) +
+      '/' + (job.max_attempts === undefined ? '—' : job.max_attempts)));
+    box.appendChild(head);
+
+    if (job.stop_reason) {
+      var cls = job.stop_reason === 'reached' ? 'alert-ok'
+        : (job.stop_reason === 'unavailable' ? 'alert-soft' : 'alert-warn');
+      var stop = el('div', 'alert-box ' + cls);
+      stop.appendChild(el('div', 'banner-title',
+        GRADER_STOP_TEXT[job.stop_reason] || job.stop_reason));
+      if (job.message) { stop.appendChild(el('p', 'res-message', job.message)); }
+      if (job.stop_reason === 'unavailable') {
+        stop.appendChild(el('p', 'hint',
+          '这个作业还没到截止时间，平台不公布分数。**不要重复提交** —— ' +
+          '等它到期后再用「只取分」即可。'));
+      }
+      box.appendChild(stop);
+    }
+
+    /* 事件日志 */
+    var events = job.events || [];
+    if (events.length) {
+      var det = el('details', 'grader-log');
+      det.appendChild(el('summary', '', '运行日志（' + events.length + ' 条）'));
+      var list = el('div', 'log-list');
+      for (var i = Math.max(0, events.length - 120); i < events.length; i++) {
+        var ev = events[i];
+        var row = el('div', 'log-row');
+        row.appendChild(el('span', 'log-time', String(ev.at || '').slice(11) || '—'));
+        row.appendChild(el('span', 'log-kind', ev.kind || ''));
+        row.appendChild(el('span', 'log-text', graderEventText(ev)));
+        list.appendChild(row);
+      }
+      det.appendChild(list);
+      box.appendChild(det);
+    }
+
+    /* 每轮结果 */
+    var attempts = job.attempts || [];
+    attempts.forEach(function (a) { box.appendChild(graderAttemptCard(a)); });
+    return box;
+  }
+
+  function graderAttemptCard(a) {
+    var card = el('details', 'grader-attempt');
+    var summary = '第 ' + a.attempt + ' 轮 · ' +
+      (a.graded ? (a.score_label + ' 分') : (a.raw_state || '未出分')) +
+      ' · ' + (a.word_count || 0) + ' 词';
+    card.appendChild(el('summary', '', summary));
+
+    if (a.dimensions && a.dimensions.length) {
+      var dims = el('div', 'grader-dims');
+      a.dimensions.forEach(function (d) {
+        dims.appendChild(el('span', 'dim-chip',
+          (d.name || '?') + ' ' + Math.round((d.ratio || 0) * 100) + '%'));
+      });
+      card.appendChild(dims);
+    }
+    if (a.overall) { card.appendChild(el('p', 'res-message', '总评：' + a.overall)); }
+    if (a.feedback && a.feedback.length) {
+      var ul = el('ul', 'grader-feedback');
+      a.feedback.forEach(function (f) { ul.appendChild(el('li', '', f)); });
+      card.appendChild(ul);
+    }
+    if (a.essay_text) {
+      var body = el('pre', 'essay-text', a.essay_text);
+      card.appendChild(body);
+    }
+    return card;
+  }
+
+  function graderHistoryBlock(history) {
+    var box = el('div', 'grader-history');
+    var items = history.attempts || [];
+    box.appendChild(el('h4', '', '历史提交（' + items.length + ' 轮）'));
+    if (!items.length) {
+      box.appendChild(el('p', 'hint', '还没有记录。跑一次评分循环或「只取分」后会出现在这里。'));
+      return box;
+    }
+    items.forEach(function (a) { box.appendChild(graderAttemptCard(a)); });
+    return box;
+  }
+
+  function graderStart() {
+    if (!grader.platform || !grader.rid) { return; }
+    var msg = '这会真的反复提交作文（最多 ' + grader.maxAttempts + ' 轮），' +
+      '直到达到 ' + grader.target + ' 分或轮次用尽。\n\n提交不可撤销，确定继续？';
+    if (!window.confirm(msg)) { return; }
+
+    grader.busy = true; grader.error = ''; grader.note = '';
+    grader.job = null; grader.history = null;
+    graderRender();
+
+    graderApi('/api/essays/grade-loop', {
+      platform: grader.platform,
+      assignment_id: grader.rid,
+      target_score: grader.target,
+      max_attempts: grader.maxAttempts
+    }).then(function (job) {
+      grader.job = job;
+      graderPoll(job.job_id);
+    }).catch(function (err) {
+      grader.busy = false;
+      grader.error = err && err.message ? err.message : String(err);
+      graderRender();
+    });
+  }
+
+  function graderPoll(jobId) {
+    graderStopPolling();
+    api('/api/essays/jobs/' + encodeURIComponent(jobId)).then(function (job) {
+      grader.job = job;
+      grader.busy = job.status === 'running';
+      graderRender();
+      if (job.status === 'running') {
+        grader.timer = setTimeout(function () { graderPoll(jobId); }, 1000);
+      } else {
+        graderStopPolling();
+        graderHistory();
+      }
+    }).catch(function (err) {
+      graderStopPolling();
+      grader.busy = false;
+      grader.error = err && err.message ? err.message : String(err);
+      graderRender();
+    });
+  }
+
+  function graderFetch() {
+    if (!grader.platform || !grader.rid) { return; }
+    grader.busy = true; grader.error = ''; grader.note = '正在向平台取分（不会提交任何东西）…';
+    graderRender();
+    graderApi('/api/essays/fetch', {
+      platform: grader.platform, assignment_id: grader.rid, trigger_analysis: true
+    }).then(function (snap) {
+      grader.busy = false;
+      grader.note = '';
+      var job = {
+        job_id: 'fetch', status: 'done', target_score: grader.target,
+        best_score: snap.score, max_attempts: 0, events: [],
+        attempts: [snap], stop_reason: snap.graded ? 'reached' : 'unavailable',
+        message: snap.graded ? ('当前分数 ' + snap.score)
+          : ('平台未给分：' + (snap.raw_state || '待分析'))
+      };
+      grader.job = job;
+      graderRender();
+    }).catch(function (err) {
+      grader.busy = false; grader.note = '';
+      grader.error = err && err.message ? err.message : String(err);
+      graderRender();
+    });
+  }
+
+  function graderHistory() {
+    if (!grader.platform || !grader.rid) { return; }
+    graderApi('/api/essays/history', {
+      platform: grader.platform, assignment_id: grader.rid
+    }).then(function (data) {
+      grader.history = data;
+      graderRender();
+    }).catch(function () { /* 历史失败不该打扰主流程 */ });
+  }
+
+  function graderRender() {
+    var box = $('drawer-body');
+    if (!box) { return; }
+    var host = $('grader-host');
+    if (!host) {
+      host = el('div', 'grader-host');
+      host.id = 'grader-host';
+      box.parentNode.insertBefore(host, box.nextSibling);
+    }
+    clear(host);
+    if (grader.platform === 'pigai' && grader.rid) { graderPanel(host); }
   }
 
   function renderDrawerFoot() {

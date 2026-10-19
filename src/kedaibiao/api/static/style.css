@@ -795,3 +795,35 @@ pre.cmd {
   .drawer-panel { width: 100%; border-left: 0; }
   .drawer-body { padding: 12px; }
 }
+
+/* ---- 评分循环（批改网） ---- */
+.grader-host { padding: 0 16px 16px; }
+.grader { border-top: 1px solid #2a3038; padding-top: 14px; margin-top: 4px; }
+.grader-title { font-size: 14px; margin: 0 0 8px; color: #e6edf3; }
+.grader-controls { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0; }
+.grader-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #8b949e; }
+.grader-input { width: 92px; padding: 5px 7px; background: #0d1117; color: #c9d1d9;
+  border: 1px solid #30363d; border-radius: 5px; font-family: ui-monospace, monospace; }
+.grader-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.grader-job { margin-top: 12px; }
+.grader-job-head { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+.grader-log { margin: 10px 0; }
+.grader-log summary { cursor: pointer; color: #8b949e; font-size: 12px; }
+.log-list { max-height: 220px; overflow: auto; background: #0d1117; border: 1px solid #21262d;
+  border-radius: 5px; padding: 8px; margin-top: 6px; font-family: ui-monospace, monospace;
+  font-size: 11.5px; }
+.log-row { display: flex; gap: 10px; padding: 1px 0; }
+.log-time { color: #6e7681; min-width: 66px; }
+.log-kind { color: #58a6ff; min-width: 132px; }
+.log-text { color: #c9d1d9; }
+.grader-attempt { border: 1px solid #21262d; border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+.grader-attempt summary { cursor: pointer; font-size: 12.5px; color: #e6edf3; }
+.grader-dims { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.dim-chip { background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+  padding: 1px 8px; font-size: 11px; color: #8b949e; }
+.grader-feedback { margin: 8px 0 8px 18px; font-size: 12px; color: #c9d1d9; }
+.essay-text { white-space: pre-wrap; background: #0d1117; border: 1px solid #21262d;
+  border-radius: 5px; padding: 8px; font-size: 12px; color: #c9d1d9; max-height: 260px;
+  overflow: auto; font-family: ui-monospace, monospace; }
+.grader-history { margin-top: 14px; }
+.grader-history h4 { font-size: 13px; margin: 0 0 6px; color: #e6edf3; }
