@@ -14,6 +14,7 @@ from pathlib import Path
 from kedaibiao import __version__, adapters
 from kedaibiao.bank.store import QuestionBank, ProgressStore
 from kedaibiao.config.settings import load_settings
+from kedaibiao.security.credentials import available_platforms
 
 OPTIONAL_DEPS = {
     "playwright": "浏览器自动化（必需，才能真跑平台）",
@@ -114,6 +115,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     except OSError as exc:
         print(f"存储   : ✗ 不可写 {db}: {exc}")
         ok = False
+
+    configured = available_platforms()
+    if configured:
+        print(f"凭据   : ✓ 已配置 {', '.join(configured)}（值不显示）")
+    else:
+        print("凭据   : （未配置任何平台凭据，见 .env.example）")
 
     print("结论   : " + ("环境就绪" if ok else "环境不完整，见上方 ✗"))
     return 0 if ok else 1

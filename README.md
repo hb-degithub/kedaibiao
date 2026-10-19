@@ -126,6 +126,7 @@ make install-browser   # playwright + chromium
 ├── config/                 default.toml / local.toml（本地配置不入库）
 ├── docs/
 │   ├── architecture.md     分层、数据流、扩展点
+│   ├── integration-guide.md 多窗口并行开发与整合的边界纪律
 │   ├── license-policy.md   第三方代码引用政策与已评估清单
 │   ├── naming.md           命名与标识符规范
 │   └── research/           平台与依赖的调研报告（含证据来源）
