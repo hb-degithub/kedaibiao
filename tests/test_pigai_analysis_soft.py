@@ -173,3 +173,62 @@ class TestListScoreFallback(unittest.IsolatedAsyncioTestCase):
         snap = await g.fetch_snapshot(Adapter(), rid="R", eid="E")
         self.assertEqual(snap.score, 83.0)
         self.assertEqual(snap.detail_error, "", "详情页有分就不该标 detail_error")
+
+
+class TestLatestEidLookup(unittest.TestCase):
+    """「只取分」只知道作业号时，要自己找到最新稿件的稿件号。"""
+
+    def _service(self):
+        import tempfile
+        from pathlib import Path
+
+        from kedaibiao.api.service import ConsoleService
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "config").mkdir(parents=True, exist_ok=True)
+        (root / "config" / "local.toml").write_text(
+            "[kedaibiao]\n"
+            f'db_url = "sqlite:///{root}/x.db"\n'
+            f'session_dir = "{root}/sessions"\n'
+            'notify = "null"\n',
+            encoding="utf-8",
+        )
+        return ConsoleService(root=root)
+
+    def test_missing_eid_resolved_from_list(self) -> None:
+        from types import SimpleNamespace
+
+        from kedaibiao.api.service import ConsoleService
+        from kedaibiao.platforms.pigai import grading
+        from kedaibiao.platforms.pigai.protocol import EssayRow
+
+        class Adapter:
+            async def list_finished_essays(self):
+                return [
+                    EssayRow(rid="OTHER", eid="E0", title="T", score_raw="1"),
+                    EssayRow(rid="R", eid="E-NEW", title="T", score_raw="80"),
+                ]
+
+            ctx = SimpleNamespace(client=lambda: object())
+            close = mock.AsyncMock()
+
+        svc = self._service()
+        adapter = Adapter()
+        seen: dict = {}
+
+        async def fake_wait(a, http, *, base, rid, eid, timeout=180.0, on_tick=None):
+            seen["eid"] = eid
+            return grading.EssaySnapshot(rid=rid, eid=eid, score=80.0)
+
+        runtime = SimpleNamespace(close=lambda: None)
+        with (
+            mock.patch.object(ConsoleService, "_essay_http",
+                              lambda *a, **k: (adapter, runtime, None)),
+            mock.patch.object(grading, "wait_for_grade", fake_wait),
+        ):
+            out = svc.fetch_essay_grade("pigai", "R", "", trigger_analysis=True)
+
+        self.assertEqual(seen["eid"], "E-NEW", "空 eid 要自动补成最新稿件号")
+        self.assertEqual(out["score"], 80.0)

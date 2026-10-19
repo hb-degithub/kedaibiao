@@ -2193,7 +2193,8 @@
     exhausted: '轮次用尽，仍未达标',
     unavailable: '暂时没取到分数',
     error: '出错了',
-    timeout: '等批改超时（稿子已交，只是还没出分）'
+    timeout: '等批改超时（稿子已交，只是还没出分）',
+    fetched: '已取到分数'
   };
 
   var GRADER_EVENT_TEXT = {
@@ -2480,8 +2481,12 @@
 
   function graderAttemptCard(a) {
     var card = el('details', 'grader-attempt');
+    var scoreText = a.score_label
+      ? (a.score_label + ' 分')
+      : ((a.score === null || a.score === undefined) ? (a.raw_state || '未出分')
+         : (a.score + ' 分'));
     var summary = (a.attempt === 0 ? '现有稿件（未重新提交）' : ('第 ' + a.attempt + ' 轮')) +
-      ' · ' + (a.graded ? (a.score_label + ' 分') : (a.raw_state || '未出分')) +
+      ' · ' + scoreText +
       (a.word_count ? (' · ' + a.word_count + ' 词') : '');
     card.appendChild(el('summary', '', summary));
 
@@ -2578,12 +2583,18 @@
            ' —— 这篇可能已经批过了；可以「直接改写重交」，或稍后再取。')
         : (snap.detail_error || snap.raw_state || '待分析');
       var attempt = Object.assign({ attempt: 0 }, snap);
-      attempt.word_count = (snap.essay_text || '').trim() ? (snap.essay_text || '').length : 0;
+      if (attempt.word_count === undefined) { delete attempt.word_count; }
       var job = {
         job_id: 'fetch', status: 'done', target_score: grader.target,
-        best_score: snap.score, max_attempts: 0, events: [],
-        attempts: [attempt], stop_reason: snap.graded ? 'reached' : 'unavailable',
-        message: snap.graded ? ('当前分数 ' + snap.score)
+        best_score: snap.score, max_attempts: 1, events: [],
+        attempts: [attempt],
+        stop_reason: snap.graded
+          ? ((snap.score !== undefined && snap.score !== null && snap.score >= grader.target)
+             ? 'reached' : 'fetched')
+          : 'unavailable',
+        message: snap.graded
+          ? ('当前分数 ' + snap.score +
+             (snap.detail_error ? '（' + snap.detail_error + '）' : ''))
           : ('没取到分数：' + reason)
       };
       grader.job = job;

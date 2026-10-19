@@ -1704,6 +1704,24 @@ class ConsoleService:
             log.warning("起草失败", exc_info=True)
             return ""
 
+    @staticmethod
+    def _latest_eid(adapter: Any, rid: str) -> str:
+        """按作业号找最新一篇的稿件号。
+
+        控制台「只取分」按钮只知道 rid（作业号），不知道 eid（稿件号）；
+        拿空 eid 去请求会得到「没找到作文」。所以缺 eid 时就地查一次列表。
+        """
+        import asyncio
+
+        try:
+            rows = asyncio.run(adapter.list_finished_essays())
+        except Exception:  # noqa: BLE001 - 查不到就交给调用方报错
+            return ""
+        for row in rows:
+            if str(getattr(row, "rid", "")) == str(rid):
+                return str(getattr(row, "eid", "") or "")
+        return ""
+
     def fetch_essay_grade(self, platform: str, rid: str, eid: str, *,
                           viewer: Viewer | None = None,
                           trigger_analysis: bool = True) -> dict[str, Any]:
@@ -1716,6 +1734,11 @@ class ConsoleService:
         try:
             from kedaibiao.platforms.pigai import grading
 
+            eid = str(eid or "").strip()
+            if not eid:
+                eid = self._latest_eid(adapter, rid)
+                if eid:
+                    self._plog(scope, "info", f"· 未给稿件号，自动取最新：{eid}")
             http = adapter.ctx.client()
             if trigger_analysis:
                 snap = asyncio.run(grading.wait_for_grade(
@@ -1751,6 +1774,9 @@ class ConsoleService:
 
         adapter, runtime, _ = self._essay_http(scope, viewer)
         try:
+            eid = str(eid or "").strip()
+            if not eid:
+                eid = self._latest_eid(adapter, rid)
             http = adapter.ctx.client()
             self._plog(scope, "info", f"$ 等批改 {rid}/{eid or '—'} 最多 {timeout:.0f}s")
             try:
