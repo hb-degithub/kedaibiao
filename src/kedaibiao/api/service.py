@@ -127,6 +127,26 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _friendly_platform_error(platform: str, exc: BaseException) -> str:
+    """把平台异常翻成用户能照做的中文，并指出环境变量那条路已经不存在了。
+
+    背景：适配器里的报错文案还停留在「设置 KEDAIBIAO_<平台>_USER/_PASS」，
+    但凭据现在只从控制台账号库来 —— 照那句话做是不会生效的。
+    """
+    message = str(exc).strip() or type(exc).__name__
+    if "KEDAIBIAO_" in message:
+        message += (
+            "\n注意：`.env` 里的平台账号已不再被读取。"
+            "请在控制台「账号」页绑定该平台的账号。"
+        )
+    if "csrf" in message.lower() or "会话" in message:
+        message += (
+            "\n该平台的业务接口要求**浏览器会话 cookie**（csrf 与浏览器上下文绑定，"
+            "密码登录只解决身份层）。需要用浏览器导出 cookie 的方式接入。"
+        )
+    return message
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -519,7 +539,8 @@ class ConsoleService:
                 logged_in = await adapter.refresh_session(creds)
             except Exception as exc:  # noqa: BLE001 - 平台异常一律翻成 502
                 raise ConsoleError(
-                    f"{platform} 登录失败：{exc}", kind=PLATFORM_ERROR, status=502
+                    f"{platform} 登录失败：{_friendly_platform_error(platform, exc)}",
+                    kind=PLATFORM_ERROR, status=502,
                 ) from exc
             if not logged_in:
                 raise ConsoleError(
@@ -537,7 +558,8 @@ class ConsoleService:
             except Exception as exc:  # noqa: BLE001
                 log.exception("平台动作失败: %s/%s", platform, action)
                 raise ConsoleError(
-                    f"{platform} 接口调用失败：{exc}", kind=PLATFORM_ERROR, status=502
+                    f"{platform} 接口调用失败：{_friendly_platform_error(platform, exc)}",
+                    kind=PLATFORM_ERROR, status=502,
                 ) from exc
         finally:
             if adapter is not None:
