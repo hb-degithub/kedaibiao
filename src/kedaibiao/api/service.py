@@ -55,6 +55,7 @@ from kedaibiao.security.auth import (
     User,
 )
 from kedaibiao.security.credentials import env_key
+from kedaibiao.tasks.llm import LLMConfig
 from kedaibiao.tasks.pipeline import PipelineConfig
 
 log = logging.getLogger(__name__)
@@ -246,6 +247,25 @@ class ConsoleService:
         finally:
             handle.close()
 
+    # -- 大模型状态 -------------------------------------------------------
+
+    def llm_status(self) -> dict[str, Any]:
+        """大模型答题的配置状态。**绝不返回 api_key 的值**，只说有没有设。"""
+        cfg = LLMConfig.from_env(self.environ)
+        return {
+            "enabled": cfg.enabled,
+            "configured": cfg.enabled,
+            "provider": "openai-compatible",
+            "model": cfg.model,
+            "api_base": cfg.base_url,
+            # 只报告「有没有设」，不返回内容
+            "api_key_set": bool(cfg.api_key),
+            "configured_via": (
+                "环境变量 KEDAIBIAO_LLM_BASE_URL / _API_KEY / _MODEL"
+                if cfg.enabled else ""
+            ),
+        }
+
     # -- 只读接口 ---------------------------------------------------------
 
     def overview(
@@ -297,6 +317,7 @@ class ConsoleService:
             "platform_count": len(adapters.names()),
             "credentialed_platforms": credentialed,
             "optional_deps": {name: find_spec(name) is not None for name in OPTIONAL_DEPS},
+            "llm": self.llm_status(),
             "bank": bank_stats,
             "runs": run_counts,
         }
@@ -441,6 +462,7 @@ class ConsoleService:
             "dotenv_present": (self.root / ".env").is_file(),
             "env_keys_seen": sorted(k for k in self.environ if k.startswith(ENV_PREFIX)),
             "optional_deps": {name: find_spec(name) is not None for name in OPTIONAL_DEPS},
+            "llm": self.llm_status(),
             "platforms": platforms,
         }
 

@@ -80,6 +80,7 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 | `busy` | 409 | 已有跑批在跑，同一时刻只允许一个 |
 | `forbidden` | 403 | Host 或 Origin 被安全策略拒绝 |
 | `platform_error` | 502 | 平台侧失败（未登录、找不到内容、网络异常），另带 `detail` = 平台异常类名 |
+| `not_supported` | 501 | 该平台还没实现这个能力（例如提交）—— **界面应据此禁用入口**，不是错误重试 |
 | `not_supported` | 501 | 该平台还没实现这个能力（例如提交） |
 | `internal` | 500 | 服务端自身异常 |
 
@@ -211,6 +212,14 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 }
 ```
 
+> `llm` 是大模型答题的配置状态（**只报有没有设 key，不返回值**）：
+> ```json
+> { "enabled": true, "configured": true, "provider": "openai-compatible",
+>   "model": "deepseek-chat", "api_base": "https://api.deepseek.com/v1",
+>   "api_key_set": true, "configured_via": "环境变量 KEDAIBIAO_LLM_*" }
+> ```
+> `GET /api/settings` 里也有同样的 `llm` 字段。
+>
 > `accuracy` 可能为 `null`。
 > **`runs` 的计数是全量的**（数据库中所有执行记录），不是「最近 N 次」——
 > 前端照原样展示，不要加「最近」字样。
@@ -236,6 +245,10 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 
 > `capabilities.submit === false` 时前端**必须**禁用「真提交」开关并说明原因 ——
 > 该平台本阶段不具备提交能力。
+>
+> ⚠️ `capabilities` 是**声明**，不是承诺：声明 true 也可能因为缺凭据、会话失效
+> 而失败。所以前端不能只靠它放行 —— 真收到 **501** 就把该平台记为「尚未实现提交」
+> 并禁用入口；收到 502 则提示凭据/会话问题，允许重试。
 
 ### `GET /api/runs?limit=50` —— 跑批历史
 
@@ -428,6 +441,10 @@ run 是「一个作业的处理结果」，job 是「一次跑批的整体结果
 
 `params[].type` ∈ `string` / `int`。`required` 为 true 的必须给值。
 
+> **列表行必须带 `assignment_id`。** 「作业」类动作（`assignments`）的每一行
+> 除了展示用的 `id`，还要给 `assignment_id` —— 前端双击详情与提交都按它调
+> `/api/assignments/*`。不要让前端去猜列名映射（`id` / `rid` / `task_id` 混用）。
+
 ### `POST /api/platforms/<name>/actions/<action>` —— 执行
 
 **请求**（必须 `Content-Type: application/json`）：
@@ -532,7 +549,16 @@ run 是「一个作业的处理结果」，job 是「一次跑批的整体结果
 { "platform": "pigai", "assignment_id": "1000001", "confirm": false }
 ```
 
-- `confirm=false`（默认）：**只规划不提交**，返回每题打算怎么答 + 置信度
+- `confirm=false`（默认）：**只规划不提交**，返回每题打算怎么答 + 置信度：
+
+  ```json
+  { "platform": "pigai", "assignment_id": "1000001", "title": "…",
+    "question_count": 3, "answered": 3, "min_confidence": 0.91,
+    "threshold": 0.75, "dry_run": true, "submitted": false,
+    "answers": [ { "index": 1, "stem": "…", "choices": [1], "text": "",
+                   "source": "bank_hit", "confidence": 0.95, "needs_human": false } ],
+    "note": "这是干跑结果，没有向平台提交任何内容。" }
+  ```
 - `confirm=true`：真的调平台写接口
 
 **平台没实现提交时返回 `501 not_supported`**，`error` 会说明原因。

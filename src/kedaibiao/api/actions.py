@@ -605,6 +605,9 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
                 {
                     "course": course.name or course.remote_id,
                     "id": item.remote_id,
+                    # 前端双击详情 / 提交都按 assignment_id 调接口；
+                    # 这里显式给一份，免得前端去猜列名映射。
+                    "assignment_id": item.remote_id,
                     "title": item.title,
                     "kind": _KIND_LABEL.get(item.kind, item.kind.value),
                     "deadline": _fmt_deadline(item.deadline) or "—",

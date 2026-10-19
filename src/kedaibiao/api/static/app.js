@@ -22,6 +22,19 @@
  *   - 没有横跨所有平台的能力对比表：当前选哪个平台，就只看那个平台的能力
  *     （概览页的能力摘要、账号页该平台那一行）。跨平台对比只在「统计」页。
  *   - 没有任何行内快捷跑批按钮：跑批一律在概览页的触发区，且必须明确选择平台。
+ *   - 作业（assignments）页：行支持**双击**看详情（POST /api/assignments/detail，
+ *     返回 kind: detail 的信封，通用渲染在右侧抽屉里，不整页跳走）；每行也有
+ *     「详情」「提交」按钮，行的 title 写明「双击查看详情」以便发现。
+ *   - 单作业提交是**两步**的：先 confirm=false 干跑（每题答案 + 置信度 + needs_human），
+ *     展示后用户再确认才发 confirm=true。平台没实现提交时后端返回 501 not_supported ——
+ *     界面写明「该平台尚未实现提交」并禁用该平台的行内「提交」（capabilities.submit === false
+ *     时也禁用），绝不假装成功。干跑/真提交两条路径的硬门槛（一题没答、置信度低于阈值）
+ *     由后端 400 拦下，前端只显示它的中文 error。
+ *   - 大模型答题状态只读展示（有 /api/overview.llm（或 /api/settings.llm）就用，没有就
+ *     显示「未配置」）；前端**不收集 api_key**。
+ *   - 浏览器会话抓取：契约没有 cookie 写入接口，所以账号页给可复制的命令行
+ *     （capture --profile / --cookie），并说明「未登录的登录页也会下发匿名 csrfToken，
+ *     所以要验证会话」。
  *   - 课程 / 作业 = 通用只读动作 courses / assignments，会真的登录并访问平台；
  *     界面标明「只读」、给出加载状态、失败显示后端中文 error、成功按 kind 通用渲染。
  *   - 「全部平台」下：课程 / 作业 / 题库 / 工具 必须提示先选平台，不显示空表。
@@ -77,6 +90,21 @@
     '确定要把「真提交（live）」打开吗？\n' +
     '建议先用干跑确认规划结果（哪些作业会被处理），再决定是否真提交。';
 
+  /* 单作业真提交的二次确认（比 live 开关更重：只影响这一个作业，但同样不可撤销）。 */
+  var SUBMIT_CONFIRM =
+    '这会真的把这个作业提交到平台，不可撤销。\n\n' +
+    '后端还会拦两道门槛：一题都没答出来、或最低置信度低于阈值，都会直接拒绝（400）。\n\n' +
+    '确定要真提交吗？';
+
+  /* 「作业」页表格行里哪个键是任务号：契约的 /api/assignments/* 走 assignment_id，
+     但列表信封的列键名由适配器自己声明（实测批改网是 id、待办是 rid），
+     所以按固定优先级取第一个非空值 —— 接新平台不用改前端。 */
+  var ASSIGN_ID_KEYS = ['assignment_id', 'assignmentId', 'id', 'rid', 'task_id', 'taskId'];
+  var ASSIGN_TITLE_KEYS = ['title', 'name', 'label', 'subject', 'course_title'];
+
+  /* 平台没实现提交时（501 not_supported）界面的固定说法。 */
+  var NOT_SUPPORTED_TEXT = '该平台尚未实现提交';
+
   /* 平台能力键的展示名；未知键原样显示，新平台不用改前端。 */
   var CAP_ORDER = ['login', 'list_courses', 'list_assignments',
                    'fetch_questions', 'submit', 'course_playback'];
@@ -124,6 +152,30 @@
       assignments: { busy: false, loaded: false, error: '', result: null, params: {}, seq: 0 }
     },
     problems: {},            // key -> { message, level }
+
+    /* --- 单作业提交：后端说过 501 not_supported 的平台（下次直接禁用行内「提交」）--- */
+    noSubmit: {},
+
+    /* --- 作业抽屉：详情（双击行）与两步提交 --- */
+    drawer: {
+      open: false,
+      mode: '',              // 'detail' | 'submit'
+      platform: null,
+      assignmentId: '',
+      title: '',
+      busy: false,
+      status: '',            // 加载 / 干跑中的状态文案
+      error: '',             // 后端中文 error（经 describeError 补过「接下来做什么」）
+      errorKind: '',
+      notSupported: '',      // 501 not_supported 时后端的原文
+      detail: null,          // POST /api/assignments/detail 的信封
+      plan: null,            // POST /api/assignments/submit confirm=false 的原始响应
+      planRows: null,        // 从 plan 里解析出的「每题答案 + 置信度」（解析不出就是 null）
+      planStats: null,
+      step: '',              // 'plan'（等确认） | 'done'（真提交已完成）
+      result: null,          // confirm=true 的响应
+      seq: 0
+    },
 
     /* --- 认证 / 身份（契约 §1.5）--- */
     authed: false,
@@ -401,6 +453,8 @@
     permission_denied: FORBIDDEN_HINT,
     not_allowed: FORBIDDEN_HINT,
     not_found: '目标不存在或已被清理。',
+    not_supported: '该平台尚未实现这个能力（例如「提交」）：后端返回 501 not_supported。' +
+      '界面会禁用对应按钮，要接入得先按真实抓包实现该平台的写接口 —— 不会假装成功。',
     platform_error: '平台侧失败（未登录 / 找不到内容 / 网络异常）。先确认凭据与参数，再重试。',
     internal: '服务端自身异常，请查看服务端日志。'
   };
@@ -1000,6 +1054,8 @@
       resetActionPage('assignments');
       clearProblemsWithPrefix('scope:');
     }
+    /* 抽屉里的详情/提交是「某个平台某个作业」的，切平台或切页就关掉，避免张冠李戴。 */
+    if (changedPage || changedPlat) { closeDrawer(); }
     renderChrome();
     showPage();
     if (changedPage || changedPlat) { loadPageData(); }
@@ -1030,6 +1086,7 @@
     renderScopeHints();
     syncRunPlatformOptions();
     syncAccountPlatformOptions();
+    syncCapturePlatformOptions();
     applyRunConstraints();
   }
 
@@ -1246,6 +1303,7 @@
       ' · uvicorn ' + (deps.uvicorn ? '可用' : '不可用');
 
     /* 环境明细 */
+    var llm = llmSource();
     var pairs = [
       ['version', o.version],
       ['python', o.python],
@@ -1253,6 +1311,7 @@
       ['db_path', o.db_path],
       ['db_exists', o.db_exists === undefined ? null : fmtBool(o.db_exists)],
       ['platform_count', o.platform_count],
+      ['大模型答题', llm.llm === null ? '未配置' : (llmEnabled(llm.llm) ? '已启用' : '未配置')],
       ['作用域 platform', state.platform === null ? 'null（全部）' : state.platform]
     ];
     var kids = [];
@@ -1266,6 +1325,7 @@
     $('env-list').hidden = false;
 
     renderOverviewCaps(p);
+    renderLlm();
   }
 
   /* 平台能力：只显示当前平台自己的能力（契约 §5.3）。 */
@@ -1719,9 +1779,17 @@
     }
 
     setBoxError(key + '-error', ps.error);
-    renderEnvelope($(key + '-result'), ps.result, {
-      emptyText: '该动作没有返回任何' + cfg.dataName + '（0 行）。'
-    });
+    var envOpts = { emptyText: '该动作没有返回任何' + cfg.dataName + '（0 行）。' };
+    if (key === 'assignments') {
+      /* 作业页（契约 §3 新增）：双击行看详情；每行「详情 / 提交」两个按钮。
+         「提交」在平台 capabilities.submit === false 或后端回过 501 时禁用。 */
+      envOpts.rowActions = assignRowActions;
+      envOpts.actionsLabel = '操作';
+      envOpts.onRowDblClick = onAssignRowDblClick;
+      envOpts.rowTitle = '双击查看详情（POST /api/assignments/detail，只读）';
+    }
+    renderEnvelope($(key + '-result'), ps.result, envOpts);
+    if (key === 'assignments') { renderAssignSubmitNote(); }
 
     var reload = $(key + '-reload');
     if (reload) { reload.disabled = !!ps.busy; }
@@ -1766,6 +1834,650 @@
       renderActionPage(key);
       if (e && e.kind === 'unknown_platform') { handleUnknownScope(e); }
     });
+  }
+
+  /* ==================================================================
+     作业详情（双击行） + 单作业提交（两步：干跑 → 确认）
+     契约 §3：
+       POST /api/assignments/detail {platform, assignment_id}
+         → kind: detail 的展示信封（任务号 / 名称 / 课程 / 截止 / 题目 / 平台原始数据）
+       POST /api/assignments/submit {platform, assignment_id, confirm}
+         confirm=false（默认）：只规划不提交，返回每题打算怎么答 + 置信度
+         confirm=true：真的调平台写接口
+         平台没实现提交 → 501 not_supported（界面写明「该平台尚未实现提交」并禁用按钮）
+         两条硬门槛（confirm=true 也拦）：一题没答 → 400；最低置信度 < min_confidence → 400
+     展示用抽屉，不整页跳走；所有文本走 textContent，不拼 HTML。
+     ================================================================== */
+
+  /* 任务号：列表行的列键名由适配器声明（实测批改网作业表是 id、待办是 rid），
+     而新接口要的是 assignment_id —— 所以按固定优先级取第一个非空值。 */
+  function assignmentIdOf(rowObj) {
+    if (!isObj(rowObj)) { return ''; }
+    for (var i = 0; i < ASSIGN_ID_KEYS.length; i++) {
+      var v = rowObj[ASSIGN_ID_KEYS[i]];
+      if (v === null || v === undefined) { continue; }
+      var s = String(v).trim();
+      if (s) { return s; }
+    }
+    return '';
+  }
+
+  function assignmentTitleOf(rowObj) {
+    if (!isObj(rowObj)) { return ''; }
+    for (var i = 0; i < ASSIGN_TITLE_KEYS.length; i++) {
+      var v = rowObj[ASSIGN_TITLE_KEYS[i]];
+      if (v === null || v === undefined) { continue; }
+      var s = String(v).trim();
+      if (s) { return s; }
+    }
+    return '';
+  }
+
+  /* 平台现在能不能提交：'' = 可以试；非空 = 禁用的原因。
+     两个来源：后端已经回过 501 not_supported（state.noSubmit 记着原文），
+     或能力表 capabilities.submit === false。能力未知时不预判，
+     让用户点了由后端回答（后端可能还没实现这个能力，那时回到 501 这条路）。 */
+  function submitBlockReason(plt) {
+    if (!plt) { return '未选择平台'; }
+    if (state.noSubmit[plt]) { return NOT_SUPPORTED_TEXT + '（后端已返回 501 not_supported）'; }
+    var p = platformByName(plt);
+    if (p && isObj(p.capabilities) && p.capabilities.submit === false) {
+      return NOT_SUPPORTED_TEXT + '（capabilities.submit = false）';
+    }
+    return '';
+  }
+
+  /* 后端说过 501：把这个平台记下来，行内「提交」立即禁用，并在作业页顶部说明。 */
+  function markNoSubmit(plt, e) {
+    if (!plt) { return; }
+    state.noSubmit[plt] = ((e && e.error) || '').trim() ||
+      (NOT_SUPPORTED_TEXT + '（后端 501 not_supported）');
+    renderAssignSubmitNote();
+    renderActionPage('assignments');
+  }
+
+  function renderAssignSubmitNote() {
+    var box = $('assign-submit-note');
+    if (!box) { return; }
+    var plt = state.platform;
+    var reason = plt ? submitBlockReason(plt) : '';
+    if (!reason) { box.hidden = true; box.textContent = ''; return; }
+    box.hidden = false;
+    box.textContent = platformLabel(plt) + '：' + reason +
+      ' —— 行内「提交」已禁用（作业列表与详情仍可正常查看，只读），界面不会假装提交成功。' +
+      (state.noSubmit[plt] ? ' 后端原文：' + state.noSubmit[plt] : '');
+  }
+
+  /* 行内操作：详情（只读）+ 提交（两步）。返回 null 表示这行没有可用任务号。 */
+  function assignRowActions(rowObj) {
+    var id = assignmentIdOf(rowObj);
+    if (!id) { return null; }
+    var plt = state.platform;
+    var title = assignmentTitleOf(rowObj);
+    var out = [];
+
+    var bDetail = el('button', 'btn btn-sm', '详情');
+    bDetail.type = 'button';
+    bDetail.title = '查看作业详情（只读，POST /api/assignments/detail）；双击这一行同样可以';
+    bDetail.addEventListener('click', function () { openAssignmentDetail(plt, id, rowObj); });
+    out.push(bDetail);
+
+    var reason = submitBlockReason(plt);
+    var bSub = el('button', 'btn btn-sm ' + (reason ? 'btn-ghost' : 'btn-warn'), '提交');
+    bSub.type = 'button';
+    bSub.setAttribute('data-submit-for', id);
+    if (reason) {
+      bSub.disabled = true;
+      bSub.title = reason + ' —— 已禁用；平台没实现提交时后端返回 501 not_supported，界面不假装成功。';
+    } else {
+      bSub.title = '两步提交：先干跑（confirm=false）看每题答案与置信度，确认后才真提交' +
+        (title ? '：' + title : '');
+      bSub.addEventListener('click', function () { openAssignmentSubmit(plt, id, rowObj); });
+    }
+    out.push(bSub);
+    return out;
+  }
+
+  function onAssignRowDblClick(rowObj, ev) {
+    if (ev && ev.target && ev.target.closest &&
+        ev.target.closest('button, a, input, select')) {
+      return;   // 点在行内按钮/链接上，不算「双击这一行」
+    }
+    var id = assignmentIdOf(rowObj);
+    if (!id) {
+      showToast('这一行没有可用的任务号（没有 id / assignment_id 字段），无法打开详情。');
+      return;
+    }
+    openAssignmentDetail(state.platform, id, rowObj);
+  }
+
+  /* ---- 抽屉骨架 ---- */
+
+  function drawerReset(mode, plt, id, title) {
+    var d = state.drawer;
+    d.open = true;
+    d.mode = mode;
+    d.platform = plt;
+    d.assignmentId = id;
+    d.title = title || ('作业 ' + id);
+    d.busy = false;
+    d.status = '';
+    d.error = '';
+    d.errorKind = '';
+    d.notSupported = '';
+    d.detail = null;
+    d.plan = null;
+    d.planRows = null;
+    d.planStats = null;
+    d.step = '';
+    d.result = null;
+    d.seq++;
+    return d;
+  }
+
+  function openDrawer(mode, plt, id, title) {
+    drawerReset(mode, plt, id, title);
+    renderDrawer();
+    var close = $('drawer-close');
+    if (close && close.focus) { close.focus(); }
+  }
+
+  function closeDrawer() {
+    var d = state.drawer;
+    if (!d.open) { return; }
+    d.open = false;
+    d.seq++;                  // 丢弃还在路上的响应
+    renderDrawer();
+  }
+
+  function renderDrawer() {
+    var d = state.drawer;
+    var root = $('drawer');
+    if (!root) { return; }
+    if (!d.open) {
+      root.hidden = true;
+      return;
+    }
+    root.hidden = false;
+
+    setText('drawer-title', d.title || '作业');
+    var meta = $('drawer-meta');
+    clear(meta);
+    meta.appendChild(el('span', 'hint', '平台 '));
+    meta.appendChild(el('span', 'mono', dash(d.platform)));
+    meta.appendChild(el('span', 'hint', ' · 任务号 '));
+    meta.appendChild(el('span', 'mono', dash(d.assignmentId)));
+    meta.appendChild(el('span', 'hint', ' · '));
+    if (d.mode === 'submit') {
+      meta.appendChild(badge(d.step === 'done' ? '真提交' : '两步提交',
+        d.step === 'done' ? 'badge-live' : 'badge-dry'));
+    } else {
+      meta.appendChild(badge('只读', 'badge-ro'));
+      /* 详情信封的 action / kind 移到抽屉头上，正文里就不再重复标题。 */
+      if (d.detail && d.detail.action) {
+        meta.appendChild(el('span', 'hint', ' · 动作 '));
+        meta.appendChild(el('span', 'mono', d.detail.action));
+      }
+      if (d.detail && d.detail.kind) {
+        meta.appendChild(el('span', 'hint', ' · '));
+        meta.appendChild(badge('kind: ' + d.detail.kind, 'badge-ok'));
+      }
+    }
+
+    var st = $('drawer-status');
+    st.hidden = !d.status;
+    st.textContent = d.status || '';
+    st.className = 'drawer-status' + (d.busy ? ' is-busy' : '');
+
+    setBoxError('drawer-error', d.error);
+
+    renderDrawerBody();
+    renderDrawerFoot();
+  }
+
+  function renderDrawerBody() {
+    var d = state.drawer;
+    var box = $('drawer-body');
+    clear(box);
+    if (d.busy && !d.detail && !d.plan) { return; }   // 加载中：状态条已经说明了
+
+    if (d.notSupported) {
+      var nb = el('div', 'alert-box alert-soft');
+      nb.appendChild(el('div', 'banner-title', NOT_SUPPORTED_TEXT));
+      nb.appendChild(el('p', 'res-message', d.notSupported));
+      nb.appendChild(el('p', 'hint',
+        '该平台的行内「提交」已禁用。作业列表与详情仍可正常查看（只读）；' +
+        '要接入提交得先按真实抓包实现该平台的写接口。'));
+      box.appendChild(nb);
+      return;
+    }
+
+    if (d.mode === 'detail') {
+      if (d.detail) {
+        /* 标题已经在抽屉头上（还有平台 / 任务号 / kind 徽标），这里不再重复一遍。 */
+        renderEnvelope(box, d.detail, { noTitle: true, emptyText: '详情响应里没有可渲染的内容。' });
+      }
+      return;
+    }
+
+    if (d.mode === 'submit') {
+      if (d.step === 'done' && d.result) {
+        box.appendChild(el('div', 'live-banner', '真提交已发出：下面是后端返回的结果。'));
+        renderEnvelope(box, d.result, { emptyText: '提交响应里没有可渲染的内容。' });
+        return;
+      }
+      if (d.plan) {
+        box.appendChild(el('div', 'dry-banner',
+          '这是干跑（confirm=false）的结果：只规划、没有向平台提交任何内容。'));
+        if (d.planRows && d.planRows.length) {
+          box.appendChild(planBlock(d.planRows, d.planStats));
+          var det = el('details');
+          det.appendChild(el('summary', '', '展开后端原始响应（kind: ' +
+            dash(d.plan.kind) + '）'));
+          var inner = el('div', 'action-result');
+          renderEnvelope(inner, d.plan, {});
+          det.appendChild(inner);
+          box.appendChild(det);
+        } else {
+          renderEnvelope(box, d.plan, { emptyText: '干跑没有返回任何题目。' });
+        }
+      }
+    }
+  }
+
+  function renderDrawerFoot() {
+    var d = state.drawer;
+    var foot = $('drawer-foot');
+    if (!foot) { return; }
+    clear(foot);
+    var kids = [];
+
+    if (d.busy) {
+      kids.push(el('span', 'hint', d.status || '请求中…'));
+    } else if (d.mode === 'detail' && d.detail) {
+      var reason = submitBlockReason(d.platform);
+      if (reason) {
+        kids.push(el('span', 'hint', reason + ' —— 「提交」不可用。'));
+      } else {
+        var b = el('button', 'btn btn-warn', '提交这个作业（两步）');
+        b.type = 'button';
+        b.id = 'drawer-submit-btn';
+        b.title = '先干跑（confirm=false）看每题答案与置信度，确认后才真提交';
+        b.addEventListener('click', switchToSubmit);
+        kids.push(b);
+      }
+    } else if (d.mode === 'detail' && d.error) {
+      var retry = el('button', 'btn', '重试');
+      retry.type = 'button';
+      retry.addEventListener('click', function () {
+        loadAssignmentDetail(d.platform, d.assignmentId);
+      });
+      kids.push(retry);
+    } else if (d.mode === 'submit' && d.step === 'plan' && d.plan && !d.error) {
+      var c = el('button', 'btn btn-danger', '确认真提交（不可撤销）');
+      c.type = 'button';
+      c.id = 'drawer-confirm-btn';
+      if (d.planStats && d.planStats.human > 0) {
+        c.title = '有 ' + d.planStats.human + ' 题标了「需人工确认」；仍要真提交吗？';
+      } else {
+        c.title = '会真的调用平台写接口，不可撤销';
+      }
+      c.addEventListener('click', confirmSubmit);
+      kids.push(c);
+      kids.push(el('span', 'hint', '会真的调用平台写接口，不可撤销。'));
+    } else if (d.mode === 'submit' && d.step === 'plan' && d.error) {
+      var again = el('button', 'btn', '重新干跑');
+      again.type = 'button';
+      again.addEventListener('click', function () {
+        loadSubmitPlan(d.platform, d.assignmentId);
+      });
+      kids.push(again);
+    } else if (d.mode === 'submit' && d.step === 'done') {
+      kids.push(el('span', 'hint', '已提交（后端记录的提交结果见「运行日志 · 提交记录」）。'));
+    }
+
+    var close = el('button', 'btn btn-ghost btn-sm', '关闭');
+    close.type = 'button';
+    close.id = 'drawer-close-foot';
+    close.addEventListener('click', closeDrawer);
+    kids.push(close);
+
+    fill(foot, kids);
+    foot.hidden = false;
+  }
+
+  /* 详情抽屉 → 直接进入这个作业的两步提交（同一平台、同一任务号）。 */
+  function switchToSubmit() {
+    var d = state.drawer;
+    var reason = submitBlockReason(d.platform);
+    if (reason) { showToast(reason); return; }
+    openDrawer('submit', d.platform, d.assignmentId, d.title);
+    loadSubmitPlan(d.platform, d.assignmentId);
+  }
+
+  /* ---- 详情：POST /api/assignments/detail ---- */
+
+  function openAssignmentDetail(plt, id, rowObj) {
+    openDrawer('detail', plt, id, assignmentTitleOf(rowObj) || ('作业 ' + id));
+    loadAssignmentDetail(plt, id);
+  }
+
+  function loadAssignmentDetail(plt, id) {
+    var d = state.drawer;
+    if (!d.open || d.mode !== 'detail') { return; }
+    d.seq++;
+    var seq = d.seq;
+    d.busy = true;
+    d.error = '';
+    d.errorKind = '';
+    d.notSupported = '';
+    d.detail = null;
+    d.status = '正在读取作业详情 POST /api/assignments/detail …（只读，会真的登录平台）';
+    renderDrawer();
+
+    postJson('/api/assignments/detail', { platform: plt, assignment_id: id })
+      .then(function (body) {
+        if (seq !== d.seq || !d.open) { return; }
+        d.busy = false;
+        d.status = '';
+        d.detail = isObj(body) ? body : null;
+        if (d.detail && d.detail.title) { d.title = String(d.detail.title); }
+        renderDrawer();
+      }).catch(function (e) {
+        if (seq !== d.seq || !d.open) { return; }
+        d.busy = false;
+        d.status = '';
+        d.detail = null;
+        drawerFail(d, e, plt);
+        renderDrawer();
+      });
+  }
+
+  /* 抽屉里的失败统一处理：501 not_supported 属于「能力缺失」而不是「报错」，
+     只走那一块说明（否则同一句后端原文会在红框和黄框里各出现一遍）。 */
+  function drawerFail(d, e, plt) {
+    d.errorKind = (e && e.kind) || '';
+    if (d.errorKind === 'not_supported') {
+      d.error = '';
+      d.notSupported = ((e && e.error) || '').trim() ||
+        (NOT_SUPPORTED_TEXT + '（501 not_supported）');
+      markNoSubmit(plt, e);
+      return;
+    }
+    d.error = describeError(e, { platform: plt });
+  }
+
+  /* ---- 两步提交：先干跑，再确认 ---- */
+
+  function openAssignmentSubmit(plt, id, rowObj) {
+    var reason = submitBlockReason(plt);
+    if (reason && state.noSubmit[plt]) {
+      /* 后端确实回过 501：把它的原文显眼地摆出来，不发第二次请求。 */
+      drawerReset('submit', plt, id, assignmentTitleOf(rowObj) || ('作业 ' + id));
+      state.drawer.notSupported = state.noSubmit[plt];
+      renderDrawer();
+      return;
+    }
+    if (reason) {
+      showToast(platformLabel(plt) + '：' + reason + '（按钮已禁用）');
+      renderAssignSubmitNote();
+      return;
+    }
+    openDrawer('submit', plt, id, assignmentTitleOf(rowObj) || ('作业 ' + id));
+    loadSubmitPlan(plt, id);
+  }
+
+  function loadSubmitPlan(plt, id) {
+    var d = state.drawer;
+    if (!d.open || d.mode !== 'submit') { return; }
+    d.seq++;
+    var seq = d.seq;
+    d.busy = true;
+    d.status = '第一步：干跑 POST /api/assignments/submit（confirm=false，只规划不提交）…';
+    d.error = '';
+    d.errorKind = '';
+    d.notSupported = '';
+    d.plan = null;
+    d.planRows = null;
+    d.planStats = null;
+    d.step = '';
+    d.result = null;
+    renderDrawer();
+
+    postJson('/api/assignments/submit',
+      { platform: plt, assignment_id: id, confirm: false }).then(function (body) {
+      if (seq !== d.seq || !d.open) { return; }
+      d.busy = false;
+      d.status = '';
+      d.plan = isObj(body) ? body : null;
+      d.planRows = planRowsOf(d.plan);
+      d.planStats = d.planRows ? planStatsOf(d.planRows) : null;
+      d.step = 'plan';
+      renderDrawer();
+      if (d.planRows && d.planRows.length) {
+        showToast('干跑完成：' + d.planRows.length + ' 题，未向平台提交任何内容');
+      }
+    }).catch(function (e) {
+      if (seq !== d.seq || !d.open) { return; }
+      d.busy = false;
+      d.status = '';
+      drawerFail(d, e, plt);
+      renderDrawer();
+    });
+  }
+
+  function confirmSubmit() {
+    var d = state.drawer;
+    if (!d.open || d.mode !== 'submit' || d.step !== 'plan' || d.busy) { return; }
+    /* 契约 §5.4：写操作必须二次确认，且讲清楚「会真的提交、不可撤销」。 */
+    if (!window.confirm(SUBMIT_CONFIRM)) {
+      showToast('已取消真提交：没有向平台发送任何写请求。');
+      return;
+    }
+    var plt = d.platform;
+    var id = d.assignmentId;
+    d.seq++;
+    var seq = d.seq;
+    d.busy = true;
+    d.status = '第二步：真提交 POST /api/assignments/submit（confirm=true，会真的调平台写接口）…';
+    d.error = '';
+    d.errorKind = '';
+    renderDrawer();
+
+    postJson('/api/assignments/submit',
+      { platform: plt, assignment_id: id, confirm: true }).then(function (body) {
+      if (seq !== d.seq || !d.open) { return; }
+      d.busy = false;
+      d.status = '';
+      d.step = 'done';
+      d.result = isObj(body) ? body : null;
+      renderDrawer();
+      showToast('已发送真提交（' + platformLabel(plt) + ' · ' + id + '）');
+      if (state.page === 'logs') { loadRuns(); loadSubmissions(); }
+    }).catch(function (e) {
+      if (seq !== d.seq || !d.open) { return; }
+      d.busy = false;
+      d.status = '';
+      drawerFail(d, e, plt);
+      renderDrawer();
+    });
+  }
+
+  /* ---- 干跑结果的容错解析 ----
+     契约只说 confirm=false「返回每题打算怎么答 + 置信度」，没定信封形状，
+     所以按已知结构层层找（顶层数组 → 信封 rows → sections 里的 table 段），
+     只有「像一道题」的行才算计划（有答案 / 置信度 / needs_human 之一）；
+     认不出来就退回通用 kind 渲染，绝不白屏、也不假装读懂了。 */
+  var PLAN_LIST_KEYS = ['questions', 'plan', 'answers', 'items', 'records', 'rows',
+                        'details', 'results'];
+  var PLAN_ANSWER_KEYS = ['answer', 'planned_answer', 'plannedAnswer', 'value', 'content', 'text'];
+  var PLAN_CONF_KEYS = ['confidence', 'conf', 'confidence_score', 'confidenceScore', 'score'];
+  var PLAN_HUMAN_KEYS = ['needs_human', 'needsHuman', 'need_human', 'human', 'needs_review'];
+  var PLAN_STEM_KEYS = ['stem', 'question', 'question_text', 'title', 'prompt', 'topic'];
+  var PLAN_NO_KEYS = ['index', 'no', 'seq', 'number', 'qid', 'question_id', 'id'];
+  var PLAN_REASON_KEYS = ['reason', 'note', 'why', 'explain', 'remark', 'rationale'];
+
+  function pickValue(obj, keys) {
+    if (!isObj(obj)) { return { found: false, key: '', value: null }; }
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (!has(obj, k)) { continue; }
+      var v = obj[k];
+      if (v === null || v === undefined) { continue; }
+      if (typeof v === 'string' && !v.trim()) { continue; }
+      if (typeof v === 'object') { continue; }   // 嵌套对象不当标量用
+      return { found: true, key: k, value: v };
+    }
+    return { found: false, key: '', value: null };
+  }
+
+  function pickFlag(obj, keys) {
+    var p = pickValue(obj, keys);
+    if (!p.found) { return { found: false, key: '', value: false }; }
+    var v = p.value;
+    var on = (v === true || v === 1 || v === '1' || v === 'true' || v === 'yes' ||
+              v === 'needs_human' || v === 'human' || v === 'needs_review');
+    return { found: true, key: p.key, value: on };
+  }
+
+  function planRowView(rowObj) {
+    return {
+      no: pickValue(rowObj, PLAN_NO_KEYS),
+      stem: pickValue(rowObj, PLAN_STEM_KEYS),
+      answer: pickValue(rowObj, PLAN_ANSWER_KEYS),
+      confidence: pickValue(rowObj, PLAN_CONF_KEYS),
+      human: pickFlag(rowObj, PLAN_HUMAN_KEYS),
+      reason: pickValue(rowObj, PLAN_REASON_KEYS)
+    };
+  }
+
+  function planRowsOf(body) {
+    if (!isObj(body)) { return null; }
+    var cands = [];
+    var i;
+    for (i = 0; i < PLAN_LIST_KEYS.length; i++) {
+      var v = body[PLAN_LIST_KEYS[i]];
+      if (Array.isArray(v) && v.length && isObj(v[0])) { cands.push(v); }
+    }
+    var sections = Array.isArray(body.sections) ? body.sections : [];
+    for (i = 0; i < sections.length; i++) {
+      var sec = sections[i];
+      if (isObj(sec) && Array.isArray(sec.rows) && sec.rows.length && isObj(sec.rows[0])) {
+        cands.push(sec.rows);
+      }
+    }
+    for (i = 0; i < cands.length; i++) {
+      var hit = cands[i].filter(function (r) {
+        if (!isObj(r)) { return false; }
+        return pickValue(r, PLAN_ANSWER_KEYS).found ||
+               pickValue(r, PLAN_CONF_KEYS).found ||
+               pickFlag(r, PLAN_HUMAN_KEYS).found;
+      });
+      if (hit.length) { return cands[i]; }
+    }
+    return null;
+  }
+
+  function confidenceThreshold() {
+    var o = state.overview, s = state.settings;
+    if (isObj(o) && isNum(o.min_confidence)) { return o.min_confidence; }
+    if (isObj(s) && isNum(s.min_confidence)) { return s.min_confidence; }
+    return null;
+  }
+
+  function numOrNull(v) {
+    if (isNum(v)) { return v; }
+    if (typeof v === 'string' && v.trim() && isFinite(parseFloat(v))) { return parseFloat(v); }
+    return null;
+  }
+
+  function fmtConf(v) {
+    if (v === null || v === undefined || v === '') { return '—'; }
+    if (isNum(v)) { return String(Math.round(v * 1000) / 1000); }
+    return String(v);
+  }
+
+  function planStatsOf(rows) {
+    var threshold = confidenceThreshold();
+    var human = 0, low = 0, minConf = null;
+    for (var i = 0; i < rows.length; i++) {
+      var v = planRowView(rows[i]);
+      if (v.human.found && v.human.value) { human++; }
+      var c = numOrNull(v.confidence.value);
+      if (c !== null) {
+        if (minConf === null || c < minConf) { minConf = c; }
+        if (threshold !== null && c < threshold) { low++; }
+      }
+    }
+    return { total: rows.length, human: human, low: low, min: minConf, threshold: threshold };
+  }
+
+  function planStat(label, value, cls) {
+    var w = el('span', 'stat');
+    w.appendChild(el('span', 'stat-label', label));
+    w.appendChild(el('span', 'stat-value mono' + (cls ? ' ' + cls : ''), value));
+    return w;
+  }
+
+  /* 干跑计划表：每题的计划答案 + 置信度，需人工 / 低于阈值显眼标出。 */
+  function planBlock(rows, stats) {
+    var s = stats || planStatsOf(rows);
+    var box = el('div', 'plan-block');
+    var counts = el('div', 'stat-row plan-counts');
+    counts.appendChild(planStat('题目', fmtNum(s.total)));
+    counts.appendChild(planStat('需人工确认', fmtNum(s.human), s.human ? 'conf-low' : ''));
+    counts.appendChild(planStat('低于阈值', fmtNum(s.low), s.low ? 'conf-low' : ''));
+    counts.appendChild(planStat('最低置信度', s.min === null ? '—' : fmtConf(s.min),
+      (s.min !== null && s.threshold !== null && s.min < s.threshold) ? 'conf-low' : 'conf-ok'));
+    counts.appendChild(planStat('阈值 min_confidence',
+      s.threshold === null ? '—' : fmtConf(s.threshold)));
+    box.appendChild(counts);
+    box.appendChild(el('p', 'hint',
+      'needs_human = true 的题标「需人工确认」；置信度低于 min_confidence 的题标「低于阈值」——' +
+      '这两类后端即使 confirm=true 也会拦下（400）。'));
+
+    var table = el('table');
+    var thead = el('thead');
+    var hr = el('tr');
+    var heads = ['题号', '题目', '计划答案', '置信度', '标记'];
+    for (var h = 0; h < heads.length; h++) { hr.appendChild(el('th', '', heads[h])); }
+    thead.appendChild(hr);
+    table.appendChild(thead);
+
+    var tbody = el('tbody');
+    for (var i = 0; i < rows.length; i++) {
+      var v = planRowView(rows[i]);
+      var no = v.no.found ? String(v.no.value) : String(i + 1);
+      var stem = v.stem.found ? truncate(String(v.stem.value), 140) : '—';
+      var ans = v.answer.found ? truncate(String(v.answer.value), 240) : '—';
+      var cnum = numOrNull(v.confidence.value);
+      var cText = v.confidence.found ? fmtConf(v.confidence.value) : '—';
+      var lowConf = (cnum !== null && s.threshold !== null && cnum < s.threshold);
+      var flags = [];
+      if (v.human.found && v.human.value) { flags.push(badge('需人工确认', 'badge-warn')); }
+      if (lowConf) { flags.push(badge('低于阈值', 'badge-fail')); }
+      var flagCell = el('td', 'flag');
+      if (flags.length) {
+        for (var f = 0; f < flags.length; f++) { flagCell.appendChild(flags[f]); }
+      } else if (v.reason.found) {
+        flagCell.appendChild(el('span', 'hint', truncate(String(v.reason.value), 90)));
+      } else {
+        flagCell.appendChild(el('span', 'hint', '—'));
+      }
+      var confCls = 'mono' + (lowConf ? ' conf-low' : (cnum === null ? '' : ' conf-ok'));
+      tbody.appendChild(row([
+        cell(no, 'mono'),
+        cell(stem, 'wrap'),
+        cell(ans, 'wrap mono'),
+        el('td', confCls, cText),
+        flagCell
+      ]));
+    }
+    table.appendChild(tbody);
+    var wrap = el('div', 'table-wrap');
+    wrap.appendChild(table);
+    box.appendChild(wrap);
+    return box;
   }
 
   /* ------------------------------------------------------------------ 题库页 */
@@ -2170,8 +2882,10 @@
     box.hidden = false;
 
     var head = el('div', 'res-head');
-    head.appendChild(el('div', 'res-title',
-      env.title || env.label || env.action || '结果'));
+    if (!o.noTitle) {
+      head.appendChild(el('div', 'res-title',
+        env.title || env.label || env.action || '结果'));
+    }
     var meta = el('div', 'res-meta');
     meta.appendChild(el('span', 'hint', '平台 '));
     meta.appendChild(el('span', 'mono', dash(env.platform)));
@@ -2223,7 +2937,10 @@
   }
 
   /* 列表渲染。opts.related / opts.onRelated 可选：把「这一行的数据能填满其必填参数」
-     的详情动作做成一列按钮（如批改网 finished 行 → essay 详情），全程按动作声明推导。 */
+     的详情动作做成一列按钮（如批改网 finished 行 → essay 详情），全程按动作声明推导。
+     opts.rowActions(rowObj, i) 可选：返回该行的操作按钮（作业页的「详情 / 提交」）。
+     opts.onRowDblClick(rowObj, ev) 可选：整行双击（作业页 → 作业详情），
+     行会带上 opts.rowTitle 的提示文字，双击时点在按钮/链接上不算。 */
   function tableBlock(columns, rows, emptyText, opts) {
     var o = opts || {};
     var related = o.related || [];
@@ -2246,7 +2963,9 @@
       if (cols[i].key) { th.title = cols[i].key; }
       headRow.appendChild(th);
     }
-    if (related.length) { headRow.appendChild(el('th', 'ctr', '详情')); }
+    if (related.length || o.rowActions) {
+      headRow.appendChild(el('th', 'ctr', o.rowActions ? (o.actionsLabel || '操作') : '详情'));
+    }
     thead.appendChild(headRow);
     table.appendChild(thead);
 
@@ -2261,11 +2980,34 @@
         cells.push(cell(text, cols[c].mono ? 'mono' : 'wrap'));
       }
       if (related.length) { cells.push(relatedCell(rowObj, related, o.onRelated)); }
-      tbody.appendChild(row(cells));
+      if (o.rowActions) { cells.push(actionCell(rowObj, r, o.rowActions)); }
+      var tr = row(cells);
+      if (o.rowClass) { tr.className = o.rowClass; }
+      if (o.onRowDblClick) {
+        tr.className = (tr.className ? tr.className + ' ' : '') + 'row-click';
+        tr.title = o.rowTitle || '双击查看详情';
+        (function (obj) {
+          tr.addEventListener('dblclick', function (ev) { o.onRowDblClick(obj, ev); });
+        })(rowObj);
+      }
+      tbody.appendChild(tr);
     }
     table.appendChild(tbody);
     wrap.appendChild(table);
     return wrap;
+  }
+
+  /* 行内操作列：回调返回按钮数组；没有可做的就显示「—」，不留空按钮。 */
+  function actionCell(rowObj, index, build) {
+    var c = el('td', 'ctr nowrap');
+    var nodes = null;
+    try { nodes = build(rowObj, index); } catch (e) { nodes = null; }
+    if (!nodes || !nodes.length) {
+      c.appendChild(el('span', 'hint', '—'));
+      return c;
+    }
+    for (var i = 0; i < nodes.length; i++) { c.appendChild(nodes[i]); }
+    return c;
   }
 
   function requiredParamNames(act) {
@@ -3318,6 +4060,7 @@
     renderSettingsKeys(s.env_keys_seen);
     renderSettingsPlatforms(s.platforms);
     renderSettingsDeps(s.optional_deps);
+    renderLlm();
 
     $('settings-dotenv').textContent = s.dotenv_present === undefined
       ? '—'
@@ -3396,6 +4139,199 @@
     });
     fillTable('settings-deps-table', 'settings-deps-body', 'settings-deps-empty', rows,
       '没有可选依赖信息。');
+  }
+
+  /* ==================================================================
+     大模型答题状态（只读）
+     契约本轮**没有**定义 /api/overview.llm 的形状（实测后端也没返回 llm 字段），
+     所以这里做只读的容错展示：有就用，没有就显示「未配置」。
+     前端**不收集 api_key** —— 密钥只写服务端环境变量，界面不读、不回显、不外发。
+     ================================================================== */
+
+  function llmSource() {
+    var o = state.overview, s = state.settings;
+    if (isObj(o) && has(o, 'llm')) { return { llm: o.llm, from: 'GET /api/overview' }; }
+    if (isObj(s) && has(s, 'llm')) { return { llm: s.llm, from: 'GET /api/settings' }; }
+    return { llm: null, from: '' };
+  }
+
+  function llmEnabled(llm) {
+    if (llm === true) { return true; }
+    if (!llm || llm === false) { return false; }
+    if (!isObj(llm)) { return !!llm; }
+    if (typeof llm.enabled === 'boolean') { return llm.enabled; }
+    if (typeof llm.configured === 'boolean') { return llm.configured; }
+    if (typeof llm.api_key_set === 'boolean') { return llm.api_key_set; }
+    return !!(llm.model || llm.model_name || llm.provider || llm.api_base || llm.base_url);
+  }
+
+  function llmField(llm, keys) {
+    if (!isObj(llm)) { return null; }
+    for (var i = 0; i < keys.length; i++) {
+      var v = llm[keys[i]];
+      if (v !== null && v !== undefined && v !== '') { return v; }
+    }
+    return null;
+  }
+
+  function renderLlm() {
+    var body = $('llm-body');
+    var grid = $('llm-grid');
+    var status = $('llm-status');
+    var empty = $('llm-empty');
+    var hint = $('llm-hint');
+    if (!body || !grid || !status) { return; }
+
+    var src = llmSource();
+    var llm = src.llm;
+    var on = llmEnabled(llm);
+
+    clear(status);
+    var st = el('span', 'stat');
+    st.appendChild(el('span', 'stat-label', '大模型答题'));
+    st.appendChild(badge(on ? '已启用' : '未配置', on ? 'badge-ok' : 'badge-warn'));
+    status.appendChild(st);
+    var st2 = el('span', 'stat');
+    st2.appendChild(el('span', 'stat-label', '来源'));
+    st2.appendChild(el('span', 'stat-value mono', src.from || '—'));
+    status.appendChild(st2);
+
+    if (hint) {
+      hint.textContent = on
+        ? ('已启用 · 来自 ' + src.from + '（只读展示，本页不收集 api_key）')
+        : '未配置 / 未读到 llm 字段 · 界面只读，api_key 只写服务端环境变量';
+    }
+    if (empty) {
+      if (src.llm === null) {
+        empty.hidden = false;
+        empty.textContent = '后端当前没有返回大模型配置（/api/overview 与 /api/settings 都没有 ' +
+          'llm 字段），按「未配置」显示。契约本轮未定义该字段的形状 —— ' +
+          '启用方式是把密钥写进服务端环境变量后重启服务；本页不收集、不回显任何密钥。';
+      } else {
+        empty.hidden = true;
+        empty.textContent = '';
+      }
+    }
+
+    var pairs = [
+      ['状态', on ? '已启用' : '未配置'],
+      ['来源', src.from || '—（后端未返回 llm 字段）'],
+      ['provider', llmField(llm, ['provider', 'vendor', 'name'])],
+      ['model', llmField(llm, ['model', 'model_name', 'modelName'])],
+      ['api_base', llmField(llm, ['api_base', 'base_url', 'baseUrl', 'endpoint'])],
+      ['api_key', llmField(llm, ['api_key_set', 'has_api_key']) === true
+        ? '已由服务端环境变量提供（界面不显示、不收集）'
+        : '不在前端显示'],
+      ['min_confidence', confidenceThreshold() === null ? null : confidenceThreshold()]
+    ];
+    var kids = [];
+    for (var i = 0; i < pairs.length; i++) {
+      var wrap = el('div');
+      wrap.appendChild(el('dt', '', pairs[i][0]));
+      var v = pairs[i][1];
+      var text = (v === null || v === undefined || v === '') ? '—'
+        : (isObj(v) || Array.isArray(v) ? jsonText(v, 160) : String(v));
+      wrap.appendChild(el('dd', monoish(text) ? 'mono' : '', text));
+      kids.push(wrap);
+    }
+    fill(grid, kids);
+    body.hidden = false;
+  }
+
+  /* ==================================================================
+     浏览器会话抓取（账号页）
+     契约里没有「写入 cookie」的接口，所以这里给可复制的命令行。
+     重点说清：未登录的登录页也会下发匿名 csrfToken，所以要验证会话。
+     ================================================================== */
+
+  function capturePlatformName() {
+    var sel = $('cap-platform');
+    var v = sel ? String(sel.value || '') : '';
+    if (v) { return v; }
+    if (state.platform) { return state.platform; }
+    return (state.platforms[0] && state.platforms[0].name) || '<平台>';
+  }
+
+  function copyCommand(text, btn) {
+    var done = function (ok) {
+      if (!ok) {
+        showToast('复制失败：请手动选中命令行复制（浏览器不允许脚本写剪贴板）。');
+        return;
+      }
+      showToast('命令已复制到剪贴板');
+      if (!btn) { return; }
+      btn.textContent = '已复制';
+      setTimeout(function () { if (btn) { btn.textContent = '复制'; } }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { done(false); });
+      return;
+    }
+    done(false);
+  }
+
+  function cmdItem(spec) {
+    var item = el('div', 'cmd-item');
+    var head = el('div', 'cmd-head');
+    head.appendChild(el('span', 'cmd-label', spec.label));
+    if (spec.cmd) {
+      var btn = el('button', 'btn btn-sm', '复制');
+      btn.type = 'button';
+      btn.title = '复制这条命令（在仓库根目录执行）';
+      btn.addEventListener('click', function () { copyCommand(spec.cmd, btn); });
+      head.appendChild(btn);
+    }
+    item.appendChild(head);
+    if (spec.cmd) { item.appendChild(el('pre', 'cmd', spec.cmd)); }
+    if (spec.note) { item.appendChild(el('p', 'cmd-note', spec.note)); }
+    return item;
+  }
+
+  function renderCaptureCmds() {
+    var box = $('cap-cmds');
+    if (!box) { return; }
+    var plt = capturePlatformName();
+    var cmds = [
+      { label: '① 用 Chrome 打开该平台并登录一次（过掉验证码 / 扫码），然后完全退出 Chrome',
+        cmd: '',
+        note: '抓取用的是你已经登录过的浏览器用户目录，不接触密码、不碰验证码。' },
+      { label: '② 用那个用户目录抓取（headless，不需要显示器）',
+        cmd: 'PYTHONPATH=src python3 -m kedaibiao capture ' + plt + ' --profile ~/.config/google-chrome',
+        note: '必须先完全退出 Chrome，否则用户目录被占用。' },
+      { label: '③ 也可以手贴 cookie（DevTools → Network → 任一 api 请求 → Cookie 头）',
+        cmd: 'PYTHONPATH=src python3 -m kedaibiao capture ' + plt +
+          ' --cookie "csrfToken=…; x-token=…"',
+        note: '未登录的登录页也会下发匿名 csrfToken，所以 capture 抓完会再打一次只读接口' +
+          '验证会话；验证不过会删掉并报错。' }
+    ];
+    var kids = [];
+    for (var i = 0; i < cmds.length; i++) { kids.push(cmdItem(cmds[i])); }
+    fill(box, kids);
+  }
+
+  /* 「浏览器会话抓取」的平台下拉（默认跟随当前平台）。 */
+  function syncCapturePlatformOptions(force) {
+    var sel = $('cap-platform');
+    if (!sel) { return; }
+    var names = state.platforms.map(function (p) { return p.name; }).join(',');
+    var sig = names + '|' + (state.platform || '');
+    if (!force && sig === sel.getAttribute('data-sig')) { return; }
+    sel.setAttribute('data-sig', sig);
+    var current = String(sel.value || '');
+    var kids = [el('option', '', '— 请选择平台 —')];
+    kids[0].value = '';
+    for (var i = 0; i < state.platforms.length; i++) {
+      var p = state.platforms[i];
+      var o = el('option', '', (p.display_name || p.name) + ' · ' + p.name);
+      o.value = p.name;
+      kids.push(o);
+    }
+    fill(sel, kids);
+    var want = state.platform || current || '';
+    sel.value = want;
+    if (String(sel.value) !== want) { sel.value = ''; }
+    renderCaptureCmds();
   }
 
   /* ==================================================================
@@ -3823,6 +4759,15 @@
       var course = String($('assign-course').value || '').trim();
       loadActionPage('assignments', course ? { course: course } : {});
     });
+    /* 作业抽屉：关闭按钮 / 点遮罩 / Esc。行内按钮与双击在渲染时挂好。 */
+    $('drawer-close').addEventListener('click', closeDrawer);
+    $('drawer-backdrop').addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && state.drawer.open) { closeDrawer(); }
+    });
+
+    /* 账号页：抓取命令行的平台下拉（换了平台就重新生成命令）。 */
+    $('cap-platform').addEventListener('change', function () { renderCaptureCmds(); });
 
     /* 工具页：动作清单 + 参数表单 + 结果 */
     $('actions-nav').addEventListener('click', function (ev) {
@@ -3878,6 +4823,9 @@
     renderBank();
     renderAccounts();
     renderUsers();
+    renderDrawer();
+    renderCaptureCmds();
+    renderLlm();
     applyRunConstraints();
 
     /* 默认停在登录页：有会话才由 enterConsole 打开控制台。 */

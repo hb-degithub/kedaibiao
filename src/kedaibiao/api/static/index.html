@@ -344,6 +344,8 @@
               </div>
             </form>
             <div id="assignments-error" class="err-box" hidden></div>
+            <!-- 「提交」被禁用时的原因（平台 capabilities.submit = false，或后端 501 not_supported） -->
+            <div id="assign-submit-note" class="alert-box alert-soft" hidden></div>
             <div id="assignments-result" class="action-result" hidden></div>
           </div>
         </div>
@@ -354,6 +356,14 @@
           <span class="mono">course</span> 留空 = 遍历全部课程。
           已完成的历史作业 / 课程与详细作答在「工具」页的平台专属动作里（如批改网的
           <span class="mono">finished</span> 历史作文、<span class="mono">essay</span> 作文详情）。
+        </p>
+        <p class="note">
+          <strong>双击任意一行</strong>看该作业的详情（<span class="mono">POST /api/assignments/detail</span>，
+          只读，结果在右侧抽屉里，不跳页）。每行也有「详情」与「提交」按钮。
+          <strong>「提交」是两步的</strong>：先干跑（<span class="mono">confirm=false</span>）看每题打算怎么答与置信度，
+          确认后才真提交（<span class="mono">confirm=true</span>）。
+          平台没实现提交时后端返回 <span class="mono">501 not_supported</span>，
+          界面会写明「该平台尚未实现提交」并禁用「提交」——<strong>不会假装成功</strong>。
         </p>
       </section>
 
@@ -687,6 +697,53 @@
           <p class="note">.env 文件：<span id="settings-dotenv" class="mono">—</span></p>
         </div>
 
+        <!-- ==================================================================
+             大模型答题：只读展示是否已启用。
+             前端**不收集 api_key** —— 密钥写在服务端环境变量里，本页不读也不回显。
+             ================================================================== -->
+        <div class="panel">
+          <div class="panel-head">
+            <h2>大模型答题</h2>
+            <span id="llm-hint" class="hint"></span>
+          </div>
+          <p id="llm-empty" class="empty" hidden></p>
+          <div id="llm-body" hidden>
+            <div id="llm-status" class="stat-row"></div>
+            <dl id="llm-grid" class="env-list"></dl>
+          </div>
+          <p class="note">
+            本页<strong>只读</strong>：<span class="mono">api_key</span> 只写服务端环境变量，
+            界面不收集、不回显、也不外发（CSP 已禁止任何外部请求）。
+            未启用时答题会退回到题库命中 / 规则兜底，跑批仍可干跑。
+          </p>
+        </div>
+
+        <!-- ==================================================================
+             浏览器会话抓取：需要浏览器 cookie 的平台（如希沃品课）
+             契约里没有 cookie 写入接口，所以这里给的是可复制的命令行。
+             ================================================================== -->
+        <div class="panel">
+          <div class="panel-head">
+            <h2>浏览器会话抓取</h2>
+            <span class="hint">需要浏览器会话 cookie 的平台（如希沃品课）</span>
+          </div>
+          <form class="run-form" autocomplete="off">
+            <div class="field">
+              <label for="cap-platform">平台</label>
+              <select id="cap-platform" class="mono"></select>
+              <span class="field-hint">命令行里的平台机器名，命令在服务端 / 仓库根目录执行</span>
+            </div>
+          </form>
+          <div id="cap-cmds" class="cmd-list"></div>
+          <p class="note">
+            <strong>未登录的登录页也会下发匿名 <span class="mono">csrfToken</span></strong>，
+            所以不能只看「有没有那个 cookie」—— <span class="mono">capture</span> 抓完会真的打一次只读接口
+            验证会话；验证不过会删掉并报错。<br>
+            抓取不接触密码、不碰验证码：用的是你自己已经登录过的浏览器用户目录。
+            平台密码走上面的「新增账号」（不落盘）；这里只解决 cookie 与浏览器上下文绑定的情况。
+          </p>
+        </div>
+
         <div class="panel">
           <div class="panel-head">
             <h2>平台凭据状态</h2>
@@ -808,6 +865,30 @@
       </footer>
 
     </main>
+
+    <!-- ==================================================================
+         作业抽屉：作业详情（双击作业行）与单作业提交（两步：干跑 → 确认）
+         固定定位覆盖内容区，不用整页跳走；Esc / 点遮罩 / 「关闭」都能关。
+         内容一律由 app.js 用 textContent 构建，这里只放骨架。
+         ================================================================== -->
+    <div id="drawer" class="drawer" hidden>
+      <div id="drawer-backdrop" class="drawer-backdrop"></div>
+      <aside id="drawer-panel" class="drawer-panel" role="dialog" aria-modal="true"
+             aria-labelledby="drawer-title">
+        <header class="drawer-head">
+          <div class="drawer-head-main">
+            <h2 id="drawer-title">作业详情</h2>
+            <div id="drawer-meta" class="res-meta"></div>
+          </div>
+          <button id="drawer-close" class="btn btn-ghost btn-sm" type="button"
+                  title="关闭抽屉（Esc）">关闭</button>
+        </header>
+        <div id="drawer-status" class="drawer-status" hidden></div>
+        <div id="drawer-error" class="err-box" hidden></div>
+        <div id="drawer-body" class="drawer-body"></div>
+        <footer id="drawer-foot" class="drawer-foot" hidden></footer>
+      </aside>
+    </div>
   </div>
 </div>
 
