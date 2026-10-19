@@ -225,6 +225,10 @@ class Browser:
             )
         self.user_data_dir = Path(user_data_dir) if user_data_dir else None
         self.timeout = timeout
+        #: 出现原生对话框时自动点「确定」（页面会被对话框阻塞，必须处理）
+        self.auto_accept_dialogs = True
+        #: 见过的对话框（排查用）
+        self.dialogs_seen: list[dict[str, Any]] = []
         self._proc: subprocess.Popen[bytes] | None = None
         self._ws: WebSocket | None = None
         self._seq = 0
@@ -357,7 +361,10 @@ class Browser:
             except json.JSONDecodeError:
                 continue
             if data.get("id") != message_id:
-                continue  # 事件推送，忽略
+                # 事件推送：对话框必须就地处理，否则页面会被阻塞住
+                if self._handle_event(ws, data):
+                    continue
+                continue
             if "error" in data:
                 raise CDPError(f"{method} 失败: {data['error']}")
             return data.get("result") or {}
@@ -423,6 +430,8 @@ class Browser:
                 data = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            if self._handle_event(ws, data):
+                continue
             method = data.get("method")
             params = data.get("params") or {}
             if method == "Network.requestWillBeSent":
@@ -438,6 +447,28 @@ class Browser:
                         continue
                     return {"url": tracked.pop(request_id), "body": body.get("body") or ""}
         return {}
+
+    def _handle_event(self, ws: WebSocket, data: dict[str, Any]) -> bool:
+        """处理需要立即响应的事件。返回 True 表示已处理。
+
+        目前只处理**原生对话框**（alert/confirm/beforeunload）：
+        它们一出现就会阻塞页面，而按钮点击经常正是通过 confirm 走的
+        （iTEST 的「开始考试」就是这样）。不处理的话页面直接卡死。
+        """
+        method = data.get("method")
+        if method == "Page.javascriptDialogOpening" and self.auto_accept_dialogs:
+            params = data.get("params") or {}
+            self.dialogs_seen.append({
+                "type": params.get("type"), "message": params.get("message"),
+            })
+            log.info("自动接受对话框 [%s] %s", params.get("type"), params.get("message"))
+            self._seq += 1
+            ws.send_text(json.dumps({
+                "id": self._seq, "method": "Page.handleJavaScriptDialog",
+                "params": {"accept": True},
+            }))
+            return True
+        return False
 
     def navigate(self, url: str) -> None:
         self.call("Page.enable")
