@@ -190,20 +190,26 @@ PYTHONPATH=src python3 -m kedaibiao action pinco answers assignment_id=…
 四个动作都**只读**：`learning`（材料 + 进度）、`material`（材料详情/下载地址）、
 `answers`（作业题目与作答槽）、`connection`（会话/健康检查/课程数）。
 
-#### 品课「刷课」（学习时长上报）
+#### 品课「刷课」（按页推进学习进度）
+
+机制已实测确认：**材料进度 = 看过的最大页 / 总页数**。把材料当课件打开
+（`coursewareId` 就是材料号），逐页上报 `maxPageIndex` 即可推进；PPT 与 PDF
+都适用。
 
 ```bash
-# 默认 dry-run：只列材料、算计划，不发任何写请求
+# 默认 dry-run：只列材料与进度，不打开课件、不发任何写请求
 PYTHONPATH=src python3 scripts/pinco_progress.py --course <courseId>
 PYTHONPATH=src python3 scripts/pinco_progress.py --course <courseId> --material <materialId>
 
-# 真上报必须显式 --live；带总时长/次数上限与「进度不动就停」
+# 真推进必须显式 --live；--all 处理整门课；带页数/时长上限与「进度不动就停」
 PYTHONPATH=src python3 scripts/pinco_progress.py --course <courseId> --material <materialId> --live
+PYTHONPATH=src python3 scripts/pinco_progress.py --course <courseId> --all --live
 ```
 
-> ⚠️ 上报接口与报文已确认（学生端页面每 5 秒发一次、每次算 5 秒），但**实测上报
-> 后进度没有变化** —— 语义尚未确认。脚本因此默认 dry-run、进度不动就停；证据与
-> 复现见 [docs/verification/pinco-progress.md](docs/verification/pinco-progress.md)。
+> ⚠️ 这是**写操作**（会改平台上的学习进度），默认 dry-run。真实会话实测：单份
+> 10 页 PPT 从 50% → 100%，整门课 15 份材料（9~387 页）全部推到 100%。证据、
+> 阴性结果（学习时长上报不涨进度）与复现见
+> [docs/verification/pinco-progress.md](docs/verification/pinco-progress.md)。
 
 ### 可选依赖
 

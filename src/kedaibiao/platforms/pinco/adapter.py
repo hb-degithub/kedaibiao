@@ -486,7 +486,49 @@ class PincoAdapter(PlatformAdapter):
         )
         return parsing.parse_material_detail(data, material_id=material_id)
 
-    async def report_learning(
+    async def open_courseware(
+        self, course: Course, material_id: str
+    ) -> tuple[int, int]:
+        """打开材料的课件视图，返回 ``(总页数, 已看最大页下标)``。
+
+        **写接口但读语义**：它记录「打开过」，不改变学习进度。实测
+        ``{"resId": <media.resId>, "coursewareId": <materialId>}`` →
+        ``pages``（10 页的 PPT）与 ``maxPageIndex``（0 起）。
+
+        ``maxPageIndex`` 是 0 起的页下标：``3`` = 前 4 页看过，10 页的材料
+        此时 ``learningRatio=40``。
+        """
+        self._require_session()
+        detail = await self.fetch_material_detail(course, material_id)
+        media = detail.raw.get(ep.FIELD_MEDIA)
+        res_id = media.get(ep.FIELD_RES_ID) if isinstance(media, dict) else None
+        if not res_id:
+            raise NotSupportedError(
+                f"材料 {material_id} 详情里没有 media.resId —— 无法按课件打开。"
+            )
+        data = await self.client().post_action(
+            ep.ACTION_COURSEWARE_OPEN,
+            {
+                ep.FIELD_RES_ID: res_id,
+                ep.FIELD_COURSEWARE_ID: material_id,
+            },
+            dangerous=True,
+        )
+        raw = data if isinstance(data, dict) else {}
+        pages = raw.get(ep.FIELD_PAGES) or []
+        total = len(pages) if isinstance(pages, list) else 0
+        if total < 1:
+            raise NotSupportedError(
+                f"材料 {material_id} 的课件没有页数据，平台可能还在转换。"
+            )
+        max_index = raw.get(ep.FIELD_MAX_PAGE_INDEX)
+        try:
+            start = int(max_index)
+        except (TypeError, ValueError):
+            start = 0
+        return total, max(-1, min(start, total - 1))
+
+    async def advance_learning(
         self,
         course: Course,
         material_id: str,
@@ -494,30 +536,61 @@ class PincoAdapter(PlatformAdapter):
         dry_run: bool = True,
         policy: ProgressPolicy | None = None,
         target_ratio: float = 1.0,
-        on_tick: Callable[[ProgressTick], None] | None = None,
+        on_page: Callable[[ProgressTick], None] | None = None,
     ) -> ProgressReport:
-        """提升某份课程材料的学习进度（「刷课」）—— **写操作**。
+        """把某份课程材料的进度按页推到目标（「刷课」）—— **写操作**。
 
-        行为、证据边界与熔断见 :mod:`kedaibiao.platforms.pinco.progress`。
-        默认 ``dry_run=True``：只算计划、不发请求；要真的上报必须显式传
-        ``dry_run=False``。只发学习时长上报这一个 action，绝不碰提交。
+        机制：课件翻页上报（``PostV1CoursewareStudentMaxLook``），
+        进度 = ``(maxPageIndex + 1) / 总页数``。默认 ``dry_run=True``：
+        只读材料、算要翻多少页，**不打开课件、不发翻页**；要真的推必须显式
+        ``dry_run=False``。绝不碰作业提交。
 
-        ⚠️ 实测「接口接受」但进度没动（详见
-        ``docs/verification/pinco-progress.md``）；所以返回值里的
-        ``ratio_delta`` 比「发了多少秒」更值得看 —— 熔断会在进度不动时自己停。
+        证据与熔断见 :mod:`kedaibiao.platforms.pinco.progress` 与
+        ``docs/verification/pinco-progress.md``。
         """
         self._require_session()
-        initial = await self.fetch_material_detail(course, material_id)
-        reporter = progress.LearningReporter(self.client(), policy=policy)
+        detail = await self.fetch_material_detail(course, material_id)
+        ratio_before = self._ratio(detail)
+        if dry_run:
+            reporter = progress.CoursewareProgressReporter(self.client(), policy=policy)
+            # dry-run 不打开课件（那是写接口），因此页数未知；计划数按「未知」
+            # 处理 —— 只如实说明「要打开课件才知道」，不编造页数。
+            return await reporter.run(
+                course_id=course.remote_id,
+                material_id=material_id,
+                total_pages=0,
+                start_page_index=-1,
+                ratio_before=ratio_before,
+                fetch_ratio=lambda: self.fetch_material_detail(course, material_id),
+                dry_run=True,
+                target_ratio=target_ratio,
+            )
+        total, start = await self.open_courseware(course, material_id)
+        reporter = progress.CoursewareProgressReporter(self.client(), policy=policy)
         return await reporter.run(
             course_id=course.remote_id,
             material_id=material_id,
-            initial=initial,
-            fetch_detail=lambda: self.fetch_material_detail(course, material_id),
-            dry_run=dry_run,
+            total_pages=total,
+            start_page_index=start,
+            ratio_before=ratio_before,
+            fetch_ratio=self._detail_ratio_getter(course, material_id),
+            dry_run=False,
             target_ratio=target_ratio,
-            on_tick=on_tick,
+            on_page=on_page,
         )
+
+    def _detail_ratio_getter(
+        self, course: Course, material_id: str
+    ) -> Callable[[], Any]:
+        async def get() -> float:
+            detail = await self.fetch_material_detail(course, material_id)
+            return self._ratio(detail)
+
+        return get
+
+    @staticmethod
+    def _ratio(detail: PincoMaterialDetail) -> float:
+        return detail.progress
 
     async def fetch_questions(self, assignment: Assignment) -> list[Question]:
         """作业题目。学习任务（课程材料）没有题目 —— 对它调用会直接报错。

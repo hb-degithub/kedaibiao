@@ -1,11 +1,12 @@
 # 希沃品课「刷课」链路验证报告（2026-10-20）
 
 - 验证者：Lead（本轮实现者）
-- 账号：控制台绑定的品课账号 #9（会话文件在 `data/sessions/accounts/`，**不入库**）
+- 账号：控制台绑定的品课账号 #9（会话快照在 `data/sessions/accounts/`，**不入库**）
 - 环境：本机 Python 3.14.4 / Chromium 1248（Playwright）
 - 范围：只做学生端、只碰自己的账号；**没有任何教师端接口调用**
-- 结论一句话：**上报接口与报文已确认，但「进度会不会真的累加」没有确认** ——
-  实现按「默认 dry-run + 进度不动就停」落地，不把未验证的语义包装成成功。
+- 结论一句话：**刷课机制已确认并端到端跑通** —— 进度按「看过的最大页」算，
+  逐页 `PostV1CoursewareStudentMaxLook` 即可推满；实测把一份 10 页 PPT
+  从 50% 推到 100%。此前试的「学习时长上报」接口会收下请求但**不涨进度**。
 
 ---
 
@@ -13,128 +14,146 @@
 
 | 结论 | 证据等级 | 详见 |
 | --- | --- | --- |
-| 材料详情 `countLearningProgress === true` 时，学生端页面每 5 秒上报一次学习时长 | 【bundle 调用点】 | §1 |
-| 上报 action：`PostV1CourseByCourseIdMaterialStudentLearningDurationReport`，报文 `{courseId, materialId, learningDuration: 5}` | 【bundle + 实测被接受】 | §1 |
-| `materialId` 必须是材料列表里的 `materialId`（= `chapterDirectoryMaterialId`）；传资源 id 会被 9105 拒绝 | 【实测】 | §2.4 |
-| 真实会话直接调用返回 `{"statusCode":0,"message":"ok"}` | 【实测】 | §2.1 |
-| **上报后 `learningRatio` / `viewed` 没有变化**（60s、1200s、浏览器页内发、加 App 头都试过） | 【实测·阴性】 | §2.2–§2.5 |
-| `ReportViewed` / `ReportStudied` 收下请求但不改变 `viewed`；`CountLearningProgress` 是教师端（6571） | 【实测·阴性】 | §2.3 |
-| 进度是否即时累加、是否需要「真实学习会话」/服务端批处理 | **未验证** | §3 |
+| 材料进度 = `(maxPageIndex + 1) / 总页数` | 【实测】 | §2 |
+| 打开课件：`{"resId": <media.resId>, "coursewareId": <materialId>}` → `pages[]` + `maxPageIndex` | 【实测】 | §2.1 |
+| 翻页上报：`{"coursewareId": <materialId>, "maxPageIndex": N}` 推一页 | 【实测】 | §2.2 |
+| PPT（`media.type=4`）与 PDF（`type=8`）都适用（PDF 实测 45 / 387 页） | 【实测】 | §2.3 |
+| 端到端：50% → 100%，5 次翻页，材料列表 `learningRatio` 同步变化 | 【实测】 | §2.4 |
+| 学习时长上报 `…StudentLearningDurationReport` 收下请求但**不涨进度** | 【实测·阴性】 | §3 |
+| `countLearningProgress` 只是 H5 页面「要不要发时长心跳」的开关，与进度算法无关 | 【bundle + 实测】 | §3 |
 
 ---
 
-## 1. 官方 bundle 里的调用点【bundle】
+## 1. 怎么发现的
 
-学生端材料页 chunk（`material.js`）里，详情返回后：
-
-1. 只有当 `data.countLearningProgress` 为真，才启动定时器；
-2. 定时器间隔 **5000 ms**；
-3. 每次发 `PostV1CourseByCourseIdMaterialStudentLearningDurationReport`，报文
-   `{"courseId": <query 里的 courseId>, "materialId": <query 里的 chapterDirectoryMaterialId>, "learningDuration": 5}`。
-
-这解释了为什么「每 5 秒、每次 5 秒」—— 不是我们猜的节奏，是页面写死的。
+用户反馈：**在手机 App 里打开资料、滑动 PPT，百分比会跟着涨**。据此重新翻
+学生端 bundle，发现 H5 材料页里只有「学习时长上报」，没有翻页逻辑 —— 说明
+真正记进度的是 App 的课件（courseware）链路。品课把材料当成「课件」：
+`coursewareId` 就是材料列表里的 `materialId`，`resId` 是 `media.resId`。
 
 ## 2. 实测记录
 
-所有请求都走同一份浏览器会话（`student/api.json`，`x-server: main` + `x-csrf-token`），
-只对 1 门课的 1~2 份材料动手，总量受控。
+所有请求都走同一份浏览器会话（`student/api.json` + `x-server: main` +
+`x-csrf-token`），只对自己账号的一门课、少量材料动手。
 
-### 2.1 接口接受请求
-
-12 次、间隔 5.1 秒、`learningDuration: 5`（模拟页面 60 秒）：
+### 2.1 打开课件拿到页数与当前页
 
 ```
-tick 0:  http=200  {"statusCode": 0, "message": "ok"}
-tick 11: http=200  {"statusCode": 0, "message": "ok"}
-after:   viewed=False  ratio=0
+POST ?actionName=PostV1CoursewareStudentOpen
+{"resId": "dc8a…8810", "coursewareId": "<materialId>"}
+→ {"maxPageIndex": 3, "pages": [ … 共 10 项 … ]}
 ```
 
-### 2.2 一次性大时长也不动
+此时材料详情 `learningRatio = 40`：`(3+1)/10 = 40%`，对得上。
+`pages[]` 每项带 `pageIndex`（1 起）、`coursewarePageId`、缩略图、下载地址。
 
-同一材料再发 `learningDuration: 300`、`1200`，仍 `statusCode 0`；
-材料详情 `learningRatio` 仍为 0、`viewed` 仍为 `false`。
-**注意**：这说明服务端要么忽略了请求，要么累计了但比例不是即时可见 —— 两者都还没区分开。
+### 2.2 翻一页，进度立刻涨
 
-### 2.3 其他候选写接口的阴性结果
+```
+POST ?actionName=PostV1CoursewareStudentMaxLook
+{"coursewareId": "<materialId>", "maxPageIndex": 4}
+→ {}
 
-| 尝试 | 结果 |
-| --- | --- |
-| `PostV1CourseByCourseIdMaterialStudentReportViewed {courseId, materialId}` | `{}` 成功信封，但 `viewed` 仍 `false`、比例不变 |
-| `PostV1CourseByCourseIdMaterialStudentReportStudied {courseId, materialId}` | 同上 |
-| `PostV1ChapterdirectoryMaterialCountLearningProgress {chapterDirectoryMaterialIds: [...]}` | `6571 没有该课程权限`（教师端接口，学生身份不可用） |
-| `PostV1CoursewareStudentOpen {courseId, chapterDirectoryMaterialId, chapterDirectoryNodeId}` | `401：resId 不能为 null, coursewareId 不能为 null`（课件上下文，不是材料） |
+再打开课件：maxPageIndex=4；材料详情 learningRatio = 50
+```
 
-### 2.4 `materialId` 的取值被证实
+所以「翻页」就是 `maxPageIndex` 递增；服务端立即记账，不用等批处理。
 
-把资源 id（详情里的 `materialId` 字段）当作上报的 `materialId` 时：
-`9105：章节目录资源关联不存在`。所以上报的 `materialId` 必须是**材料列表里的
-`materialId`**（与详情请求的 `chapterDirectoryMaterialId` 同一个值）。
+### 2.3 页数分布
 
-### 2.5 浏览器页内发也不动
+本账号「电子技术基础」15 份材料里：
 
-- 学生工作台 `GET /student/workbench/student?auth=…` 能正常渲染并调
-  `GetV1WorkbenchStudentApp`；
-- 材料页 `GET /student/material/?auth=…&courseId=…&chapterDirectoryMaterialId=…`
-  在 headless Chromium 里 **DOM 为空**（控制台唯一的报错是百度统计
-  `hm.baidu.com` 连接被拒，与业务无关），所以无法从页面里观察它自己的上报；
-- 退一步，在**已渲染的工作台页面上下文**里用 `fetch` 发同样的上报（带
-  `x-app-code: university-student-mini-program`、`x-token`、`x-csrf-token`、
-  `x-server`），仍 `statusCode 0`，进度不变。
+| 类型 | `media.type` | 页数 |
+| --- | --- | --- |
+| PPTX | 4 | 10 页（第一份实测） |
+| PDF | 8 | 45 页 / 387 页（教材电子书） |
 
-### 2.6 延迟检查
+两类都能用同一套「打开 → 翻页」推进。
 
-上报后 3 分钟重新读列表/详情：`viewed=False`、`ratio` 不变（另一份已学 12% 的材料
-也停在 12）。所以「马上看不到、等一会就有」这个解释在 3 分钟尺度上不成立。
+### 2.4 端到端跑通
 
----
+```
+$ scripts/pinco_progress.py --course <courseId> --material <materialId> --live
+开始推进：1 份材料，目标 100%；每页间隔 1s，上限 30s / 400 页。
+  翻到第 6/10 页，进度 —
+  …
+  翻到第 10/10 页，进度 100%
+  材料 <materialId>：进度 50% → 100%（+50.00%），翻页 5 次（共 10 页），
+  停止原因 target_reached。
+全部到目标。
+```
 
-## 3. 未确认的部分（写清楚，别包装）
+### 2.5 整门课跑通（15/15 到 100%）
 
-1. **累计语义**：时长是累加、覆盖还是要配合别的接口，未知；
-2. **门槛**：是否需要页面/App 的「学习会话」（例如先被某接口标记 viewed）或服务端
-   批处理，未知；
-3. **是否有比例阈值**：材料 22 MB、`learningRatio` 是整数百分比，60~1200 秒都不动，
-   无法排除「必须跨过某个阈值才显示」。
+```bash
+scripts/pinco_progress.py --course <courseId> --all --live
+```
 
-下一步最省事的验证：**由用户在自己的浏览器/App 里打开一份材料 30~60 秒**，
-看进度是否变化；若变化，再抓那一刻的完整请求序列（含页面加载时是否先发了
-`ReportViewed` 之类的请求）。这比继续盲试接口有用。
+结果：课程「电子技术基础」**15 份材料全部 100%**（13 份 PPT + 2 份 PDF，
+页数 9~387 页不等，合计约 900 次翻页）。跑完再列材料确认所有
+`learningRatio` 都是 100。
 
----
+过程中遇到 1 次网关 **502 Bad Gateway**（单条翻页请求），脚本按设计只跳过该份、
+继续后面的材料，并在 stderr 汇总「1 份没到目标」；重跑该份即补齐（90% → 100%）。
+这属于传输层抖动，不是机制问题 —— 但说明批量跑要允许重试。
 
-## 4. 本轮实现（以及为什么这样实现）
+## 3. 阴性结果：学习时长上报不涨进度
+
+官方 H5 材料页里确有（`countLearningProgress === true` 时每 5 秒一次）：
+
+```
+POST ?actionName=PostV1CourseByCourseIdMaterialStudentLearningDurationReport
+{"courseId": …, "materialId": …, "learningDuration": 5}
+```
+
+真实会话调用返回 `{"statusCode":0,"message":"ok"}`，但：
+
+- 12 次 × 5 秒（60 秒）后，`learningRatio` 仍是 0、`viewed` 仍是 `false`；
+- 一次性 300 / 1200 秒也一样；
+- 浏览器页内用 `fetch` 发、补 `x-app-code` / `x-token` 请求头，仍不涨；
+- 延迟 3 分钟再读，仍不涨。
+
+结论：**「接口收下」≠「进度累加」**。`countLearningProgress` 只是 H5 页面
+「要不要发心跳」的开关，真正记进度的是课件翻页（`maxLook`）。这条时长上报
+常量仍留在 `endpoints.py` 里作为阴性证据，不再用于刷课。
+
+（历史假设：页面会话门槛 / App 上下文 / 服务端批处理 —— 现已被上面的
+`maxLook` 实测排除，不需要再去验证。）
+
+## 4. 实现
 
 | 落点 | 内容 |
 | --- | --- |
-| `platforms/pinco/endpoints.py` | 登记 action / 字段常量，`EVIDENCE=MEASURED` 只针对「接口形态被实测接受」；注释里明确写「进度累加未确认」 |
-| `platforms/pinco/progress.py` | `LearningReporter`：按 5 秒节奏发上报，**默认 dry-run**；`max_total_seconds` / `max_ticks` / 连续 N 次刷新不涨就停 |
-| `platforms/pinco/adapter.py` | `report_learning(course, material_id, *, dry_run=True, …)`：只发学习时长上报，不碰提交 |
-| `platforms/pinco/client.py` | 进度上报加入 `DANGEROUS_ACTIONS`：任何调用都必须显式 `dangerous=True` |
-| `scripts/pinco_progress.py` | CLI：不带 `--live` 只列材料/算计划；`--live` 才上报，停下时打印「进度没动」 |
-| `tests/test_pinco_progress.py` | 15 个离线用例：节奏下限、dry-run 不发请求、达标即停、进度不动即停、两个上限、`countLearningProgress=false` 拒绝、适配器接线报文 |
+| `platforms/pinco/endpoints.py` | 登记 `ACTION_COURSEWARE_OPEN` / `ACTION_COURSEWARE_MAX_LOOK` 与 `maxPageIndex`/`pages`/`resId` 字段；两者都进 `DANGEROUS_ACTIONS` |
+| `platforms/pinco/progress.py` | `CoursewareProgressReporter`：按页推进，**默认 dry-run**；带页数/总时长上限与「连续几次回读不涨就停」 |
+| `platforms/pinco/adapter.py` | `open_courseware()`（页数 + 当前页）与 `advance_learning(dry_run=True, …)` |
+| `scripts/pinco_progress.py` | CLI：不带 `--live` 只列材料/算计划；`--material` 单份；`--all` 全部 |
+| `tests/test_pinco_progress.py` | 19 个离线用例：策略校验、dry-run 零请求、逐页报文、达标/页数/时长/停滞熔断、目标比例换算、从当前页续推、适配器接线 |
 
 安全默认值：
 
-- `dry_run=True`（要真发必须显式关）；
-- 间隔不得小于 5 秒（比页面更密没有依据）；
-- 一次运行默认最多 1800 秒（CLI）/ 3600 秒（库）；
-- 连续 3 次刷新进度不涨就停 —— 正因为「累计语义未确认」，不能让脚本刷几百次还
-  以为在涨；
-- 日志只记材料号与秒数，不记 cookie / 下载地址。
+- `dry_run=True`，且 dry-run **连课件都不打开**（打开也是写接口）；
+- 翻页间隔默认 1 秒、不得低于 0.2 秒（比滑动更密没有依据）；
+- 每份材料默认最多 900 秒 / 400 页；
+- 连续 2 次回读进度不涨即停（`ratio_stalled`）；
+- 日志只有材料号、页码、百分比，不含 cookie / 签名下载地址。
 
-## 5. 复现命令（默认只读）
+## 5. 复现命令
 
 ```bash
 # 只列材料与进度（只读）
 PYTHONPATH=src .venv/bin/python scripts/pinco_progress.py --course <courseId>
 
-# 看某份材料的 dry-run 计划（不发请求）
+# dry-run：只读、不打开课件、不发翻页
 PYTHONPATH=src .venv/bin/python scripts/pinco_progress.py --course <courseId> --material <materialId>
 
-# 真上报（小步、带熔断；进度不动会自己停）
+# 真推进单份（小步、带熔断）
 PYTHONPATH=src .venv/bin/python scripts/pinco_progress.py --course <courseId> \
-    --material <materialId> --live --max-seconds 10 --refresh-every 2 --stall-checks 1
+    --material <materialId> --live --max-seconds 60
+
+# 全部材料推到 100%
+PYTHONPATH=src .venv/bin/python scripts/pinco_progress.py --course <courseId> --all --live
 ```
 
-最后一档在本机实测的输出：2 次上报后 `ratio_stalled`，进度 0% → 0%，
-返回码非 0（脚本用返回码告诉调用方「没刷上」）。
+返回码：`0` 成功；`2` 会话不可用；`3` 找不到课程/材料；`4` 有材料没到目标
+（会在 stderr 列出材料号）。

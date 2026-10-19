@@ -37,7 +37,7 @@
 | 逐题保存答案（结构已确认到「静态」） | REST `POST /server-main/api/v1/studenthomework/:studentHomeworkId/question/:questionId/answer`，请求体 `{studentHomeworkId, questionId, content}`（`attachments` 仅当非空时附加） | 【静态-App】 |
 | 判分是否回传每题对错 | **读接口**按题回传 `answer.score` / `answer.review`（【实测】）；**提交接口自身**的响应结构 **未验证** | 【实测】/【未验证】 |
 | 幂等 / 重复提交 | **未验证**。平台读侧有 `submitted/expired/canSubmitted/canRedo/corrected/rejected`（【实测】）→ 实现应「提交前复查 detail」 | 【未验证】 |
-| 学习进度上报 | 候选写接口**静态可列**（视频时长上报 / 课件 open / maxLook / studyReport / countLearningProgress），**字段、频率、幂等一律未验证** | 【静态】/【未验证】 |
+| 学习进度上报（刷课） | **已确认并跑通**：材料进度 = `(maxPageIndex+1)/总页数`；课件 `open` + 逐页 `maxLook` 即可推满（PPT/PDF 都适用）。学习时长上报是心跳，收下但不涨进度 | 【实测】 |
 | 请求签名 | **无任何签名证据**；强制校验是 CSRF 双提交（`x-csrf-token` ← cookie `csrfToken`）+ **必需头 `x-server: main`** | 【实测】 |
 | 纯 HTTP 能否发写请求 | **不能**：登录态下纯 HTTP 仍回 `403 invalid csrf token`（csrf 与浏览器会话上下文绑定） | 【实测 pinco.md 附录 L】 |
 | 现有代码状态 | **有提交实现但自带闸门**：`submit_payload_confirmed = False`（声明 `adapter.py:140`，拦截 `adapter.py:639`，注释 `endpoints.py:406`），报文未确认前拒绝发出 | 【实测源码】 |
@@ -220,57 +220,61 @@
 > **`learningRatio`（0~1）就是学习进度**，列表里直接带【实测 `pinco.md` 附录 L.3】。
 > 本账号实测：只有「电子技术基础」有 10 个材料，`learningRatio` 全为 0。
 
-### 5.2 写侧候选端点（**全部为静态；字段/频率/幂等未验证**）
+### 5.2 写侧端点（2026-10-20 更新：刷课链路**已确认**）
 
-| Web 动作名 | App 动作名 | REST 路径 + 方法 | 语义（按名） | 等级 |
-| --- | --- | --- | --- | --- |
-| `PostV1CourseByCourseIdMaterialStudentLearningDurationReport` | （未见） | 未核对 | **材料学习时长上报 —— 学生端页面唯一在用的「刷课」接口**，见 §5.3 | 【bundle 调用点 + 实测】 |
-| `PostV1CourseByCourseIdMaterialStudentVideoDurationReport` | `PostApiV1CourseByCourseIdMaterialStudentVideoDurationReport` | `POST /server-main/api/v1/course/:courseId/material/student/videoDurationReport` | **视频播放时长上报** | 【静态】 |
-| `PostV1ChapterdirectoryMaterialCountLearningProgress` | （App 路由表里**没有**） | APK 字符串存在 `/api/v1/chapterdirectory/material/countLearningProgress` | 学习进度计数上报（**教师端**：学生身份调用回 6571） | 【静态-Web】+【静态 APK】 |
-| `PostV1CoursewareStudentOpen` | `PostApiV1CoursewareStudentOpen` | `POST /server-main/api/v1/courseware/student/open` | 打开课件（打卡/上报） | 【静态】 |
-| `PostV1CoursewareStudentMaxLook` / `PostV2CoursewareStudentMaxLook` | `PostApiV1CoursewareStudentMaxLook` | `POST /server-main/api/v1/courseware/student/maxLook` | 课件最大观看页/时长上报 | 【静态】 |
-| `PostV1CoursewareStudentStudyReport` | `PostApiV1CoursewareStudentStudyReport` | `POST /server-main/api/v1/courseware/student/studyReport` | **学习报告上报** | 【静态】 |
-| （未见 Web 名） | `PostApiV1CourseByCourseIdStudentResume` | `POST /server-main/api/v1/course/:courseId/student/resume` | 推断为「续学位置」；**语义未验证** | 【静态-App】 |
+| Web 动作名 | REST 路径（App 族） | 语义 | 等级 |
+| --- | --- | --- | --- |
+| `PostV1CoursewareStudentOpen` | `POST /server-main/api/v1/courseware/student/open` | **打开材料课件**：回 `pages[]`（总页数）与 `maxPageIndex`（已看最大页，0 起） | 【实测确认】 |
+| `PostV1CoursewareStudentMaxLook` | `POST /server-main/api/v1/courseware/student/maxLook` | **翻页上报（刷课真正用的接口）**：`{coursewareId, maxPageIndex}` | 【实测确认】 |
+| `PostV1CourseByCourseIdMaterialStudentLearningDurationReport` | — | 学习时长心跳：H5 材料页每 5 秒一次；**收下请求但不涨进度** | 【bundle + 实测·阴性】 |
+| `PostV1CourseByCourseIdMaterialStudentVideoDurationReport` | `POST /server-main/api/v1/course/:courseId/material/student/videoDurationReport` | 视频播放时长上报 | 【静态】 |
+| `PostV1ChapterdirectoryMaterialCountLearningProgress` | APK 字符串存在 `/api/v1/chapterdirectory/material/countLearningProgress` | 学习进度计数上报（**教师端**：学生调用回 6571） | 【静态 + 实测·无权限】 |
+| `PostV1CoursewareStudentStudyReport` | `POST /server-main/api/v1/courseware/student/studyReport` | 学习报告上报（空体也回 `{}`，未发现对进度有影响） | 【实测·未发现作用】 |
+| （未见 Web 名） | `POST /server-main/api/v1/course/:courseId/student/resume` | 推断为「续学位置」；**语义未验证** | 【静态-App】 |
 
 | 维度 | 结论 | 等级 |
 | --- | --- | --- |
-| 上报频率 | **已确认（仅材料时长上报这一条）**：材料页在 `countLearningProgress` 为真时每 5 秒发一次，`learningDuration` 写死 5，见 §5.3 | 【bundle 调用点】 |
-| 需要哪些字段（进度/时长/位置） | **已确认（仅材料时长上报这一条）**：`{courseId, materialId, learningDuration}`，`materialId` 取列表里的 `materialId`；传资源 id 会被 9105 拒绝 | 【bundle + 实测】 |
-| 幂等 / 累计语义 | **仍未验证**：上报被接受（`statusCode 0`），但 60s / 1200s 后 `learningRatio`、`viewed` 都没变 | 【实测·阴性，见 `docs/verification/pinco-progress.md`】 |
-| 服务端校验（签名/时间戳） | **无签名证据**；写接口未见 nonce/sign/时间戳字段（登录侧的 `rst`/`lst` 只在 SSO 登录） | 【静态】无证据 |
-| 现有适配器 | 学习进度**只读**：`Assignment.progress` ← `learningRatio`；上报实现默认 dry-run，见 `platforms/pinco/progress.py` | 【实测源码】 |
+| 进度算法 | **已确认**：`learningRatio = (maxPageIndex + 1) / 总页数`（10 页 PPT、`maxPageIndex=3` → 40%） | 【实测】 |
+| 刷课需要的字段 | **已确认**：open 要 `{resId, coursewareId}`（`resId` = `media.resId`，`coursewareId` = 材料列表 `materialId`）；maxLook 要 `{coursewareId, maxPageIndex}` | 【实测】 |
+| 上报频率 | **已确认**：可以逐页推；服务端立即记账（无需批处理）。翻页之间留 1 秒间隔即可 | 【实测】 |
+| 端到端 | **已确认**：把一份 10 页 PPT 从 50% 推到 100%（5 次 maxLook） | 【实测】 |
+| 学习时长上报 | **不涨进度**：60s / 1200s、页内 fetch、补 App 头都试过，`learningRatio`/`viewed` 不动 | 【实测·阴性】 |
+| 服务端校验（签名/时间戳） | **无签名证据**；写接口未见 nonce/sign/时间戳字段 | 【静态】无证据 |
+| 现有适配器 | `adapter.advance_learning()`：默认 dry-run；`progress.CoursewareProgressReporter` 逐页推进并回读核对 | 【实测源码】 |
 
-> 结论：**接口与报文已确认，但「进度会不会真的累加」没有确认** —— 所以实现是
-> 「默认 dry-run + 进度不动就停」，不把未验证的语义包装成成功。别再拿 §5.2 里
-> 其他候选端点盲试；下一步应由真实页面/App 的学习会话取证（见验证报告 §3）。
->
-> 2026-10-20 更新：上面的「已确认/未验证」两栏与 §5.1 的旧表述（「只能列候选端点」）
-> 已被本轮实测推翻一半 —— 端点找到了，语义还没。以
-> `docs/verification/pinco-progress.md` 为准。
+> 结论：**刷课机制已确认并跑通** —— 不是「时长上报」，而是「课件翻页」
+> （`maxLook`）。`countLearningProgress` 只是 H5 页面要不要发时长心跳的开关，
+> 与进度算法无关。实现默认 dry-run，带页数/总时长上限与「进度不动就停」熔断；
+> 证据全文见 `docs/verification/pinco-progress.md`。
 
-### 5.3 已确认：材料学习时长上报（2026-10-20，【bundle 调用点 + 实测】）
+### 5.3 已确认：课件翻页推进进度（2026-10-20，【实测】）
 
-官方学生端材料页（chunk 内反混淆）的调用序列：
+1. 打开材料课件::
 
-1. `GetV1CourseByCourseIdStudentMaterial {courseId, chapterDirectoryMaterialId}` 取详情；
-2. 只有 `data.countLearningProgress` 为真才启动 `setInterval(5000)`；
-3. 每次 POST
-   `PostV1CourseByCourseIdMaterialStudentLearningDurationReport`
-   `{"courseId": <courseId>, "materialId": <chapterDirectoryMaterialId>, "learningDuration": 5}`。
+       POST ?actionName=PostV1CoursewareStudentOpen
+       {"resId": "<media.resId>", "coursewareId": "<materialId>"}
 
-实测：
+   返回 `{"maxPageIndex": 3, "pages": [ … 10 项 … ]}`；此时材料详情
+   `learningRatio = 40` —— `(3+1)/10`，对得上。
 
-- 真实会话调用返回 `{"statusCode":0,"message":"ok"}`；
-- `materialId` 传资源 id（详情里的 `materialId`）会被 `9105 章节目录资源关联不存在`
-  拒绝，传列表里的 `materialId` 才成功；
-- **但 60s / 1200s 上报后 `learningRatio`、`viewed` 都没变**；延迟 3 分钟再读也没变；
-- 浏览器页内发、加 `x-app-code`/`x-token` 头也一样（材料 H5 页在 headless 里 DOM 为空，
-  无法观察它自己的上报）。
+2. 翻一页::
 
-因此：**接口形态确认，语义未确认**。实现
-（`platforms/pinco/progress.py` + `adapter.report_learning` + `scripts/pinco_progress.py`）
-默认 dry-run，并带「进度不动就停」的熔断；证据全文见
-`docs/verification/pinco-progress.md`。
+       POST ?actionName=PostV1CoursewareStudentMaxLook
+       {"coursewareId": "<materialId>", "maxPageIndex": 4}
+
+   再打开课件 `maxPageIndex=4`，材料详情 `learningRatio=50` —— 立即生效。
+
+3. PPT（`media.type=4`）与 PDF（`type=8`，实测 45 / 387 页）都适用：
+   「课件」是材料的另一种视图，`coursewareId` 就是材料号。
+
+`PostV1CourseByCourseIdMaterialStudentLearningDurationReport` 虽然形态确认
+（H5 每 5 秒发一次、`learningDuration: 5`、真实会话返回 `statusCode 0`），但
+**实测不涨进度**（60s / 1200s / 延迟 3 分钟 / 页内 fetch 都一样）。它只能说明
+「页面在心跳」，不能拿来刷课。
+
+实现：`platforms/pinco/progress.py`（`CoursewareProgressReporter`）+ 
+`adapter.open_courseware()` / `adapter.advance_learning()` +
+`scripts/pinco_progress.py`（默认 dry-run，`--live` 才写）。
 
 ---
 
@@ -329,8 +333,8 @@
 3. **闸门保持不变**：`submit_payload_confirmed=False` 与 `DANGEROUS_ACTIONS`
    必须继续挡住写请求；C1 到位后再改为按样本构造。
 4. **判分读取**：提交后的分数走 `…/questions` 的 `answer.score/review`，不要从提交响应取。
-5. **刷课**：端点/频率/字段已由 bundle + 实测确认（§5.3），实现已落地但**默认
-   dry-run**；「进度是否真的累加」仍未验证 —— 在那之前不要把它当成「一定能刷满」。
+5. **刷课**：机制已确认并端到端跑通（§5.3）：`open` 取页数 + 逐页 `maxLook`。
+   实现默认 dry-run，`--live` 才写；带页数/总时长上限与「不涨就停」熔断。
 
 ### 8.2 缺什么、优先级
 
@@ -339,7 +343,7 @@
 | **P0** | 提交请求体 + 响应形状 | 用户提供 **C1** |
 | **P0** | 重复提交语义（幂等） | 用户提供 **C2/C3** |
 | P0 | 逐题保存答案的附件结构 | 用户提供 **C4** |
-| P1 | 进度上报的**累计语义**（频率/字段已由 bundle 确认） | 用户提供 **C6**（一次真实学习前后的进度变化） |
+| — | ~~进度上报语义~~ 已完成：刷课 = 课件翻页（`maxLook`），见 §5.3 | 实测确认 |
 | P1 | 错误码语义（6569/10419/6582） | 用户提供 **C8** |
 | P2 | 浏览器内发请求的落地形态（BiDi / Playwright） | 工程决策；现有实测路径是 `scripts/bidi_ws.py` |
 | — | **不做**：教师端任何写入（范围裁决只做学生端） | 决策 |

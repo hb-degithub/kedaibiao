@@ -605,6 +605,12 @@ python3 res_id.py raw/apk_x/resources.arsc 0x7f130001  # 资源 ID 解析（辅�
 - 详情接口的 `chapterDirectoryMaterialId` 取列表里的 `materialId` 值即可（实测通过）。
 - **不是** `GetV1StudentChapterTaskList`：该 action 在 Web 网关上是**空壳**，对全部 24 门课、`{courseId}` / `{classId}` / 组合参数一律返回 `{}`。
 - 教师端接口 `GetV1ChapterdirectoryNodes`、`GetV1ChapterdirectoryMaterialsLearningprogress` 用学生身份调用返回 `6571 没有该课程权限`，学生链路别走这两个。
+- **2026-10-20 补充（刷课机制已确认）**：`learningRatio = (maxPageIndex + 1) / 总页数`。
+  先 `PostV1CoursewareStudentOpen {resId: media.resId, coursewareId: materialId}`
+  拿 `pages[]` 与 `maxPageIndex`，再逐页 `PostV1CoursewareStudentMaxLook
+  {coursewareId, maxPageIndex}` 即可推进（PPT/PDF 通用）。此前试的
+  `…LearningDurationReport` 只是 H5 心跳，收下但不涨进度。证据见
+  `docs/verification/pinco-progress.md`，实现见 `platforms/pinco/progress.py`。
 
 ## L.4 本账号实测盘点（2026-10-19 11:40 前后）
 

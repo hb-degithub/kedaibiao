@@ -219,7 +219,7 @@ EVIDENCE["ACTION_SUBMIT_HOMEWORK"] = Evidence.STATIC
 EVIDENCE["ACTION_SUBMIT_CHAPTER_TASK"] = Evidence.STATIC
 EVIDENCE["ACTION_SUBMIT_COURSE_GROUP_TASK"] = Evidence.STATIC
 
-#: ⚠️ 学习时长上报（「刷课」）—— 写操作，但不属于提交流程。
+#: ⚠️ 学习时长上报 —— 学生端 H5 材料页的「心跳」，**实测不涨进度**。
 #:
 #: 形态**双重确认**：
 #: 1. 官方学生端 bundle（``material.js``）里，材料页在详情返回
@@ -228,24 +228,43 @@ EVIDENCE["ACTION_SUBMIT_COURSE_GROUP_TASK"] = Evidence.STATIC
 #:    ``learningDuration`` 写死 5；
 #: 2. 真实会话直接调用返回 ``{"statusCode":0,"message":"ok"}``。
 #:
-#: ⚠️ **但进度是否真的累加尚未确认**：实测 60s / 1200s 上报后
-#: ``learningRatio`` 仍为 0、``viewed`` 仍为 ``false``（见
-#: ``docs/verification/pinco-progress.md``）。所以这里只登记「接口形态确认」，
-#: 不登记「刷课有效」—— 实现默认 dry-run，并带「进度不动就停」的熔断。
+#: ⚠️ **但进度没有因此累加**：实测 60s / 1200s 上报后 ``learningRatio`` 不变；
+#: 真正让进度变化的是课件翻页上报（见 :data:`ACTION_COURSEWARE_MAX_LOOK`）。
+#: 这条常量只作为阴性证据保留，**刷课不再用它**。
 ACTION_LEARNING_DURATION_REPORT = (
     "PostV1CourseByCourseIdMaterialStudentLearningDurationReport"
 )
 EVIDENCE["ACTION_LEARNING_DURATION_REPORT"] = Evidence.MEASURED
 
+#: ⚠️ 课件打开（学生端）—— 读形态的写接口：返回页数与已看的最大页。
+#:
+#: 实测：``{"resId": <media.resId>, "coursewareId": <材料列表 materialId>}``
+#: → ``data.pages[]``（总页数）+ ``data.maxPageIndex``（0 起）。
+#: 材料进度的分母/当前值就来自这里；PPT（``media.type=4``）与 PDF（``type=8``）
+#: 都适用。
+ACTION_COURSEWARE_OPEN = "PostV1CoursewareStudentOpen"
+EVIDENCE["ACTION_COURSEWARE_OPEN"] = Evidence.MEASURED
+
+#: ⚠️ **刷课真正用的接口**：翻页上报（写操作）。
+#:
+#: 实测：``{"coursewareId": <materialId>, "maxPageIndex": N}`` 把
+#: ``maxPageIndex`` 从 3 推到 4 后，材料 ``learningRatio`` 立刻 40 → 50
+#: （10 页的 PPT，(N+1)/总页数）。因此「刷课」= 逐页把 ``maxPageIndex``
+#: 推到最后一页。
+ACTION_COURSEWARE_MAX_LOOK = "PostV1CoursewareStudentMaxLook"
+EVIDENCE["ACTION_COURSEWARE_MAX_LOOK"] = Evidence.MEASURED
+
 #: 危险动作名单。客户端对这些 action 要求显式 ``dangerous=True`` 才肯发。
-#: 进度上报语义上「无害」，但它同样是写操作 —— 和提交一样必须显式放行，
-#: 抓取/计划路径不可能顺手把它发出去。
+#: 进度上报（时长 / 翻页）与提交一样都是写操作，必须显式放行 ——
+#: 抓取/计划路径不可能顺手把它们发出去。
 DANGEROUS_ACTIONS = frozenset(
     {
         ACTION_SUBMIT_HOMEWORK,
         ACTION_SUBMIT_CHAPTER_TASK,
         ACTION_SUBMIT_COURSE_GROUP_TASK,
         ACTION_LEARNING_DURATION_REPORT,
+        ACTION_COURSEWARE_OPEN,
+        ACTION_COURSEWARE_MAX_LOOK,
     }
 )
 
@@ -489,6 +508,8 @@ FIELD_MATERIAL_SOURCE = "materialSource"
 #: **学习进度（0~1）**，直接映射到 ``Assignment.progress``。实测确认。
 FIELD_LEARNING_RATIO = "learningRatio"
 FIELD_MEDIA = "media"
+#: 资源哈希（32 位十六进制）。课件打开要它 + ``coursewareId`` 一起传。
+FIELD_RES_ID = "resId"
 FIELD_MEDIA_ID = "mediaId"
 FIELD_RESOURCE_ID = "resourceId"
 FIELD_DOWNLOAD_URL = "downloadUrl"
@@ -505,6 +526,18 @@ FIELD_LEARNING_DURATION = "learningDuration"
 #: 课程里的学习进度对象（``learnInfo.learningProgress``）。
 FIELD_LEARN_INFO = "learnInfo"
 FIELD_LEARNING_PROGRESS = "learningProgress"
+#: 课件的标识。**实测：材料就是这个 id** —— ``coursewareId`` 用材料列表里的
+#: ``materialId``（= ``chapterDirectoryMaterialId``），见
+#: :data:`ACTION_COURSEWARE_OPEN` / :data:`ACTION_COURSEWARE_MAX_LOOK`。
+FIELD_COURSEWARE_ID = "coursewareId"
+#: 已看过的最大页下标（**0 起**）：``maxPageIndex=3`` 表示第 4 页已看。
+#: 材料进度 = ``(maxPageIndex + 1) / 总页数`` —— 实测 10 页 PPT 的 ``3`` → 40%。
+FIELD_MAX_PAGE_INDEX = "maxPageIndex"
+#: 课件的页数组（每页含 ``pageIndex``/``coursewarePageId``/缩略图等）。
+FIELD_PAGES = "pages"
+#: 页下标（**1 起**）。注意与 :data:`FIELD_MAX_PAGE_INDEX` 的 0 起不同，
+#: 两者差一，混淆会算错进度。
+FIELD_PAGE_INDEX = "pageIndex"
 FIELD_TOTAL = "total"
 for _name in (
     "FIELD_COURSE_MATERIALS",
@@ -515,16 +548,25 @@ for _name in (
     "FIELD_MATERIAL_SOURCE",
     "FIELD_LEARNING_RATIO",
     "FIELD_MEDIA",
+    "FIELD_RES_ID",
     "FIELD_MEDIA_ID",
     "FIELD_RESOURCE_ID",
     "FIELD_DOWNLOAD_URL",
     "FIELD_CHAPTER_DIRECTORY_MATERIAL_ID",
     "FIELD_RESOURCE_TYPE_DOWNLOADABLE",
     "FIELD_VIEWED",
+    "FIELD_COURSEWARE_ID",
+    "FIELD_MAX_PAGE_INDEX",
+    "FIELD_PAGES",
+    "FIELD_PAGE_INDEX",
     "FIELD_COUNT_LEARNING_PROGRESS",
     "FIELD_LEARNING_DURATION",
     "FIELD_LEARN_INFO",
     "FIELD_LEARNING_PROGRESS",
+    "FIELD_COURSEWARE_ID",
+    "FIELD_MAX_PAGE_INDEX",
+    "FIELD_PAGES",
+    "FIELD_PAGE_INDEX",
     "FIELD_TOTAL",
 ):
     EVIDENCE[_name] = Evidence.MEASURED

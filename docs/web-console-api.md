@@ -667,8 +667,8 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
 > （品课没有「按作业号取作业」的只读接口）；`connection` 是唯一一个「失败也
 > 返回结果而不是 502」的动作 —— 自检的价值就是把失败点说清楚。
 >
-> 「学习时长上报（刷课）」**不是**控制台动作：它是写操作，走
-> `scripts/pinco_progress.py`（默认 dry-run），语义尚未确认，见
+> 「刷课（推进学习进度）」**不是**控制台动作：它是写操作（课件翻页上报），走
+> `scripts/pinco_progress.py`（默认 dry-run，`--live` 才写），机制与证据见
 > [docs/verification/pinco-progress.md](verification/pinco-progress.md)。
 
 ### `POST /api/assignments/detail` —— 单个作业详情（双击作业行）
