@@ -357,6 +357,43 @@
           已完成的历史作业 / 课程与详细作答在「工具」页的平台专属动作里（如批改网的
           <span class="mono">finished</span> 历史作文、<span class="mono">essay</span> 作文详情）。
         </p>
+        <!-- ==================================================================
+             一键自动化（iTEST）：取卷 → 转写答题 → 填 → 核验 → 复核 → 人工补 → 交卷
+             下面这块就是「终端」：执行日志逐行追加，自动滚到底。
+             ================================================================== -->
+        <div class="panel" id="auto-panel" hidden>
+          <div class="panel-head">
+            <h2>一键自动化</h2>
+            <span id="auto-hint" class="hint">—</span>
+            <button id="auto-close" class="btn btn-sm" type="button">关闭</button>
+          </div>
+
+          <div id="auto-steps" class="stat-row"></div>
+          <div id="auto-progress" class="auto-progress"><span id="auto-progress-bar"></span></div>
+
+          <pre id="auto-log" class="auto-log" aria-live="polite"></pre>
+
+          <div id="auto-verify" class="auto-verify" hidden></div>
+
+          <div id="auto-manual" class="auto-manual" hidden>
+            <h3>需要人工的题<span class="hint">（选完点「保存并复核」）</span></h3>
+            <div id="auto-manual-list" class="auto-manual-list"></div>
+            <div class="action-submit">
+              <button id="auto-manual-save" class="btn btn-run" type="button">保存并复核</button>
+              <span id="auto-manual-state" class="field-hint"></span>
+            </div>
+          </div>
+
+          <div class="action-submit auto-foot">
+            <button id="auto-submit" class="btn btn-warn" type="button" disabled>确认交卷</button>
+            <span id="auto-status" class="field-hint">流程未开始</span>
+          </div>
+          <p class="note">
+            <strong>不可逆</strong>：进考场即开始计时，交卷后不能再次作答。
+            交卷前会再填一遍并逐项核验，核验不符或缺题都会拒绝。
+          </p>
+        </div>
+
         <p class="note">
           <strong>双击任意一行</strong>看该作业的详情（<span class="mono">POST /api/assignments/detail</span>，
           只读，结果在右侧抽屉里，不跳页）。每行也有「详情」与「提交」按钮。

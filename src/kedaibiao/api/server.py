@@ -385,6 +385,31 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     ))
             return self._error(404, f"没有这个路由: {path}", "not_found")
 
+        # -- iTEST 一键自动化（后台任务 + 流式日志）--
+        if path == "/api/platforms/itest/auto":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            wait = payload.get("autosave_wait")
+            job = self.service.start_itest_auto(
+                str(payload.get("exam_id") or ""),
+                viewer=viewer,
+                autosave_wait=None if wait is None else float(wait),
+            )
+            return self._json(202, job)
+        if path == "/api/platforms/itest/manual":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            answers = payload.get("answers")
+            if not isinstance(answers, dict):
+                raise ConsoleError("answers 必须是对象", kind="bad_request", status=400)
+            return self._json(200, self.service.save_itest_manual(
+                str(payload.get("exam_id") or ""),
+                {str(k): str(v) for k, v in answers.items()},
+                viewer=viewer,
+            ))
+
         if path.startswith("/api/platforms/"):
             parts = path[len("/api/platforms/") :].split("/")
             if len(parts) == 3 and parts[1] == "actions" and parts[0] and parts[2]:

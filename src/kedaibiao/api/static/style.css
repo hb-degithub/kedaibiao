@@ -836,3 +836,67 @@ pre.cmd {
   overflow: auto; font-family: ui-monospace, monospace; }
 .grader-history { margin-top: 14px; }
 .grader-history h4 { font-size: 13px; margin: 0 0 6px; color: #e6edf3; }
+
+
+/* ============================ 一键自动化 ============================ */
+
+.auto-progress {
+  height: 4px;
+  background: #1b2430;
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 2px 0 10px;
+}
+.auto-progress > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--blue);
+  transition: width .35s ease;
+}
+
+/* 终端式日志：深底、等宽、固定高度、纵向滚动 */
+.auto-log {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  max-height: 340px;
+  min-height: 160px;
+  overflow-y: auto;
+  background: #0b1016;
+  border: 1px solid #1f2a36;
+  border-radius: 4px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  color: #b9c6d4;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.auto-log .ln-time { color: #5d6b7a; }
+.auto-log .ln-ok    { color: var(--green); }
+.auto-log .ln-warn  { color: var(--yellow); }
+.auto-log .ln-error { color: #f0a49c; }
+.auto-log .ln-info  { color: #9fc0dd; }
+
+.auto-verify { margin-bottom: 12px; }
+
+.auto-manual h3 {
+  margin: 14px 0 8px;
+  font-size: 13px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.auto-manual-list { display: grid; gap: 10px; }
+.auto-q {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: #121922;
+}
+.auto-q-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.auto-q-stem { color: var(--fg-dim); font-size: 12px; margin-bottom: 8px; white-space: pre-wrap; }
+.auto-q-subs { display: grid; gap: 6px; }
+.auto-q-subs label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.auto-q-subs select, .auto-q-subs input { min-width: 120px; }
+.auto-foot { margin-top: 12px; }

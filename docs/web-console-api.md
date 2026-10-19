@@ -423,6 +423,52 @@ run 是「一个作业的处理结果」，job 是「一次跑批的整体结果
 - `override_fields` 列出被界面覆盖的字段；
 - **`api_key` 的明文永远不出现**，只有 `api_key_set: true/false`。
 
+### `POST /api/platforms/itest/auto` —— 一键自动化（返回后台任务）
+
+一次跑完「取卷 → 音频转写 + AI 答题 → 填写 → 逐项核验 → 等自动保存 → 重新抓取复核」，
+**不交卷**。
+
+```json
+{ "exam_id": "1102016386", "autosave_wait": 65 }
+```
+
+- `autosave_wait` 可选：等平台自动保存的秒数（默认 65，`0` = 不等）；
+- 返回 **202** + 任务对象（同 `GET /api/jobs/<id>` 的形状）：
+
+```json
+{
+  "job_id": "a-3", "kind": "itest-auto", "status": "running",
+  "exam_id": "1102016386",
+  "logs":  [{ "at": "2026-10-19T22:10:01", "level": "ok", "text": "[2/6] 取卷完成…" }],
+  "steps": [{ "name": "取卷", "ok": true, "detail": "26 题" }],
+  "verify": { "total": 26, "matched": 26, "mismatched": [], "missing": [],
+              "filled": { "blank": 80, "radio": 9, "textarea": 15, "missing": [] },
+              "checked": { "bad": [], "total": 0 } },
+  "manual": [ { "qid": "...", "kind": "radio", "kind_label": "单选",
+                "stem": "...", "slots": 3,
+                "options": [ { "letter": "A", "text": "...", "sub": 1 } ] } ],
+  "paper": { "title": "26-27-1…B2U6", "question_count": 26, "slot_count": 104 },
+  "error": ""
+}
+```
+
+前端用法：拿到 `job_id` 后轮询 `GET /api/jobs/<id>`，把 `logs` 逐行铺进终端面板；
+`manual` 非空时渲染人工选择表单；`status != running` 时停止轮询。
+
+### `POST /api/platforms/itest/manual` —— 人工补答案
+
+```json
+{ "exam_id": "1102016386", "answers": { "1000608578": "A C D" } }
+```
+
+把人工选的答案并进答案单缓存（`data/itest/answers-<考试号>.json`），
+并把补上的题从 `skipped` 里移除。返回：
+
+```json
+{ "exam_id": "1102016386", "answered": 26, "missing": [], "can_submit": true,
+  "answers": { "1000608578": "A C D" } }
+```
+
 ### `POST /api/settings/llm` —— 改大模型配置（超管）
 
 ```json

@@ -147,6 +147,9 @@
     submitting: false,
     runOptionsSig: '',       // 跑批下拉的选项指纹（变了才重建，避免打断用户选择）
     actions: { platform: null, list: null, active: null, result: null, busy: false, prefill: null },
+    /* 一键自动化：job 轮询、最后一份快照、人工答案 */
+    auto: { jobId: null, timer: null, job: null, platform: '', examId: '', title: '',
+            manual: {}, saving: false, submitting: false, logCount: 0 },
     actionPages: {
       courses: { busy: false, loaded: false, error: '', result: null, params: {}, seq: 0 },
       assignments: { busy: false, loaded: false, error: '', result: null, params: {}, seq: 0 }
@@ -1915,6 +1918,16 @@
     var plt = state.platform;
     var title = assignmentTitleOf(rowObj);
     var out = [];
+
+    /* iTEST 的作答/交卷在浏览器里完成，给它一个「一键自动化」入口 */
+    if (plt === 'itest' && !reason) {
+      var bAuto = el('button', 'btn btn-sm btn-warn', '一键自动化');
+      bAuto.type = 'button';
+      bAuto.title = '取卷 → 音频转写 + AI 答题 → 填写 → 逐项核验 → 重新抓取复核；' +
+        '缺的题可在下方手动补，最后再确认交卷';
+      bAuto.addEventListener('click', function () { startAuto(plt, id, rowObj); });
+      out.push(bAuto);
+    }
 
     var bDetail = el('button', 'btn btn-sm', '详情');
     bDetail.type = 'button';
@@ -5135,6 +5148,371 @@
     });
   }
 
+  /* ==================================================================
+     一键自动化（iTEST）
+     流程在后端跑（后台 job），前端只做三件事：
+       ① 轮询 /api/jobs/<id>，把 logs 逐行铺进终端面板；
+       ② 渲染 steps / verify / manual（缺答案的题给人工选择）；
+       ③ 人工答案保存（POST /api/platforms/itest/manual）与确认交卷。
+     ================================================================== */
+
+  var AUTO_POLL_MS = 1200;
+
+  function autoEl(id) { return $(id); }
+
+  function startAuto(plt, examId, rowObj) {
+    var a = state.auto;
+    if (a.timer) { clearTimeout(a.timer); a.timer = null; }
+    a.jobId = null;
+    a.job = null;
+    a.logCount = 0;
+    a.manual = {};
+    a.platform = plt;
+    a.examId = examId;
+    a.title = assignmentTitleOf(rowObj) || examId;
+
+    var panel = autoEl('auto-panel');
+    if (panel) { panel.hidden = false; panel.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    setText('auto-hint', platformLabel(plt) + ' · ' + a.title);
+    setText('auto-status', '启动中…');
+    setText('auto-manual-state', '');
+    setAutoLog([{ at: '', level: 'info', text: '$ 请求启动自动化流程…' }]);
+    renderAutoSteps([]);
+    renderAutoVerify(null);
+    renderAutoManual([]);
+    setAutoProgress(3);
+    var sb = autoEl('auto-submit');
+    if (sb) { sb.disabled = true; }
+
+    postJson('/api/platforms/itest/auto', { exam_id: examId }).then(function (job) {
+      a.jobId = job && job.job_id;
+      if (!a.jobId) {
+        setText('auto-status', '后端没有返回 job_id');
+        return;
+      }
+      setText('auto-status', '运行中 · ' + a.jobId);
+      a.job = job;
+      renderAuto(job);
+      pollAuto();
+    }).catch(function (e) {
+      setText('auto-status', '启动失败：' + describeError(e));
+      appendAutoLog('error', '✗ 启动失败：' + describeError(e));
+      setAutoProgress(0);
+    });
+  }
+
+  function pollAuto() {
+    var a = state.auto;
+    if (!a.jobId) { return; }
+    api('/api/jobs/' + encodeURIComponent(a.jobId)).then(function (job) {
+      a.job = job;
+      renderAuto(job);
+      if (job && job.status === 'running') {
+        a.timer = setTimeout(pollAuto, AUTO_POLL_MS);
+      } else {
+        a.timer = null;
+        setAutoProgress(100);
+      }
+    }).catch(function (e) {
+      setText('auto-status', '轮询失败：' + describeError(e));
+      a.timer = setTimeout(pollAuto, 4000);
+    });
+  }
+
+  function setAutoProgress(pct) {
+    var bar = autoEl('auto-progress-bar');
+    if (bar) { bar.style.width = Math.max(0, Math.min(100, pct)) + '%'; }
+  }
+
+  function renderAuto(job) {
+    if (!job) { return; }
+    renderAutoSteps(job.steps || []);
+    setAutoLog((job.logs || []).map(function (l) {
+      return { at: l.at || '', level: l.level || 'info', text: l.text || '' };
+    }));
+    renderAutoVerify(job.verify);
+    renderAutoManual(job.manual || []);
+
+    var st = autoEl('auto-status');
+    if (st) {
+      var tail = job.status === 'running' ? '运行中'
+        : (job.status === 'succeeded' ? '已完成' : '失败');
+      st.textContent = tail + ' · ' + (job.job_id || '') +
+        (job.error ? ' · ' + job.error : '');
+    }
+    if (job.paper && job.paper.title) {
+      setText('auto-hint', 'iTEST · ' + job.paper.title +
+        ' · ' + job.paper.question_count + ' 题 / ' + job.paper.slot_count + ' 槽位');
+    }
+    var missing = (job.manual || []).length;
+    var verify = job.verify || {};
+    var mism = (verify.mismatched || []).length;
+    var sb = autoEl('auto-submit');
+    if (sb) {
+      sb.disabled = !(job.status !== 'running' && missing === 0 && mism === 0);
+      sb.title = sb.disabled
+        ? (missing ? ('还有 ' + missing + ' 题没答案，先在下方补上') : '流程还没跑完')
+        : '真的交卷（不可逆）：交前会重新填写并逐项核验';
+    }
+  }
+
+  function renderAutoSteps(steps) {
+    var box = autoEl('auto-steps');
+    if (!box) { return; }
+    clear(box);
+    for (var i = 0; i < steps.length; i++) {
+      var step = steps[i] || {};
+      var wrap = el('span', 'stat');
+      wrap.appendChild(el('span', 'stat-label', step.name || '—'));
+      wrap.appendChild(badge(step.ok ? '通过' : '未通过', step.ok ? 'badge-ok' : 'badge-fail'));
+      if (step.detail) { wrap.appendChild(el('span', 'hint', String(step.detail).slice(0, 40))); }
+      box.appendChild(wrap);
+    }
+  }
+
+  function setAutoLog(lines) {
+    var node = autoEl('auto-log');
+    if (!node) { return; }
+    var atBottom = node.scrollTop + node.clientHeight + 24 >= node.scrollHeight;
+    clear(node);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i] || {};
+      var row = el('div', 'ln ln-' + (line.level || 'info'));
+      if (line.at) {
+        row.appendChild(el('span', 'ln-time', '[' + String(line.at).slice(11, 19) + '] '));
+      }
+      row.appendChild(document.createTextNode(String(line.text || '')));
+      node.appendChild(row);
+    }
+    if (atBottom) { node.scrollTop = node.scrollHeight; }
+  }
+
+  function appendAutoLog(level, text) {
+    var node = autoEl('auto-log');
+    if (!node) { return; }
+    var row = el('div', 'ln ln-' + (level || 'info'));
+    row.appendChild(document.createTextNode(String(text || '')));
+    node.appendChild(row);
+    node.scrollTop = node.scrollHeight;
+  }
+
+  function renderAutoVerify(verify) {
+    var box = autoEl('auto-verify');
+    if (!box) { return; }
+    if (!verify) { box.hidden = true; clear(box); return; }
+    box.hidden = false;
+    clear(box);
+    var head = el('div', 'stat-row');
+    var s1 = el('span', 'stat');
+    s1.appendChild(el('span', 'stat-label', '复核一致'));
+    s1.appendChild(badge((verify.matched || 0) + '/' + (verify.total || 0),
+      (verify.mismatched || []).length ? 'badge-warn' : 'badge-ok'));
+    head.appendChild(s1);
+    var s2 = el('span', 'stat');
+    s2.appendChild(el('span', 'stat-label', '缺答案'));
+    s2.appendChild(badge(String((verify.missing || []).length),
+      (verify.missing || []).length ? 'badge-warn' : 'badge-ok'));
+    head.appendChild(s2);
+    var s3 = el('span', 'stat');
+    s3.appendChild(el('span', 'stat-label', '核验不符'));
+    s3.appendChild(badge(String((verify.checked && verify.checked.total) || 0),
+      (verify.checked && verify.checked.total) ? 'badge-fail' : 'badge-ok'));
+    head.appendChild(s3);
+    box.appendChild(head);
+
+    var mism = verify.mismatched || [];
+    if (mism.length) {
+      var tbl = el('table', 'tbl');
+      var thead = el('thead');
+      var tr = el('tr');
+      tr.appendChild(el('th', '', '题号'));
+      tr.appendChild(el('th', '', '答案单'));
+      tr.appendChild(el('th', '', '页面读回'));
+      thead.appendChild(tr);
+      tbl.appendChild(thead);
+      var tb = el('tbody');
+      for (var i = 0; i < mism.length; i++) {
+        var r = el('tr');
+        r.appendChild(el('td', 'mono', mism[i].qid));
+        r.appendChild(el('td', 'mono', mism[i].want || '—'));
+        r.appendChild(el('td', 'mono', mism[i].got || '（空）'));
+        tb.appendChild(r);
+      }
+      tbl.appendChild(tb);
+      box.appendChild(el('p', 'field-hint', '复核不一致：可能平台自动保存还没落库。交卷时会重新填写并再核验一次。'));
+      box.appendChild(tbl);
+    }
+  }
+
+  function renderAutoManual(rows) {
+    var wrap = autoEl('auto-manual');
+    var list = autoEl('auto-manual-list');
+    if (!wrap || !list) { return; }
+    if (!rows.length) { wrap.hidden = true; clear(list); return; }
+    wrap.hidden = false;
+    clear(list);
+    for (var i = 0; i < rows.length; i++) {
+      list.appendChild(manualQuestionNode(rows[i]));
+    }
+  }
+
+  function manualQuestionNode(row) {
+    var a = state.auto;
+    var box = el('div', 'auto-q');
+    var head = el('div', 'auto-q-head');
+    head.appendChild(badge(row.kind_label || row.kind || '题目', 'badge-idle'));
+    head.appendChild(el('span', 'mono', row.qid));
+    if (row.slots) { head.appendChild(el('span', 'hint', row.slots + ' 空')); }
+    box.appendChild(head);
+    if (row.stem) { box.appendChild(el('div', 'auto-q-stem', row.stem)); }
+
+    if (row.kind === 'radio' && row.options && row.options.length) {
+      var subs = {};
+      for (var i = 0; i < row.options.length; i++) {
+        var opt = row.options[i] || {};
+        (subs[opt.sub] = subs[opt.sub] || []).push(opt);
+      }
+      var keys = Object.keys(subs).sort(function (x, y) { return Number(x) - Number(y); });
+      var box2 = el('div', 'auto-q-subs');
+      for (var k = 0; k < keys.length; k++) {
+        var sub = keys[k];
+        var lab = el('label');
+        lab.appendChild(el('span', '', '第 ' + (k + 1) + ' 小题'));
+        var sel = el('select', 'mono');
+        sel.setAttribute('data-manual-qid', row.qid);
+        sel.setAttribute('data-manual-sub', sub);
+        var empty = el('option', '', '— 请选择 —');
+        empty.value = '';
+        sel.appendChild(empty);
+        for (var j = 0; j < subs[sub].length; j++) {
+          var o = subs[sub][j];
+          if (!o.letter) { continue; }
+          var optEl = el('option', '', o.letter + '. ' + String(o.text || '').slice(0, 40));
+          optEl.value = o.letter;
+          sel.appendChild(optEl);
+        }
+        sel.addEventListener('change', function () { collectManual(); });
+        lab.appendChild(sel);
+        box2.appendChild(lab);
+      }
+      box.appendChild(box2);
+    } else {
+      var input = row.kind === 'write' ? el('textarea', 'mono') : el('input', 'mono');
+      input.setAttribute('data-manual-qid', row.qid);
+      input.setAttribute('data-manual-sub', '1');
+      if (row.kind === 'write') { input.rows = 2; }
+      else { input.placeholder = '按空顺序填字母，用空格分隔，如 A C D'; }
+      input.addEventListener('input', function () { collectManual(); });
+      box.appendChild(input);
+    }
+    return box;
+  }
+
+  /* 把界面上的人工输入收进 state.auto.manual（qid → 答案字符串） */
+  function collectManual() {
+    var a = state.auto;
+    var nodes = document.querySelectorAll('[data-manual-qid]');
+    var byQid = {};
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      var qid = node.getAttribute('data-manual-qid');
+      var sub = Number(node.getAttribute('data-manual-sub') || 1);
+      var value = String(node.value || '').trim();
+      if (!value) { continue; }
+      if (!byQid[qid]) { byQid[qid] = {}; }
+      byQid[qid][sub] = value;
+    }
+    var out = {};
+    for (var q in byQid) {
+      if (!Object.prototype.hasOwnProperty.call(byQid, q)) { continue; }
+      var subs = byQid[q];
+      var keys = Object.keys(subs).sort(function (x, y) { return Number(x) - Number(y); });
+      out[q] = keys.map(function (k2) { return subs[k2]; }).join(' ');
+    }
+    a.manual = out;
+    return out;
+  }
+
+  function saveManual() {
+    var a = state.auto;
+    if (!a.jobId || a.saving) { return; }
+    var answers = collectManual();
+    if (!Object.keys(answers).length) {
+      setText('auto-manual-state', '还没有填任何答案');
+      return;
+    }
+    a.saving = true;
+    setText('auto-manual-state', '保存中…');
+    postJson('/api/platforms/itest/manual', { exam_id: a.examId, answers: answers })
+      .then(function (body) {
+        a.saving = false;
+        var missing = body && body.missing ? body.missing : [];
+        var filled = (body && body.answered) || 0;
+        setText('auto-manual-state', '已保存：共 ' + filled + ' 题有答案，还缺 ' + missing.length + ' 题');
+        appendAutoLog('ok', '· 人工答案已保存（' + Object.keys(answers).length + ' 题），还缺 ' +
+          missing.length + ' 题');
+        /* 本地把已保存的题从清单里去掉，剩下继续显示 */
+        var rows = (a.job && a.job.manual) || [];
+        var left = rows.filter(function (r) { return missing.indexOf(r.qid) >= 0; });
+        a.job.manual = left;
+        renderAutoManual(left);
+        var sb = autoEl('auto-submit');
+        if (sb) { sb.disabled = missing.length > 0; }
+        if (!missing.length) {
+          appendAutoLog('ok', '· 全部题目都有答案了，可以「确认交卷」');
+        }
+      })
+      .catch(function (e) {
+        a.saving = false;
+        setText('auto-manual-state', '保存失败：' + describeError(e));
+        appendAutoLog('error', '✗ 保存人工答案失败：' + describeError(e));
+      });
+  }
+
+  function submitAuto() {
+    var a = state.auto;
+    if (a.submitting || !a.examId) { return; }
+    var id = a.examId;
+    var title = a.title;
+    if (!window.confirm('确认交卷：' + title + '\n\n交卷后不能再次作答，确定吗？')) { return; }
+    a.submitting = true;
+    var sb = autoEl('auto-submit');
+    if (sb) { sb.disabled = true; }
+    setText('auto-status', '交卷中…（会重新进入考场、重填并逐项核验）');
+    appendAutoLog('info', '');
+    appendAutoLog('info', '$ POST /api/assignments/submit confirm=true');
+    postJson('/api/assignments/submit', { platform: 'itest', assignment_id: id, confirm: true })
+      .then(function (body) {
+        a.submitting = false;
+        var finished = body && body.server_finish;
+        appendAutoLog(finished === 1 || finished === '1' ? 'ok' : 'warn',
+          '· 交卷返回：submitted=' + (body && body.submitted) +
+          ' server_finish=' + finished);
+        if (body && body.steps) {
+          for (var i = 0; i < body.steps.length; i++) {
+            appendAutoLog('info', '   · ' + (body.steps[i].name || '') + ' ' +
+              (body.steps[i].detail || ''));
+          }
+        }
+        setText('auto-status', finished === 1 || finished === '1'
+          ? '已交卷（服务端 finish=1）'
+          : '交卷结果待确认，请看日志/作业列表');
+        if (body && body.screenshot) { appendAutoLog('info', '   截图：' + body.screenshot); }
+      })
+      .catch(function (e) {
+        a.submitting = false;
+        setText('auto-status', '交卷失败：' + describeError(e));
+        appendAutoLog('error', '✗ 交卷失败：' + describeError(e));
+      });
+  }
+
+  function closeAuto() {
+    var a = state.auto;
+    if (a.timer) { clearTimeout(a.timer); a.timer = null; }
+    var panel = autoEl('auto-panel');
+    if (panel) { panel.hidden = true; }
+  }
+
   function bindEvents() {
     /* 登录 / 退出：401 由请求层切登录页，这里只管表单与手动退出。 */
     $('login-form').addEventListener('submit', doLogin);
@@ -5166,6 +5544,11 @@
     });
 
     window.addEventListener('hashchange', function () { applyRoute(); });
+
+    /* 一键自动化面板 */
+    if ($('auto-close')) { $('auto-close').addEventListener('click', closeAuto); }
+    if ($('auto-manual-save')) { $('auto-manual-save').addEventListener('click', saveManual); }
+    if ($('auto-submit')) { $('auto-submit').addEventListener('click', submitAuto); }
 
     /* 大模型配置：保存 / 测试连接 / 清除 key（settings 页） */
     if ($('llm-save')) { $('llm-save').addEventListener('click', saveLlmConfig); }

@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import re
 import threading
@@ -1134,6 +1136,346 @@ class ConsoleService:
             name=f"kedaibiao-grade-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
+
+    # -- iTEST：一键自动化（取卷 → 转写答题 → 填 → 核验 → 复核 → 待人工/交卷）--
+
+    def start_itest_auto(
+        self, exam_id: str, *, viewer: Viewer | None = None,
+        autosave_wait: float | None = None,
+    ) -> dict[str, Any]:
+        """启动「一键自动化」后台任务，返回 job（内含 logs 供控制台实时滚动）。"""
+        scope = self._check_platform("itest")
+        assert scope is not None
+        exam_id = str(exam_id or "").strip()
+        if not exam_id:
+            raise ConsoleError("缺少考试号（exam_id）", kind="bad_request", status=400)
+
+        with self._lock:
+            self._seq += 1
+            job_id = f"a-{self._seq}"
+            job: dict[str, Any] = {
+                "job_id": job_id, "kind": "itest-auto", "platform": "itest",
+                "exam_id": exam_id, "status": "running",
+                "started_at": _now(), "finished_at": None,
+                "logs": [], "steps": [], "verify": None, "manual": [],
+                "paper": None, "error": "", "owner_id":
+                    viewer.user_id if (viewer and viewer.authenticated) else 0,
+            }
+            self._jobs.append(job)
+            self._jobs_by_id[job_id] = job
+            del self._jobs[:-JOB_HISTORY]
+            for stale in list(self._jobs_by_id):
+                if stale not in {j["job_id"] for j in self._jobs}:
+                    del self._jobs_by_id[stale]
+
+        threading.Thread(
+            target=self._run_itest_auto,
+            args=(job_id, exam_id, viewer, autosave_wait),
+            name=f"kedaibiao-itest-auto-{job_id}", daemon=True,
+        ).start()
+        return _jsonable(job)
+
+    def itest_job(self, job_id: str) -> dict[str, Any]:
+        return self.grade_job(job_id)  # 共用同一份任务存储
+
+    def _job_log(self, job_id: str, level: str, text: str) -> None:
+        """追加一行日志（控制台按行滚动显示，格式像命令输出）。"""
+        with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            if job is None:
+                return
+            job["logs"].append({"at": _now(), "level": level, "text": str(text)})
+            del job["logs"][:-800]
+
+    def _job_step(self, job_id: str, name: str, ok: bool, detail: str = "") -> None:
+        with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            if job is None:
+                return
+            job["steps"].append({
+                "name": name, "ok": bool(ok), "detail": str(detail),
+                "at": _now(),
+            })
+
+    def _run_itest_auto(
+        self, job_id: str, exam_id: str, viewer: Viewer | None,
+        autosave_wait: float | None,
+    ) -> None:
+        import time as _time
+
+        from kedaibiao.platforms.itest import cache as itest_cache
+        from kedaibiao.platforms.itest.answer import build_sheet
+        from kedaibiao.platforms.itest.exam import ExamRunner, cookies_from_jar
+        from kedaibiao.platforms.itest.paper import KIND_RADIO
+        from kedaibiao.tasks.llm import LLMAnswerer, LLMConfig
+
+        runtime = None
+        adapter = None
+        try:
+            wait = autosave_wait
+            if wait is None:
+                try:
+                    wait = float(self.environ.get("KEDAIBIAO_ITEST_AUTOSAVE_WAIT", "65"))
+                except (TypeError, ValueError):
+                    wait = 65.0
+
+            self._job_log(job_id, "info", f"$ kedaibiao itest auto --exam {exam_id}")
+            creds, cookie_file = self._resolve_login("itest", viewer)
+            runtime = build_runtime(
+                root=self.root, environ=self._llm_environ(), cookie_file=cookie_file,
+                owner_id=viewer.user_id if (viewer and viewer.authenticated) else 0,
+            )
+            adapter = runtime.make_adapter("itest")
+            restore_adapter_session(adapter, cookie_file)
+            self._job_log(job_id, "info", "[1/6] 登录 iTEST…")
+            if not asyncio.run(adapter.refresh_session(creds)):
+                raise ConsoleError("登录失败（会话已失效，请到「账号」页重新登录）",
+                                   kind=PLATFORM_ERROR, status=502)
+            self._job_log(job_id, "ok", "[1/6] 登录成功")
+            self._job_step(job_id, "登录", True)
+
+            client = adapter.client()
+            jar = getattr(getattr(client, "http", None), "transport", None)
+            cookies = cookies_from_jar(getattr(jar, "cookies", None))
+            if not cookies:
+                raise ConsoleError("没有可用的会话 cookie", kind=PLATFORM_ERROR, status=502)
+
+            entry = asyncio.run(adapter.exam_meta(exam_id))
+            ks_id = str(((getattr(entry, "raw", None) or {}).get("ksId")) or "")
+            settings = getattr(runtime, "settings", None)
+            cache_dir = itest_cache.cache_dir(settings)
+
+            # ① 取卷（会开始/继续计时）
+            self._job_log(job_id, "info", "[2/6] 进入考场取卷（★ 计时开始）…")
+            # with 里才会启动浏览器并注入 cookie
+            with ExamRunner(cookies) as runner:
+                entered = runner.enter(exam_id, ks_id=ks_id)
+                for step in entered.steps:
+                    self._job_log(job_id, "ok" if step.ok else "warn",
+                                  f"       · {step.name} {step.detail}".rstrip())
+                if not entered.ok:
+                    raise ConsoleError(f"没能进入作答页：{entered.message}",
+                                       kind=PLATFORM_ERROR, status=502)
+                paper = runner.read_paper()
+            itest_cache.write_json(
+                itest_cache.paper_path(settings, exam_id), paper.to_dict()
+            )
+            self._job_log(
+                job_id, "ok",
+                f"[2/6] 取卷完成：{len(paper.sections)} 大题 / {paper.question_count} 题 / "
+                f"{paper.blank_count} 槽位",
+            )
+            self._job_step(job_id, "取卷", True, f"{paper.question_count} 题")
+
+            # ② 转写 + AI 答题
+            self._job_log(job_id, "info", "[3/6] 音频转写 + 大模型答题…")
+            config = LLMConfig.from_env(self._llm_environ())
+            if not config.enabled:
+                raise ConsoleError("大模型未配置 —— 先在设置页填接口地址/模型/Key",
+                                   kind="bad_request", status=400)
+            self._job_log(job_id, "info", f"       模型：{config.model}")
+            self._job_log(job_id, "info", f"       已有 {0} 题答案，开始生成…")
+            sheet, transcripts, stt_note = asyncio.run(build_sheet(
+                paper, LLMAnswerer(config), cache_dir,
+                environ=self._llm_environ(),
+            ))
+            if stt_note:
+                self._job_log(job_id, "info", f"       {stt_note}")
+            self._job_log(
+                job_id, "ok",
+                f"[3/6] 答题完成：{sheet.answered} 题有答案 / 跳过 {len(sheet.skipped)} 题",
+            )
+            for item in sheet.skipped:
+                self._job_log(job_id, "warn",
+                              f"       · 跳过 {item.get('qid')}（{item.get('kind')}）："
+                              f"{item.get('reason', '')[:60]}")
+            itest_cache.write_json(
+                itest_cache.answers_path(settings, exam_id),
+                {"answers": sheet.answers, "skipped": sheet.skipped,
+                 "transcripts": {str(k): v for k, v in transcripts.items()}},
+            )
+            self._job_step(job_id, "AI 答题", True,
+                           f"{sheet.answered} 题，跳过 {len(sheet.skipped)}")
+
+            answers = dict(sheet.answers)
+
+            # ③ 填答 + 同会话核验
+            missing = [q.qid for s in paper.sections for q in s.questions
+                       if not str(answers.get(q.qid) or "").strip()]
+            filled: dict[str, Any] = {}
+            checked: dict[str, Any] = {}
+            with ExamRunner(cookies) as runner:
+                self._job_log(job_id, "info", "[4/6] 进入作答页填答案…")
+                entered = runner.enter(exam_id, ks_id=ks_id)
+                if not entered.ok:
+                    raise ConsoleError(f"没能进入作答页：{entered.message}",
+                                       kind=PLATFORM_ERROR, status=502)
+                if answers:
+                    filled = runner.fill(answers)
+                    checked = runner.verify(answers)
+                self._job_log(
+                    job_id, "ok",
+                    f"[4/6] 填表：填空 {filled.get('blank', 0)} / 单选 {filled.get('radio', 0)} / "
+                    f"翻译 {filled.get('textarea', 0)}；核验不符 {checked.get('total', 0)} 处",
+                )
+                self._job_step(
+                    job_id, "填答案", True, json.dumps(filled, ensure_ascii=False)
+                )
+                self._job_step(job_id, "逐项核验", not checked.get("total"),
+                               f"不符 {checked.get('total', 0)} 处")
+                for bad in (checked.get("bad") or [])[:10]:
+                    self._job_log(job_id, "warn", f"       · 核验不符：{bad}")
+                if wait > 0:
+                    self._job_log(
+                        job_id, "info",
+                        f"[5/6] 等平台自动保存（{wait:.0f}s，iTEST 每分钟存一次）…",
+                    )
+                    _time.sleep(wait)
+
+            # ④ 重新抓一遍复核（新会话，验证真的落到服务端）
+            self._job_log(job_id, "info", "[5/6] 复核：重新进考场抓一遍页面…")
+            with ExamRunner(cookies) as runner:
+                entered = runner.enter(exam_id, ks_id=ks_id)
+                if not entered.ok:
+                    raise ConsoleError(f"复核时进不去作答页：{entered.message}",
+                                       kind=PLATFORM_ERROR, status=502)
+                current = runner.read_answers()
+
+            matched = sum(
+                1 for qid, want in answers.items()
+                if str(current.get(qid) or "").strip() == str(want).strip()
+            )
+            mismatched = [
+                {"qid": qid, "want": want, "got": current.get(qid, "")}
+                for qid, want in answers.items()
+                if str(current.get(qid) or "").strip() != str(want).strip()
+            ]
+            self._job_log(
+                job_id, "ok" if not mismatched else "warn",
+                f"[5/6] 复核完成：{matched}/{len(answers)} 题与答案单一致"
+                + ("" if not mismatched else f"，{len(mismatched)} 题不一致"),
+            )
+            self._job_step(job_id, "复核", not mismatched,
+                           f"{matched}/{len(answers)} 一致")
+
+            # ⑤ 需要人工的题
+            manual_rows: list[dict[str, Any]] = []
+            for section in paper.sections:
+                for question in section.questions:
+                    if str(answers.get(question.qid) or "").strip():
+                        continue
+                    manual_rows.append({
+                        "qid": question.qid,
+                        "kind": question.kind,
+                        "kind_label": {"blank": "填空", "radio": "单选",
+                                       "write": "翻译"}.get(question.kind, question.kind),
+                        "stem": (question.text or "")[:160],
+                        "sentences": question.sentences[:6],
+                        "slots": question.slot_count,
+                        "options": (
+                            [{"letter": c.letter, "text": c.text, "sub": c.sub}
+                             for c in question.choices]
+                            if question.kind == KIND_RADIO else []
+                        ),
+                        "answer": "",
+                    })
+            with self._lock:
+                job = self._jobs_by_id.get(job_id)
+                if job is not None:
+                    job["manual"] = manual_rows
+                    job["verify"] = {
+                        "total": len(answers), "matched": matched,
+                        "mismatched": mismatched, "missing": missing,
+                        "filled": filled, "checked": checked,
+                    }
+                    job["paper"] = {
+                        "title": next((s.part1 for s in paper.sections if s.part1), paper.title),
+                        "question_count": paper.question_count,
+                        "slot_count": paper.blank_count,
+                    }
+            if manual_rows:
+                self._job_log(
+                    job_id, "warn",
+                    f"[6/6] 还有 {len(manual_rows)} 题没有答案 —— "
+                    "请在下方手动选择后点「保存并复核」",
+                )
+            else:
+                self._job_log(job_id, "ok", "[6/6] 全部题目都有答案，可以确认交卷")
+
+            self._job_step(job_id, "完成", True)
+            self._job_log(job_id, "ok", "自动化流程结束（未交卷）。")
+            with self._lock:
+                job = self._jobs_by_id.get(job_id)
+                if job is not None:
+                    job["status"] = "succeeded"
+        except ConsoleError as exc:
+            self._job_log(job_id, "error", f"✗ {exc}")
+            with self._lock:
+                job = self._jobs_by_id.get(job_id)
+                if job is not None:
+                    job["status"] = "failed"
+                    job["error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001 - 后台任务必须自己收尾
+            log.exception("iTEST 自动化失败")
+            self._job_log(job_id, "error", f"✗ {type(exc).__name__}: {exc}")
+            with self._lock:
+                job = self._jobs_by_id.get(job_id)
+                if job is not None:
+                    job["status"] = "failed"
+                    job["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            if adapter is not None:
+                with contextlib.suppress(Exception):
+                    asyncio.run(adapter.close())
+            if runtime is not None:
+                with contextlib.suppress(Exception):
+                    runtime.close()
+            with self._lock:
+                job = self._jobs_by_id.get(job_id)
+                if job is not None:
+                    job["finished_at"] = _now()
+
+    def save_itest_manual(
+        self, exam_id: str, answers: dict[str, str], *, viewer: Viewer | None = None
+    ) -> dict[str, Any]:
+        """把手动补的答案并进答案单缓存，返回最新的缺项清单。"""
+        from kedaibiao.platforms.itest import cache as itest_cache
+        from kedaibiao.platforms.itest.paper import Paper
+
+        settings = self.settings
+        exam_id = str(exam_id or "").strip()
+        if not exam_id:
+            raise ConsoleError("缺少考试号（exam_id）", kind="bad_request", status=400)
+        if not isinstance(answers, dict) or not answers:
+            raise ConsoleError("没有要保存的答案", kind="bad_request", status=400)
+
+        paper_raw = itest_cache.read_json(itest_cache.paper_path(settings, exam_id))
+        if paper_raw is None:
+            raise ConsoleError("还没有这场考试的试卷缓存，先跑一次「一键自动化」",
+                               kind="bad_request", status=400)
+        paper = Paper.from_dict(paper_raw)
+        sheet = itest_cache.read_json(itest_cache.answers_path(settings, exam_id)) or {}
+        merged = {str(k): str(v) for k, v in (sheet.get("answers") or {}).items()}
+        for qid, value in answers.items():
+            text = str(value or "").strip()
+            if text:
+                merged[str(qid)] = text
+        skipped = [s for s in (sheet.get("skipped") or [])
+                   if str(s.get("qid")) not in merged]
+        itest_cache.write_json(
+            itest_cache.answers_path(settings, exam_id),
+            {"answers": merged, "skipped": skipped,
+             "transcripts": sheet.get("transcripts") or {}},
+        )
+        missing = [q.qid for s in paper.sections for q in s.questions
+                   if not str(merged.get(q.qid) or "").strip()]
+        return {
+            "exam_id": exam_id,
+            "answered": len(merged),
+            "missing": missing,
+            "can_submit": not missing,
+            "answers": merged,
+        }
 
     def grade_job(self, job_id: str) -> dict[str, Any]:
         with self._lock:
