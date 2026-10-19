@@ -14,9 +14,11 @@
 1. **所有请求都走这里** —— 包括危险动作的第二道闸门；
 2. **不 sleep、不重试**：网络类异常（``OSError`` / 超时）原样上抛，退避交给
    ``core.scheduler``；业务错误与协议错误直接抛，重试没有意义；
-3. **双层判错**：HTTP 200 里可以套业务 ``code: 403``（实测形态），所以只看
-   ``Response.ok`` 不够。本层同时看 HTTP 状态、``statusCode`` 与 ``code``，
-   并且 HTTP 401/403 也会被识别成登录态问题；
+3. **双层判错 + 按家族判成功**：HTTP 200 里可以套业务 ``code: 403``（实测形态），
+   所以只看 ``Response.ok`` 不够。而且 RPC 家族用 ``statusCode == 0`` 判成功、
+   REST 家族用 ``code == 0`` 判（REST 的 ``statusCode`` 是 HTTP 镜像 200）——
+   混用会把每次 REST 成功判成失败。家族由调用点显式传入（见
+   :data:`endpoints.Protocol`）；
 4. **危险动作必须显式放行**：:data:`endpoints.DANGEROUS_ACTIONS` 里的 action
    只有传 ``dangerous=True`` 才发得出去，抓取路径不可能误触提交接口。
 """
@@ -110,7 +112,7 @@ class PincoClient:
         else:
             url = ep.action_url(action)
         resp = await self._http.post_json(url, payload or {}, headers=self.headers())
-        return self._unwrap(resp, action=action)
+        return self._unwrap(resp, action=action, family=protocol)
 
     async def post_action(
         self, action: str, payload: dict[str, Any] | None = None, *, dangerous: bool = False
@@ -119,9 +121,9 @@ class PincoClient:
         return await self.call(action, payload, protocol=ep.Protocol.WEB, dangerous=dangerous)
 
     async def get_rest(self, path: str) -> Any:
-        """GET 一个 REST 兜底路径（``/server-main/api/v1/...``）。"""
+        """GET 一个 REST 路径（``/server-main/api/v1/...``）—— 按 **REST 家族**判成功。"""
         resp = await self._http.get(ep.rest_url(path), headers=self.headers())
-        return self._unwrap(resp, action=path)
+        return self._unwrap(resp, action=path, family=ep.Protocol.REST)
 
     async def post_form_raw(self, url: str, data: dict[str, Any]) -> Any:
         """POST 一个表单到完整 URL，返回**原始** JSON（不做应用层信封校验）。
@@ -169,9 +171,15 @@ class PincoClient:
                 f"{action} 返回的不是 JSON（HTTP {status}，可能拿到了登录页/网关页）：{exc}"
             ) from exc
 
-    def _unwrap(self, resp: Any, *, action: str) -> Any:
+    def _unwrap(self, resp: Any, *, action: str, family: ep.Protocol) -> Any:
+        """按**接口家族**判成功：RPC 看 ``statusCode``，REST 看 ``code``。
+
+        两个家族的信封长得像、语义不同（REST 的 ``statusCode`` 是 HTTP 镜像 200），
+        混用会把每次 REST 成功都判成失败 —— ``health_check`` 曾经因此恒假。
+        """
         return parsing.unwrap_envelope(
             self._json_body(resp, action=action),
             action=action,
             http_status=int(getattr(resp, "status", 0) or 0),
+            family=family,
         )

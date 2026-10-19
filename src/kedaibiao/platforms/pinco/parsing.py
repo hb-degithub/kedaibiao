@@ -77,18 +77,52 @@ _FINISHED_LITERALS = frozenset(
 # --------------------------------------------------------------------------
 
 
-def unwrap_envelope(payload: Any, *, action: str = "", http_status: int = 0) -> Any:
-    """校验品课信封并取出 ``data``。
+def _success(
+    family: ep.Protocol, status: Any, code: Any
+) -> tuple[bool | None, str]:
+    """按家族判定「这次算不算成功」，返回 (结论, 依据字段名)。
+
+    ``None`` 表示两个字段都没有、判不了（调用方按协议错误处理 —— 绝不能兜底成成功）。
+
+    - **RPC 家族**：``statusCode`` 是权威，必须恰好 0；它缺失时才退回 ``code``
+      （网关偶尔只回 ``code``）。
+    - **REST 家族**：``code`` 是权威，必须 0；``statusCode`` 在这里是 **HTTP 镜像
+      200**，拿它当应用层码就会把每次成功都判成失败（health_check 恒假就是这么来的）。
+      ``code`` 缺失时才退回 ``statusCode``。
+    """
+    if family is ep.Protocol.REST:
+        if code is not None:
+            return code in ep.SUCCESS_CODES, ep.FIELD_CODE
+        if status is not None:
+            return status in ep.SUCCESS_CODES, ep.FIELD_STATUS_CODE
+        return None, ""
+    if status is not None:
+        return status == ep.SUCCESS_CODE, ep.FIELD_STATUS_CODE
+    if code is not None:
+        return code in ep.SUCCESS_CODES, ep.FIELD_CODE
+    return None, ""
+
+
+def unwrap_envelope(
+    payload: Any,
+    *,
+    action: str = "",
+    http_status: int = 0,
+    family: ep.Protocol = ep.Protocol.WEB,
+) -> Any:
+    """校验品课信封并取出 ``data``。``family`` 决定用哪个字段判成功。
 
     判定顺序（每条都对应实测过的真实形态）：
 
-    1. ``statusCode`` / ``code`` 是 401/403，或 HTTP 状态是 401/403 → 登录态问题；
-    2. 有码且不是成功码 → 业务错误（带平台提示语）；
-    3. 没有码、只有 ``message`` → 实测的 ``missing csrf token`` 形态按登录态处理，
-       其余按协议错误（结构不认识）；
-    4. 有码且是成功码 → 返回 ``data``。
+    0. ``401 illegal argument`` / ``code == "ERR_ASSERTION"`` → 各自专用异常；
+    1. ``statusCode`` / ``code`` 是 401/403，或 HTTP 状态是 401/403 → 登录态问题
+       （**这一步与家族无关**：两族的鉴权失败码一致）；
+    2. 按家族判定成功（见 :func:`_success`）；
+    3. 两个字段都没有、只有 ``message`` → 实测 ``missing csrf token`` 形态按登录态
+       处理，其余按协议错误（结构不认识）；
+    4. 判失败 → :class:`PincoApiError`，报错里带**依据字段名与家族**。
 
-    **绝不把失败当成空数据。**
+    **绝不把失败当成空数据，也绝不把「判不了」当成成功。**
     """
     if not isinstance(payload, dict):
         raise PincoProtocolError(
@@ -108,14 +142,17 @@ def unwrap_envelope(payload: Any, *, action: str = "", http_status: int = 0) -> 
             f"{action or '品课'} 参数不合法：{message}"
             "（缺必填参数？实测报错文本常直接点出参数名）。"
         )
-    # 实测：action 名不存在时回 ``{"code":"ERR_ASSERTION","message":"Internal Server Error"}``。
+    # 实测：action 名不存在时回 ``{"code":"ERR_ASSERTION","message":"Internal Server Error"}``，
+    # 与「缺必需请求头（如 x-server）」形状相同 —— 两种原因都要靠上下文区分。
     if code == "ERR_ASSERTION":
         raise PincoApiError(
-            f"{action or '品课'} 服务端断言失败（ERR_ASSERTION）：{message or 'Internal Server Error'}。"
-            "实测经验：action 名不存在时就是这个形状，先核对拼写。",
+            f"{action or '品课'} 服务端断言失败（ERR_ASSERTION）："
+            f"{message or 'Internal Server Error'}。"
+            "实测经验：action 名写错、或缺必需请求头（x-server 等）都是这个形状。",
             code=code,
         )
 
+    # 鉴权失败两族一致：statusCode / code 里出现 401/403，或 HTTP 状态是 401/403。
     for label, value in (("statusCode", status), ("code", code)):
         if value in ep.AUTH_STATUS_CODES:
             raise PincoNotLoggedIn(
@@ -128,7 +165,8 @@ def unwrap_envelope(payload: Any, *, action: str = "", http_status: int = 0) -> 
             f"请确认登录态（{ep.HEADER_AUTHORIZATION} / {ep.HEADER_CSRF}）是否有效。"
         )
 
-    if status is None and code is None:
+    ok, field = _success(family, status, code)
+    if ok is None:
         if any(hint in message.lower() for hint in ep.AUTH_MESSAGE_HINTS):
             raise PincoNotLoggedIn(
                 f"{action or '品课'} 未通过鉴权：{message}"
@@ -141,13 +179,12 @@ def unwrap_envelope(payload: Any, *, action: str = "", http_status: int = 0) -> 
             f"无法判断结果。字段：{sorted(payload)[:8]}"
         )
 
-    if status is not None and status != ep.SUCCESS_CODE:
+    if not ok:
+        decided = status if field == ep.FIELD_STATUS_CODE else code
         raise PincoApiError(
-            f"{action or '品课'} 返回 statusCode={status}：{message or '未知错误'}", code=status
-        )
-    if code is not None and code not in ep.SUCCESS_CODES:
-        raise PincoApiError(
-            f"{action or '品课'} 返回 code={code}：{message or '未知错误'}", code=code
+            f"{action or '品课'} 返回 {field}={decided!r}：{message or '未知错误'}"
+            f"（{family.value} 家族按 {field} 判成功）",
+            code=decided,
         )
 
     data = payload.get(ep.FIELD_DATA)

@@ -279,9 +279,12 @@ FIELD_MESSAGE = "message"
 for _name in ("FIELD_CODE", "FIELD_MSG", "FIELD_DATA", "FIELD_STATUS_CODE", "FIELD_MESSAGE"):
     EVIDENCE[_name] = Evidence.MEASURED
 
-#: 成功码。**应用层的真实成功形态是 ``statusCode: 0``**；``code`` 是 REST 家族的
-#: 形态。两者都要认 —— 只看 ``code`` 会把每一次成功都当成鉴权失败。
+#: RPC 家族的成功码：``statusCode`` **必须恰好是 0**（实测）。
 SUCCESS_CODE = 0
+
+#: 「算成功」的码值集合。用于各个家族**自己那个字段**：RPC 看 ``statusCode``、
+#: REST 看 ``code``。REST 侧的 ``statusCode`` 是 HTTP 镜像（200），所以这个集合里
+#: 也含 200 —— 只对 REST 的 code 与两族的兜底字段生效，不用于 RPC 的 statusCode。
 SUCCESS_CODES = frozenset({0, 200, "0", "200", True})
 
 #: 需要登录 / 权限不足的状态码（HTTP 与 statusCode 一致）。实测确认。
@@ -509,17 +512,37 @@ def evidence_of(name: str) -> Evidence | None:
 
 
 class Protocol(str, Enum):
-    """业务 action 走哪条协议。
+    """业务请求走哪个接口家族 —— **也是「用哪个字段判成功」的唯一依据**。
+
+    ⚠️ 两个家族的信封长得像、语义却不同（真实实测，第三次踩坑后才写清）：
+
+    ==========  ======================================  ===============================
+    家族        地址形态                                成功判据
+    ==========  ======================================  ===============================
+    RPC(``WEB``) ``POST /student/api.json?actionName=``  ``statusCode == 0``
+    REST        ``/server-main/api/v1/…``               ``code == 0``（``statusCode`` 是
+                                                        HTTP 镜像 200）
+    ==========  ======================================  ===============================
+
+    实测样本：
+
+    - RPC 成功：``{"statusCode":0,"data":{…},"message":"ok"}``（**没有 code**）；
+    - REST 成功：``{"code":0,"msg":"ok","data":{…},"statusCode":200,"message":"ok"}``
+      —— 若拿 ``statusCode == 0`` 去判它，每次成功都会被判成失败（``health_check``
+      就是这样恒假的）；
+    - REST 失败：``{"code":403,"msg":"access forbidden","statusCode":403,…}``。
+
+    所以**别用一个字段硬套两个家族**：:func:`parsing.unwrap_envelope` 按 ``family``
+    分流。
 
     pinco-recon 已核验 Web RPC 与 App REST 之间 98/122 条路径可机械互转，
-    但**逐条映射表还没交付**，所以 REST 一侧目前只认已经实测过的那一条
-    （``REST_PATH_CURRENT_TIME``）；其余走 :func:`rest_path_for_action`，
-    没有映射就直接报错。
+    但**逐条映射表还没交付**，所以 REST 一侧目前只认已经实测过的那几条；其余走
+    :func:`rest_path_for_action`，没有映射就直接报错。
     """
 
-    #: ``POST {base}/student/api.json?actionName=<Op>``
+    #: ``POST {base}/student/api.json?actionName=<Op>`` —— 成功看 ``statusCode == 0``
     WEB = "web"
-    #: ``{base}/server-main/api/v1/<path>``
+    #: ``{base}/server-main/api/v1/<path>`` —— 成功看 ``code == 0``
     REST = "rest"
 
 

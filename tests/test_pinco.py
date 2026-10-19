@@ -452,7 +452,7 @@ class TestEnvelope(unittest.TestCase):
         payload = {"code": "ERR_ASSERTION", "message": "Internal Server Error"}
         with self.assertRaises(PincoApiError) as cm:
             parsing.unwrap_envelope(payload, action="TotallyWrongName")
-        self.assertIn("action 名不存在", str(cm.exception))
+        self.assertIn("action 名写错", str(cm.exception))
 
     def test_empty_object_is_not_empty_data(self) -> None:
         """空壳 action 返回 ``{}`` —— 不是合法信封，必须报错而不是当成空数据。"""
@@ -2217,6 +2217,93 @@ class TestReplayEndToEnd(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(await adapter.health_check())
         self.assertEqual(transport.calls[0].method, "GET")
+
+
+# --------------------------------------------------------------------------
+# 13. 家族判成功 + fixture 溯源
+# --------------------------------------------------------------------------
+
+
+class TestFamilySuccess(unittest.IsolatedAsyncioTestCase):
+    """RPC 与 REST 的「成功」判据不同 —— 混用会把 REST 成功判成失败。
+
+    真实事故：``health_check`` 走 REST ``/system/currentTime``，真实响应是
+    ``{"code":0,…,"statusCode":200,…}``；代码当时用 RPC 的规则（``statusCode == 0``）
+    去判，于是**每次成功都被判成失败**，health_check 恒假 —— 把「网络没问题」
+    报成「网络有问题」，正好毁掉它存在的意义。
+
+    单测当时之所以是绿的：fixture 被手写成了 ``{"code":0,"data":{…}}``（缺
+    ``statusCode``），字段缺失走了兜底分支。**回放框架对、回放内容假**。
+    """
+
+    FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "pinco"
+
+    def test_same_envelope_is_success_in_rest_and_failure_in_rpc(self) -> None:
+        """同一个 JSON 在两族里判定相反 —— 「按家族判成功」的核心不变量。"""
+        payload = {
+            "code": 0,
+            "msg": "ok",
+            "data": {"currentTime": 1},
+            "statusCode": 200,
+            "message": "ok",
+        }
+        self.assertEqual(
+            parsing.unwrap_envelope(payload, action="REST", family=ep.Protocol.REST),
+            {"currentTime": 1},
+        )
+        with self.assertRaises(PincoApiError):
+            parsing.unwrap_envelope(payload, action="RPC", family=ep.Protocol.WEB)
+
+    def test_rpc_success_is_status_code_zero(self) -> None:
+        payload = {"statusCode": 0, "data": {"total": 1}, "message": "ok"}
+        self.assertEqual(
+            parsing.unwrap_envelope(payload, action="RPC", family=ep.Protocol.WEB),
+            {"total": 1},
+        )
+
+    async def test_health_check_true_on_real_captured_envelope(self) -> None:
+        """回归锁：拿**真实抓包字节**（含 ``statusCode:200``）跑，必须返回 True。"""
+        raw = (self.FIXTURES / "system_current_time.json").read_bytes()
+        self.assertIn(b'"statusCode":200', raw, "这条用例必须用带 statusCode 的真实字节，别换成手写样本")
+        adapter, _, _, _ = make_adapter({ep.REST_PATH_CURRENT_TIME: FakeReply(raw=raw)})
+        self.assertTrue(await adapter.health_check())
+
+
+class TestFixtureProvenance(unittest.TestCase):
+    """样本本身要可溯源 —— 三次「离线全绿、线上不通」全出在样本与真实响应不一致。
+
+    这里检查的不是解析逻辑，而是**样本的形状**：漏登记来源、该标合成的没标、
+    真实字段被「顺手精简」。规矩见 ``tests/fixtures/pinco/README.md``。
+    """
+
+    FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "pinco"
+    #: README 里声明为「合成」的样本：必须带 ``_fixture`` 标记，其余文件不许带。
+    SYNTHETIC = frozenset({"homework_questions_plain.json"})
+
+    def _fixtures(self) -> list[pathlib.Path]:
+        return sorted(self.FIXTURES.glob("*.json"))
+
+    def test_every_fixture_is_registered_in_readme(self) -> None:
+        readme = (self.FIXTURES / "README.md").read_text(encoding="utf-8")
+        missing = [p.name for p in self._fixtures() if p.name not in readme]
+        self.assertEqual(missing, [], f"这些样本没在 README 清单里登记来源: {missing}")
+
+    def test_synthetic_fixtures_are_marked_and_others_are_not(self) -> None:
+        for path in self._fixtures():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            marked = isinstance(data, dict) and data.get("_fixture") == "synthetic"
+            if path.name in self.SYNTHETIC:
+                self.assertTrue(marked, f"{path.name} 声明是合成样本，必须在顶层标 _fixture=synthetic")
+            else:
+                self.assertFalse(marked, f"{path.name} 不是合成样本，不该带 _fixture 标记")
+
+    def test_real_rest_envelope_keeps_deciding_fields(self) -> None:
+        """真实抓包的 REST 信封不许被精简 —— 缺了 ``statusCode`` 就会重演恒假事故。"""
+        data = json.loads((self.FIXTURES / "system_current_time.json").read_text(encoding="utf-8"))
+        for field in ("code", "msg", "data", "statusCode", "message"):
+            self.assertIn(field, data, f"真实抓包的 REST 信封必须保留 {field!r}，不要顺手精简")
+        self.assertEqual(data["code"], 0)
+        self.assertEqual(data["statusCode"], 200)
 
 
 if __name__ == "__main__":
