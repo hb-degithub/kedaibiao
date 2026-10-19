@@ -224,8 +224,9 @@
 
 | Web 动作名 | App 动作名 | REST 路径 + 方法 | 语义（按名） | 等级 |
 | --- | --- | --- | --- | --- |
-| `PostV1CourseByCourseIdMaterialStudentVideoDurationReport` | `PostApiV1CourseByCourseIdMaterialStudentVideoDurationReport` | `POST /server-main/api/v1/course/:courseId/material/student/videoDurationReport` | **视频播放时长上报**（最像「刷课」的接口） | 【静态】 |
-| `PostV1ChapterdirectoryMaterialCountLearningProgress` | （App 路由表里**没有**） | APK 字符串存在 `/api/v1/chapterdirectory/material/countLearningProgress` | 学习进度计数上报 | 【静态-Web】+【静态 APK `pinco.md §5.3`】 |
+| `PostV1CourseByCourseIdMaterialStudentLearningDurationReport` | （未见） | 未核对 | **材料学习时长上报 —— 学生端页面唯一在用的「刷课」接口**，见 §5.3 | 【bundle 调用点 + 实测】 |
+| `PostV1CourseByCourseIdMaterialStudentVideoDurationReport` | `PostApiV1CourseByCourseIdMaterialStudentVideoDurationReport` | `POST /server-main/api/v1/course/:courseId/material/student/videoDurationReport` | **视频播放时长上报** | 【静态】 |
+| `PostV1ChapterdirectoryMaterialCountLearningProgress` | （App 路由表里**没有**） | APK 字符串存在 `/api/v1/chapterdirectory/material/countLearningProgress` | 学习进度计数上报（**教师端**：学生身份调用回 6571） | 【静态-Web】+【静态 APK】 |
 | `PostV1CoursewareStudentOpen` | `PostApiV1CoursewareStudentOpen` | `POST /server-main/api/v1/courseware/student/open` | 打开课件（打卡/上报） | 【静态】 |
 | `PostV1CoursewareStudentMaxLook` / `PostV2CoursewareStudentMaxLook` | `PostApiV1CoursewareStudentMaxLook` | `POST /server-main/api/v1/courseware/student/maxLook` | 课件最大观看页/时长上报 | 【静态】 |
 | `PostV1CoursewareStudentStudyReport` | `PostApiV1CoursewareStudentStudyReport` | `POST /server-main/api/v1/courseware/student/studyReport` | **学习报告上报** | 【静态】 |
@@ -233,14 +234,43 @@
 
 | 维度 | 结论 | 等级 |
 | --- | --- | --- |
-| 上报频率 | **未验证**。静态侧既看不到定时器语义，也没有调用点（这些动作名在 `main.dart.js` 里各只出现 2 次：描述符 + 注册表） | 【未验证】 |
-| 需要哪些字段（进度/时长/位置） | **未验证**。`courseId`/`materialId`/`chapterDirectoryMaterialId` 是**读侧**实测的键名，写侧是否同名无证据 | 【未验证】 |
-| 幂等 / 累计语义 | **未验证**（时长是累加、覆盖还是取 max，无从判断） | 【未验证】 |
+| 上报频率 | **已确认（仅材料时长上报这一条）**：材料页在 `countLearningProgress` 为真时每 5 秒发一次，`learningDuration` 写死 5，见 §5.3 | 【bundle 调用点】 |
+| 需要哪些字段（进度/时长/位置） | **已确认（仅材料时长上报这一条）**：`{courseId, materialId, learningDuration}`，`materialId` 取列表里的 `materialId`；传资源 id 会被 9105 拒绝 | 【bundle + 实测】 |
+| 幂等 / 累计语义 | **仍未验证**：上报被接受（`statusCode 0`），但 60s / 1200s 后 `learningRatio`、`viewed` 都没变 | 【实测·阴性，见 `docs/verification/pinco-progress.md`】 |
 | 服务端校验（签名/时间戳） | **无签名证据**；写接口未见 nonce/sign/时间戳字段（登录侧的 `rst`/`lst` 只在 SSO 登录） | 【静态】无证据 |
-| 现有适配器 | 学习进度**只读**：`Assignment.progress` ← `learningRatio`；没有任何上报写入 | 【实测源码】 |
+| 现有适配器 | 学习进度**只读**：`Assignment.progress` ← `learningRatio`；上报实现默认 dry-run，见 `platforms/pinco/progress.py` | 【实测源码】 |
 
-> 结论：**「刷课」这条路目前只能列候选端点，不能实现** —— 频率与字段两处都空着，
-> 而这两处恰好是「能不能刷、会不会被判定异常」的关键。
+> 结论：**接口与报文已确认，但「进度会不会真的累加」没有确认** —— 所以实现是
+> 「默认 dry-run + 进度不动就停」，不把未验证的语义包装成成功。别再拿 §5.2 里
+> 其他候选端点盲试；下一步应由真实页面/App 的学习会话取证（见验证报告 §3）。
+>
+> 2026-10-20 更新：上面的「已确认/未验证」两栏与 §5.1 的旧表述（「只能列候选端点」）
+> 已被本轮实测推翻一半 —— 端点找到了，语义还没。以
+> `docs/verification/pinco-progress.md` 为准。
+
+### 5.3 已确认：材料学习时长上报（2026-10-20，【bundle 调用点 + 实测】）
+
+官方学生端材料页（chunk 内反混淆）的调用序列：
+
+1. `GetV1CourseByCourseIdStudentMaterial {courseId, chapterDirectoryMaterialId}` 取详情；
+2. 只有 `data.countLearningProgress` 为真才启动 `setInterval(5000)`；
+3. 每次 POST
+   `PostV1CourseByCourseIdMaterialStudentLearningDurationReport`
+   `{"courseId": <courseId>, "materialId": <chapterDirectoryMaterialId>, "learningDuration": 5}`。
+
+实测：
+
+- 真实会话调用返回 `{"statusCode":0,"message":"ok"}`；
+- `materialId` 传资源 id（详情里的 `materialId`）会被 `9105 章节目录资源关联不存在`
+  拒绝，传列表里的 `materialId` 才成功；
+- **但 60s / 1200s 上报后 `learningRatio`、`viewed` 都没变**；延迟 3 分钟再读也没变；
+- 浏览器页内发、加 `x-app-code`/`x-token` 头也一样（材料 H5 页在 headless 里 DOM 为空，
+  无法观察它自己的上报）。
+
+因此：**接口形态确认，语义未确认**。实现
+（`platforms/pinco/progress.py` + `adapter.report_learning` + `scripts/pinco_progress.py`）
+默认 dry-run，并带「进度不动就停」的熔断；证据全文见
+`docs/verification/pinco-progress.md`。
 
 ---
 
@@ -299,7 +329,8 @@
 3. **闸门保持不变**：`submit_payload_confirmed=False` 与 `DANGEROUS_ACTIONS`
    必须继续挡住写请求；C1 到位后再改为按样本构造。
 4. **判分读取**：提交后的分数走 `…/questions` 的 `answer.score/review`，不要从提交响应取。
-5. **刷课**：只登记候选端点，**不实现**（频率与字段空着）。
+5. **刷课**：端点/频率/字段已由 bundle + 实测确认（§5.3），实现已落地但**默认
+   dry-run**；「进度是否真的累加」仍未验证 —— 在那之前不要把它当成「一定能刷满」。
 
 ### 8.2 缺什么、优先级
 
@@ -308,7 +339,7 @@
 | **P0** | 提交请求体 + 响应形状 | 用户提供 **C1** |
 | **P0** | 重复提交语义（幂等） | 用户提供 **C2/C3** |
 | P0 | 逐题保存答案的附件结构 | 用户提供 **C4** |
-| P1 | 进度上报的频率/字段/累计语义 | 用户提供 **C5/C6** |
+| P1 | 进度上报的**累计语义**（频率/字段已由 bundle 确认） | 用户提供 **C6**（一次真实学习前后的进度变化） |
 | P1 | 错误码语义（6569/10419/6582） | 用户提供 **C8** |
 | P2 | 浏览器内发请求的落地形态（BiDi / Playwright） | 工程决策；现有实测路径是 `scripts/bidi_ws.py` |
 | — | **不做**：教师端任何写入（范围裁决只做学生端） | 决策 |
@@ -320,8 +351,9 @@
    **没有任何证据**支持这个编码；C1/C4 到位后必须重写。
 3. `endpoints.REST_ACTION_PATHS` 故意留空是对的（猜映射会静默打到别的接口）；
    本轮新证据建议**只补写操作相关的、路径形态无歧义的条目**。
-4. `DANGEROUS_ACTIONS` 只有 3 条提交类动作；若实现进度上报，应把上报类动作
-   也纳入「需要显式放行」的集合（它们是写操作，且会改变平台侧的学习状态）。
+4. ~~`DANGEROUS_ACTIONS` 只有 3 条提交类动作~~ 已处理：进度上报
+   `PostV1CourseByCourseIdMaterialStudentLearningDurationReport` 已纳入
+   `DANGEROUS_ACTIONS`，任何调用都必须显式 `dangerous=True`。
 
 ---
 

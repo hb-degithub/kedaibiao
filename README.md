@@ -177,6 +177,34 @@ PYTHONPATH=src python3 -m kedaibiao capture pinco --cookie "csrfToken=…; x-tok
 
 > 抓取不接触密码、不碰验证码：用的是你已经登录过的浏览器用户目录。
 
+#### 品课（pinco）已接入的只读动作
+
+```bash
+PYTHONPATH=src python3 -m kedaibiao actions pinco                  # 看动作清单
+PYTHONPATH=src python3 -m kedaibiao action pinco connection        # 连接自检
+PYTHONPATH=src python3 -m kedaibiao action pinco learning          # 学习任务/材料进度
+PYTHONPATH=src python3 -m kedaibiao action pinco material course=… material_id=…
+PYTHONPATH=src python3 -m kedaibiao action pinco answers assignment_id=…
+```
+
+四个动作都**只读**：`learning`（材料 + 进度）、`material`（材料详情/下载地址）、
+`answers`（作业题目与作答槽）、`connection`（会话/健康检查/课程数）。
+
+#### 品课「刷课」（学习时长上报）
+
+```bash
+# 默认 dry-run：只列材料、算计划，不发任何写请求
+PYTHONPATH=src python3 scripts/pinco_progress.py --course <courseId>
+PYTHONPATH=src python3 scripts/pinco_progress.py --course <courseId> --material <materialId>
+
+# 真上报必须显式 --live；带总时长/次数上限与「进度不动就停」
+PYTHONPATH=src python3 scripts/pinco_progress.py --course <courseId> --material <materialId> --live
+```
+
+> ⚠️ 上报接口与报文已确认（学生端页面每 5 秒发一次、每次算 5 秒），但**实测上报
+> 后进度没有变化** —— 语义尚未确认。脚本因此默认 dry-run、进度不动就停；证据与
+> 复现见 [docs/verification/pinco-progress.md](docs/verification/pinco-progress.md)。
+
 ### 可选依赖
 
 ```bash

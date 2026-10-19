@@ -654,6 +654,23 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
 > 这四个是**平台专属**的，其他平台没有。前端不要为 pigai 写专属页面 ——
 > 按 `GET /api/platforms/<name>/actions` 返回的清单通用渲染即可。
 
+### 希沃品课（pinco）专属动作
+
+| 动作 | 参数 | 说明 |
+| --- | --- | --- |
+| `learning` | `course`（可选，留空=全部课程） | 学习任务 / 材料进度：课程、材料号、名称、大小、进度 |
+| `material` | `course`（必填）、`material_id`（必填） | 材料详情：大小、进度、下载地址（带签名，只展示不落库）+ 原始字段摘要 |
+| `answers` | `assignment_id`（必填） | 作业题目与作答槽：逐题题型/题干/选项 + 已有 `score/review/submitted` |
+| `connection` | 无 | 连接自检：会话、`is_logged_in`、`health_check`、课程数量 |
+
+> 四个都是**只读**（`mutates=false`）。`answers` 需要在作业列表里定位作业号
+> （品课没有「按作业号取作业」的只读接口）；`connection` 是唯一一个「失败也
+> 返回结果而不是 502」的动作 —— 自检的价值就是把失败点说清楚。
+>
+> 「学习时长上报（刷课）」**不是**控制台动作：它是写操作，走
+> `scripts/pinco_progress.py`（默认 dry-run），语义尚未确认，见
+> [docs/verification/pinco-progress.md](verification/pinco-progress.md)。
+
 ### `POST /api/assignments/detail` —— 单个作业详情（双击作业行）
 
 ```json
