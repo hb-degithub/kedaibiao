@@ -5,6 +5,13 @@
 - 版权与许可见 ``vendor/NOTICE``
 """
 
+from kedaibiao.platforms.unipus.geetest.browser import (
+    CaptchaSolution,
+    CaptchaSolutionError,
+    solve_login_captcha,
+    solution_from_capture,
+    trigger_captcha,
+)
 from kedaibiao.platforms.unipus.geetest.v3 import (
     Challenge,
     GeetestError,
@@ -21,8 +28,11 @@ from kedaibiao.platforms.unipus.geetest.v3 import (
 )
 
 __all__ = [
+    "CaptchaSolution",
+    "CaptchaSolutionError",
     "Challenge", "GeetestError", "GeetestUnavailable", "SolveResult",
     "build_trace", "call_driver", "compute_w", "fetch_challenge", "find_gap",
     "node_available",
-    "solve", "unscramble",
+    "solve", "solution_from_capture", "solve_login_captcha",
+    "trigger_captcha", "unscramble",
 ]

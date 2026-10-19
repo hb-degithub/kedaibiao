@@ -362,9 +362,130 @@ class Browser:
                 raise CDPError(f"{method} 失败: {data['error']}")
             return data.get("result") or {}
 
+
+    # -- 事件感知：抓特定响应体（登录验证码求解用）------------------------
+
+    def evaluate(self, expression: str, *, await_promise: bool = True) -> Any:
+        """在页面里跑一段 JS 并取回结果。"""
+        result = self.call("Runtime.evaluate", {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": await_promise,
+        })
+        return (result.get("result") or {}).get("value")
+
+    def enable_network(self) -> None:
+        """开好抓包所需的域。
+
+        极验组件跑在跨域 iframe 里，**必须** ``Target.setAutoAttach`` ——
+        否则它的请求不会出现在当前连接的会话上（实测）。
+        """
+        self.call("Page.enable")
+        self.call("Runtime.enable")
+        self.call("Network.enable")
+        self.call("Target.setAutoAttach", {
+            "autoAttach": True, "flatten": True, "waitForDebuggerOnStart": False,
+        })
+
+    def capture_response(
+        self, url_pattern: str, *, trigger: Any = None,
+        timeout: float = 30.0, settle: float = 3.0,
+    ) -> dict[str, str]:
+        """等一个 URL 含 ``url_pattern`` 的响应，返回 ``{"url","body"}``。
+
+        ``trigger`` 在开始等待后**只执行一次**（通常是「点登录」这类动作），
+        这样不会因为动作太早而错过请求。
+
+        找不到就返回空 dict —— 调用方决定是重试还是报错。
+        """
+        ws = self.connect()
+        tracked: dict[str, str] = {}
+        # hard = 总超时上限；idle = 空闲超时（收到消息就往后推）
+        hard = time.monotonic() + timeout
+        idle = time.monotonic() + settle
+        if trigger is not None:
+            try:
+                trigger()
+            except Exception:  # noqa: BLE001 - 触发失败不影响继续等
+                log.debug("capture trigger 失败", exc_info=True)
+        while time.monotonic() < min(hard, idle):
+            try:
+                raw = ws.recv_text()
+            except Exception:  # noqa: BLE001 - 读超时继续轮询
+                continue
+            idle = time.monotonic() + settle
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            method = data.get("method")
+            params = data.get("params") or {}
+            if method == "Network.requestWillBeSent":
+                request = params.get("request") or {}
+                if url_pattern in str(request.get("url") or ""):
+                    tracked[params.get("requestId")] = request.get("url")
+            elif method == "Network.loadingFinished":
+                request_id = params.get("requestId")
+                if request_id in tracked:
+                    try:
+                        body = self.call("Network.getResponseBody", {"requestId": request_id})
+                    except CDPError:
+                        continue
+                    return {"url": tracked.pop(request_id), "body": body.get("body") or ""}
+        return {}
+
     def navigate(self, url: str) -> None:
         self.call("Page.enable")
         self.call("Page.navigate", {"url": url})
+
+    # -- 画面与输入（验证码中继用）----------------------------------------
+
+    def screenshot(self, *, format: str = "png", quality: int | None = None) -> bytes:
+        """截一张当前视口。返回原始字节。"""
+        params: dict[str, Any] = {"format": format}
+        if quality is not None and format == "jpeg":
+            params["quality"] = quality
+        result = self.call("Page.captureScreenshot", params)
+        return base64.b64decode(result.get("data", ""))
+
+    def mouse(self, kind: str, x: float, y: float, *, button: str = "left",
+              click_count: int = 1) -> None:
+        """发一次鼠标事件。``kind`` ∈ pressed / released / moved。"""
+        self.call("Input.dispatchMouseEvent", {
+            "type": f"mouse{kind.capitalize()}",
+            "x": x, "y": y, "button": button, "clickCount": click_count,
+        })
+
+    def click(self, x: float, y: float) -> None:
+        self.mouse("pressed", x, y)
+        self.mouse("released", x, y)
+
+    def drag(self, path: list[tuple[float, float]], *, steps: int = 12) -> None:
+        """按给定折线拖拽（用于滑块验证码）。
+
+        轨迹本身就是「人怎么拖」的记录 —— 中继把用户的真实轨迹原样回放，
+        不做任何「绕验证码」的轨迹伪造。
+        """
+        if not path:
+            return
+        start_x, start_y = path[0]
+        self.mouse("pressed", start_x, start_y)
+        previous = (start_x, start_y)
+        for target in path[1:]:
+            tx, ty = target
+            for step in range(1, steps + 1):
+                ratio = step / steps
+                self.mouse("moved", previous[0] + (tx - previous[0]) * ratio,
+                           previous[1] + (ty - previous[1]) * ratio)
+            previous = (tx, ty)
+        self.mouse("released", previous[0], previous[1])
+
+    def insert_text(self, text: str) -> None:
+        self.call("Input.insertText", {"text": text})
+
+    def press_key(self, key: str) -> None:
+        for kind in ("keyDown", "keyUp"):
+            self.call("Input.dispatchKeyEvent", {"type": kind, "key": key})
 
     def cookies(self) -> list[Cookie]:
         result = self.call("Network.getAllCookies")
