@@ -238,3 +238,45 @@ class TestScoreFirst(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRewritePrompt(unittest.IsolatedAsyncioTestCase):
+    """改写提示词必须带上「分数 + 评价」，否则改写了也没依据。"""
+
+    class _Snap:
+        def __init__(self, **extra):
+            self.extra = extra
+
+        def to_dict(self):
+            data = {
+                "score": 83.0, "full_marks": 100.0, "score_pct": 0.83,
+                "dimensions": [{"name": "词汇", "ratio": 0.9}],
+                "weak_dimensions": ["句子"],
+                "overall_comment": "可适当增加从句的使用",
+                "feedback_lines": ["[confusion] 易混词汇", "[i_suggest.word] 换词"],
+            }
+            data.update(self.extra)
+            return data
+
+    def _prompt(self, snapshot):
+        from kedaibiao.platforms.pigai.grade_loop import build_rewrite_prompt
+        return build_rewrite_prompt(
+            topic="T", word_range="120-180", essay="原文正文", snapshot=snapshot, attempt=1
+        )
+
+    async def test_prompt_has_score_evaluation_and_feedback(self) -> None:
+        prompt = self._prompt(self._Snap())
+        self.assertIn("83.0", prompt)
+        self.assertIn("总评：可适当增加从句", prompt)
+        self.assertIn("易混词汇", prompt)
+        self.assertIn("最需要提升的维度：句子", prompt)
+        self.assertIn("原文正文", prompt)
+        self.assertIn("重新", prompt.replace("不要整篇重写", "重新"))
+
+    async def test_prompt_mentions_limits_when_only_score(self) -> None:
+        prompt = self._prompt(
+            self._Snap(overall_comment="", feedback_lines=[], dimensions=[],
+                       weak_dimensions=[])
+        )
+        self.assertIn("没有总评和批注", prompt)
+        self.assertIn("常见提分点", prompt)

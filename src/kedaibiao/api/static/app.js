@@ -2482,6 +2482,8 @@
 
   function graderAttemptCard(a) {
     var card = el('details', 'grader-attempt');
+    /* 现有稿件（第 0 条）默认展开：用户最想看的就是「分 + 评价」 */
+    if (a.attempt === 0) { card.open = true; }
     var scoreText = a.score_label
       ? (a.score_label + ' 分')
       : ((a.score === null || a.score === undefined) ? (a.raw_state || '未出分')
@@ -2583,8 +2585,22 @@
         ? ('平台拒绝了分析请求（' + String(snap.analysis_error).slice(0, 120) + '）' +
            ' —— 这篇可能已经批过了；可以「直接改写重交」，或稍后再取。')
         : (snap.detail_error || snap.raw_state || '待分析');
-      var attempt = Object.assign({ attempt: 0 }, snap);
-      if (attempt.word_count === undefined) { delete attempt.word_count; }
+      /* 快照字段名和「轮次卡片」的字段名不一样，这里统一一下，
+         否则取到分也看不到评语和逐条批注（用户要的就是「分 + 评价」）。 */
+      var attempt = {
+        attempt: 0,
+        eid: snap.eid || '',
+        score: snap.score,
+        full_marks: snap.full_marks,
+        graded: !!snap.graded,
+        raw_state: snap.raw_state || '',
+        dimensions: snap.dimensions || [],
+        overall: snap.overall_comment || '',
+        feedback: snap.feedback_lines || [],
+        essay_text: snap.essay_text || '',
+        word_count: (snap.essay_text || '').trim()
+          ? (snap.essay_text || '').trim().split(/\s+/).length : 0,
+      };
       var job = {
         job_id: 'fetch', status: 'done', target_score: grader.target,
         best_score: snap.score, max_attempts: 1, events: [],
@@ -2595,6 +2611,10 @@
           : 'unavailable',
         message: snap.graded
           ? ('当前分数 ' + snap.score +
+             (snap.overall_comment ? '；总评：' + String(snap.overall_comment).slice(0, 80) : '') +
+             (snap.feedback_lines && snap.feedback_lines.length
+               ? '；批注 ' + snap.feedback_lines.length + ' 条' : '') +
+             '。要提分就点「开始自动改写」—— 会按这份分数与评价改写后重交。' +
              (snap.detail_error ? '（' + snap.detail_error + '）' : ''))
           : ('没取到分数：' + reason)
       };

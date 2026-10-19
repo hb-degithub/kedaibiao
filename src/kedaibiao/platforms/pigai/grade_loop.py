@@ -156,7 +156,19 @@ def build_rewrite_prompt(
     if feedback:
         lines.append("批注（逐条修掉）：")
         lines.extend(f"- {item}" for item in feedback)
-    lines.extend(["", "原文：", essay])
+    elif not overall:
+        lines.append(
+            "（平台只给了分数，没有总评和批注：请按常见提分点优化 —— "
+            "减少口语化表达、增加从句与衔接词、替换重复词、保证论点展开。）"
+        )
+    lines.extend([
+        "",
+        "要求：保留原文的主题与事实，逐条针对上面的批注/总评修改，",
+        "不要整篇重写、不要缩水字数，改完字数要落在要求的区间内。",
+        "",
+        "原文：",
+        essay,
+    ])
     return "\n".join(lines)
 
 
