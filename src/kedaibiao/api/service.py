@@ -36,7 +36,7 @@ from kedaibiao.config.settings import (
     load_settings,
     resolve_environ,
 )
-from kedaibiao.core.models import TaskKind
+from kedaibiao.core.models import Credentials, TaskKind
 from kedaibiao.platforms import load_builtin_adapters
 from kedaibiao.runtime import build_runtime, persist_http_cookies
 from kedaibiao.security.accounts import AccountError, AccountStore, PlatformAccount

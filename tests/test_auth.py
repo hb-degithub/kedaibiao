@@ -385,5 +385,117 @@ class TestServicePermission(unittest.TestCase):
         )
 
 
+class TestAccountLoginPath(unittest.TestCase):
+    """平台账号的真正登录路径。
+
+    回归背景：``_login_account`` 里用了 ``Credentials`` 但 service.py 漏了导入，
+    结果「添加账号」永远返回 502 NameError。因为没有测试真正跑过这条路径，
+    这个 bug 一直没被发现 —— 功能看着做了，实际用不了。
+    """
+
+    PLATFORM = "authfake"
+
+    def setUp(self) -> None:
+        from kedaibiao import adapters
+        from kedaibiao.platforms.base import Capabilities, PlatformAdapter
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "config").mkdir()
+        (self.root / "config" / "local.toml").write_text(
+            "[kedaibiao]\n"
+            f'db_url = "sqlite:///{self.root}/x.db"\n'
+            f'session_dir = "{self.root}/s"\n',
+            encoding="utf-8",
+        )
+
+        class FakeLoginAdapter(PlatformAdapter):
+            name = TestAccountLoginPath.PLATFORM
+            display_name = "登录假平台"
+            capabilities = Capabilities()
+            seen_password = None
+
+            async def login(self, credentials):  # noqa: ANN001
+                FakeLoginAdapter.seen_password = credentials.password
+                return credentials.username == "good" and credentials.password == "pw123456"
+
+            async def is_logged_in(self) -> bool:
+                return False
+
+            async def close(self) -> None:
+                return None
+
+        self.adapter_cls = FakeLoginAdapter
+        adapters.register(self.PLATFORM, FakeLoginAdapter, override=True)
+        self.addCleanup(adapters.unregister, self.PLATFORM)
+        self.service = ConsoleService(root=self.root)
+
+    def _admin(self) -> Viewer:
+        user, _pw = self.service.bootstrap_admin()
+        assert user is not None
+        return Viewer(user_id=user["id"], is_superadmin=True, username="admin")
+
+    def test_add_account_with_login_now(self) -> None:
+        """添加账号并立即登录 —— 这条路径必须真的能跑通。"""
+        viewer = self._admin()
+        account = self.service.add_account(
+            viewer, self.PLATFORM, label="我的号", username="good",
+            password="pw123456", login_now=True,
+        )
+        self.assertTrue(account["last_login_ok"], account.get("last_login_note"))
+        self.assertEqual(account["username"], "good")
+        # 密码确实被传给了适配器（说明整条链路是通的）
+        self.assertEqual(self.adapter_cls.seen_password, "pw123456")
+
+    def test_password_is_never_persisted(self) -> None:
+        viewer = self._admin()
+        self.service.add_account(
+            viewer, self.PLATFORM, username="good", password="pw123456", login_now=True,
+        )
+        # 库里任何地方都不该出现明文密码
+        db_bytes = (self.root / "x.db").read_bytes()
+        self.assertNotIn(b"pw123456", db_bytes, "平台密码绝不能落盘")
+
+    def test_wrong_password_reports_platform_error(self) -> None:
+        viewer = self._admin()
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.add_account(
+                viewer, self.PLATFORM, username="good", password="wrong-pass", login_now=True,
+            )
+        self.assertEqual(cm.exception.kind, "platform_error")
+
+    def test_login_account_after_add(self) -> None:
+        viewer = self._admin()
+        account = self.service.add_account(
+            viewer, self.PLATFORM, username="good", password="pw123456", login_now=False,
+        )
+        self.assertIsNone(account["last_login_ok"], "没登录过就不该有结果")
+        fresh = self.service.login_account(viewer, account["id"], "pw123456")
+        self.assertTrue(fresh["last_login_ok"])
+
+    def test_resolve_login_prefers_bound_account(self) -> None:
+        """绑定了账号就用账号；没绑定才回退到 .env。"""
+        viewer = self._admin()
+        self.service.add_account(
+            viewer, self.PLATFORM, username="good", password="pw123456", login_now=True,
+        )
+        creds, cookie_file = self.service._resolve_login(self.PLATFORM, viewer)  # noqa: SLF001
+        self.assertEqual(creds.username, "good")
+        self.assertIsNotNone(cookie_file, "必须用账号自己的 cookie 文件")
+        self.assertIn("accounts", str(cookie_file))
+
+    def test_delete_account_removes_cookie_file(self) -> None:
+        viewer = self._admin()
+        account = self.service.add_account(
+            viewer, self.PLATFORM, username="good", password="pw123456", login_now=True,
+        )
+        _creds, cookie_file = self.service._resolve_login(self.PLATFORM, viewer)  # noqa: SLF001
+        Path(cookie_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(cookie_file).write_text("{}", encoding="utf-8")
+        self.service.delete_account(viewer, account["id"])
+        self.assertFalse(Path(cookie_file).exists(), "删账号要连带删掉它的会话文件")
+
+
 if __name__ == "__main__":
     unittest.main()
