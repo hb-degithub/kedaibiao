@@ -163,25 +163,49 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return self._static("index.html")
         if path.startswith("/static/"):
             return self._static(path[len("/static/") :])
+
+        # 注意顺序：/api/platforms/<name>/actions 必须先于 /api/platforms 判断
+        if path.startswith("/api/platforms/"):
+            parts = path[len("/api/platforms/") :].split("/")
+            if len(parts) == 2 and parts[1] == "actions" and parts[0]:
+                return self._json(200, svc.actions(parts[0]))
+            return self._error(404, f"没有这个路由: {path}", "not_found")
+
+        scope = self._platform_param()
         if path == "/api/overview":
-            return self._json(200, svc.overview())
+            return self._json(200, svc.overview(scope))
+        if path == "/api/statistics":
+            return self._json(200, svc.statistics())
+        if path == "/api/settings":
+            return self._json(200, svc.settings_view())
         if path == "/api/platforms":
             return self._json(200, svc.platforms())
         if path == "/api/runs":
-            return self._json(200, svc.runs(self._int_param("limit", 50)))
+            return self._json(200, svc.runs(self._int_param("limit", 50), scope))
         if path == "/api/submissions":
-            return self._json(200, svc.submissions(self._int_param("limit", 50)))
+            return self._json(200, svc.submissions(self._int_param("limit", 50), scope))
         if path == "/api/bank":
-            return self._json(200, svc.bank())
+            return self._json(200, svc.bank(scope))
         if path == "/api/events":
             return self._json(200, svc.events(self._int_param("limit", 100)))
         if path == "/api/jobs":
-            return self._json(200, svc.jobs())
+            return self._json(200, svc.jobs(scope))
         if path.startswith("/api/jobs/"):
             return self._json(200, svc.job(path[len("/api/jobs/") :]))
         self._error(404, f"没有这个路由: {path}", "not_found")
 
     def _route_post(self, path: str) -> None:
+        if path.startswith("/api/platforms/"):
+            parts = path[len("/api/platforms/") :].split("/")
+            if len(parts) == 3 and parts[1] == "actions" and parts[0] and parts[2]:
+                payload = self._body_json()
+                if not isinstance(payload, dict):
+                    raise ConsoleError(
+                        "请求体必须是 JSON 对象", kind="bad_request", status=400
+                    )
+                return self._json(200, self.service.run_action(parts[0], parts[2], payload))
+            return self._error(404, f"没有这个路由: {path}", "not_found")
+
         if path != "/api/run":
             return self._error(404, f"没有这个路由: {path}", "not_found")
 
@@ -209,6 +233,11 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             kinds=[str(k) for k in kinds],
         )
         self._json(HTTPStatus.ACCEPTED, job)
+
+    def _platform_param(self) -> str | None:
+        """``?platform=`` 原样返回给服务层校验（不在这里判存在性）。"""
+        raw = self._query().get("platform", [None])[0]
+        return raw or None
 
     def _int_param(self, name: str, default: int) -> int:
         raw = self._query().get(name, [None])[0]

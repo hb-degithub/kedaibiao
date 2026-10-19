@@ -283,10 +283,15 @@ class Pipeline:
             raise RuntimeError(f"提交被拒: {result.message}")
 
         if self.config.write_back and self.bank is not None:
-            self._write_back(questions, answers, result)
+            self._write_back(questions, answers, result, platform=adapter.name)
 
     def _write_back(
-        self, questions: list[Question], answers: list[Answer], result: Any
+        self,
+        questions: list[Question],
+        answers: list[Answer],
+        result: Any,
+        *,
+        platform: str = "",
     ) -> None:
         """把这次作答写进题库。
 
@@ -304,7 +309,7 @@ class Pipeline:
                 skipped += 1
                 continue
             correct = verdicts.get(q.remote_id) if q.remote_id else None
-            self.bank.upsert(q, a, correct=correct)
+            self.bank.upsert(q, a, correct=correct, platform=platform)
         if skipped:
             log.warning(
                 "题库回写跳过 %d 道无法唯一标识的题目（无题干且无平台 ID）", skipped

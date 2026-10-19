@@ -18,6 +18,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from kedaibiao import adapters
@@ -334,6 +335,120 @@ class TestAllowedHosts(unittest.TestCase):
 
     def test_empty_host_treated_as_loopback(self) -> None:
         self.assertIn("127.0.0.1:1", build_allowed_hosts("", 1))
+
+
+class TestPlatformScopedRoutes(ServerTestBase):
+    def test_overview_accepts_platform(self) -> None:
+        data = self.as_json(self.call(f"/api/overview?platform={PLATFORM}"))
+        self.assertEqual(data["platform"], PLATFORM)
+        self.assertIsNone(self.as_json(self.call("/api/overview"))["platform"])
+
+    def test_unknown_platform_is_404(self) -> None:
+        status, body, _ = self.call("/api/runs?platform=ghost")
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body)["kind"], "unknown_platform")
+
+    def test_bank_accepts_platform(self) -> None:
+        data = self.as_json(self.call(f"/api/bank?platform={PLATFORM}"))
+        self.assertEqual(data["platform"], PLATFORM)
+        self.assertIn("by_platform", data)
+
+    def test_statistics_route(self) -> None:
+        data = self.as_json(self.call("/api/statistics"))
+        self.assertIn("bank", data)
+        self.assertIn("platforms", data)
+        self.assertTrue(data["platforms"])
+
+    def test_settings_route(self) -> None:
+        data = self.as_json(self.call("/api/settings"))
+        self.assertIn("dotenv_present", data)
+        self.assertIn("env_keys_seen", data)
+        self.assertIn("platforms", data)
+
+    def test_jobs_accepts_platform(self) -> None:
+        data = self.as_json(self.call(f"/api/jobs?platform={PLATFORM}"))
+        self.assertEqual(data["platform"], PLATFORM)
+
+
+class TestActionRoutes(ServerTestBase):
+    def setUp(self) -> None:
+        super().setUp()
+        from kedaibiao.api.actions import ActionParam, ActionSpec, message, register
+
+        async def _echo(adapter: Any, params: dict) -> dict:
+            if params.get("who") == "explode":
+                raise RuntimeError("平台炸了")
+            return message(platform=PLATFORM, action="echo", label="回声",
+                           message=f"hi {params.get('who', '')}")
+
+        register(
+            ActionSpec(platform=PLATFORM, name="echo", label="回声",
+                       params=(ActionParam("who", "对象", required=True),)),
+            _echo,
+        )
+
+    def test_list_actions(self) -> None:
+        data = self.as_json(self.call(f"/api/platforms/{PLATFORM}/actions"))
+        self.assertEqual(data["platform"], PLATFORM)
+        self.assertEqual([a["name"] for a in data["actions"]], ["echo"])
+
+    def test_list_actions_unknown_platform(self) -> None:
+        status, body, _ = self.call("/api/platforms/ghost/actions")
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body)["kind"], "unknown_platform")
+
+    def test_action_requires_json_content_type(self) -> None:
+        status, body, _ = self.call(
+            f"/api/platforms/{PLATFORM}/actions/echo", method="POST", raw=b"who=x",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(status, 415)
+
+    def test_unknown_action_is_404(self) -> None:
+        status, body, _ = self.call(
+            f"/api/platforms/{PLATFORM}/actions/nope", method="POST", json_body={}
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body)["kind"], "unknown_action")
+
+    def test_missing_param(self) -> None:
+        with mock.patch.dict(os.environ, _creds(PLATFORM), clear=True):
+            status, body, _ = self.call(
+                f"/api/platforms/{PLATFORM}/actions/echo", method="POST", json_body={}
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("对象", json.loads(body)["error"])
+
+    def test_no_credentials(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            status, body, _ = self.call(
+                f"/api/platforms/{PLATFORM}/actions/echo",
+                method="POST", json_body={"who": "x"},
+            )
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["kind"], "no_credentials")
+
+    def test_success(self) -> None:
+        with mock.patch.dict(os.environ, _creds(PLATFORM), clear=True):
+            status, body, _ = self.call(
+                f"/api/platforms/{PLATFORM}/actions/echo",
+                method="POST", json_body={"who": "world"},
+            )
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual(data["kind"], "message")
+        self.assertEqual(data["message"], "hi world")
+
+    def test_platform_error_is_502(self) -> None:
+        with mock.patch.dict(os.environ, _creds(PLATFORM), clear=True):
+            status, body, _ = self.call(
+                f"/api/platforms/{PLATFORM}/actions/echo",
+                method="POST", json_body={"who": "explode"},
+            )
+        self.assertEqual(status, 502)
+        data = json.loads(body)
+        self.assertEqual(data["kind"], "platform_error")
+        self.assertIn("平台炸了", data["error"])
 
 
 class TestSecurity(ServerTestBase):

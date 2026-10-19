@@ -76,6 +76,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="额外允许的 Host 头（绑非回环地址、且打算用主机名访问时用）",
     )
 
+    actions_p = sub.add_parser(
+        "actions", parents=[root_parent], help="列出某个平台的只读动作"
+    )
+    actions_p.add_argument("platform", help="平台机器名")
+
+    action_p = sub.add_parser(
+        "action", parents=[root_parent], help="执行某个平台的只读动作"
+    )
+    action_p.add_argument("platform", help="平台机器名")
+    action_p.add_argument("action", help="动作名（先用 actions 子命令查看）")
+    action_p.add_argument(
+        "param",
+        nargs="*",
+        metavar="key=value",
+        help="动作参数，例如 rid=200000004 eid=1000006",
+    )
+
     stats = sub.add_parser("bank-stats", parents=[root_parent], help="题库与跑批统计")
     stats.add_argument("--db", default=None, help="覆盖配置里的数据库路径")
     stats.add_argument("--runs", type=int, default=10, help="显示最近多少条执行记录")
@@ -288,6 +305,115 @@ def cmd_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def _display_width(text: str) -> int:
+    """终端列宽：东亚宽字符算 2 列。表格对齐靠它。"""
+    import unicodedata
+
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
+
+
+def _pad(text: str, width: int) -> str:
+    return text + " " * max(0, width - _display_width(text))
+
+
+def _render_table(columns: list[dict], rows: list[dict], empty_hint: str = "") -> None:
+    if not rows:
+        print(f"（{empty_hint or '没有数据'}）")
+        return
+    headers = [str(c.get("label") or c.get("key")) for c in columns]
+    keys = [str(c.get("key")) for c in columns]
+    body = [[str(row.get(k, "")) for k in keys] for row in rows]
+    widths = [
+        max(_display_width(headers[i]), *(_display_width(r[i]) for r in body))
+        for i in range(len(headers))
+    ]
+    print("  ".join(_pad(h, widths[i]) for i, h in enumerate(headers)))
+    print("  ".join("-" * w for w in widths))
+    for row in body:
+        print("  ".join(_pad(cell, widths[i]) for i, cell in enumerate(row)))
+
+
+def _render_envelope(env: dict) -> None:
+    """把展示信封渲染成终端文本。与控制台共用同一套结构。"""
+    kind = env.get("kind")
+    print()
+    print(f"【{env.get('label', '')}】{env.get('title', '')}")
+    if env.get("note"):
+        print(f"  提示：{env['note']}")
+
+    if kind == "table":
+        print()
+        _render_table(env.get("columns", []), env.get("rows", []), env.get("empty_hint", ""))
+    elif kind == "detail":
+        print()
+        for field in env.get("fields", []):
+            print(f"  {_pad(str(field.get('label', '')), 12)} {field.get('value', '')}")
+        for section in env.get("sections", []):
+            print()
+            print(f"── {section.get('label', '')} " + "─" * 20)
+            if section.get("kind") == "table":
+                _render_table(section.get("columns", []), section.get("rows", []))
+            else:
+                text = section.get("text", "")
+                print(text if text else "（空）")
+    elif kind == "message":
+        print()
+        print(env.get("message", ""))
+    print()
+
+
+def _service(root: str):
+    from kedaibiao.api.service import ConsoleService
+
+    return ConsoleService(root=root)
+
+
+def cmd_actions(args: argparse.Namespace) -> int:
+    from kedaibiao.api.service import ConsoleError
+
+    try:
+        data = _service(args.root).actions(args.platform)
+    except ConsoleError as exc:
+        print(f"✗ {exc}")
+        return 2
+
+    actions = data["actions"]
+    if not actions:
+        print(f"{args.platform} 没有登记任何只读动作。")
+        return 0
+    print(f"{args.platform} 可用只读动作：")
+    for item in actions:
+        print(f"  {item['name']:<10s} {item['label']}")
+        if item.get("description"):
+            print(f"             {item['description']}")
+        for param in item.get("params", []):
+            mark = "必填" if param["required"] else "可选"
+            print(f"             - {param['name']}（{param['label']}，{mark}）")
+    print()
+    print(f"执行：kedaibiao action {args.platform} <动作名> [key=value ...]")
+    return 0
+
+
+def cmd_action(args: argparse.Namespace) -> int:
+    from kedaibiao.api.service import ConsoleError
+
+    params: dict[str, str] = {}
+    for item in args.param:
+        if "=" not in item:
+            print(f"✗ 参数要写成 key=value 形式：{item!r}")
+            return 2
+        key, value = item.split("=", 1)
+        params[key.strip()] = value
+
+    try:
+        envelope = _service(args.root).run_action(args.platform, args.action, params)
+    except ConsoleError as exc:
+        print(f"✗ {exc}")
+        return 2
+    _render_envelope(envelope)
+    return 0
+
+
 HANDLERS = {
     "platforms": cmd_platforms,
     "config": cmd_config,
@@ -297,6 +423,8 @@ HANDLERS = {
     "bank-import": cmd_bank_import,
     "run": cmd_run,
     "web": cmd_web,
+    "actions": cmd_actions,
+    "action": cmd_action,
 }
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -234,6 +235,164 @@ class TestProgressStore(unittest.TestCase):
             reopened = ProgressStore(path)
             self.addCleanup(reopened.close)
             self.assertTrue(reopened.already_done("fake", "a5"))
+
+
+class TestPlatformDimension(unittest.TestCase):
+    """题库的平台维度：控制台「统计」页要按平台对比。"""
+
+    def setUp(self) -> None:
+        self.bank = QuestionBank(":memory:")
+        self.addCleanup(self.bank.close)
+
+    def test_platform_recorded(self) -> None:
+        q = _q("甲平台的题")
+        self.bank.upsert(q, _a(q, [0]), platform="alpha")
+        self.assertEqual(self.bank.stats("alpha")["total"], 1)
+        self.assertEqual(self.bank.stats("beta")["total"], 0)
+        self.assertEqual(self.bank.stats()["total"], 1, "不传平台就是全部")
+
+    def test_platform_stats_accuracy(self) -> None:
+        for i, ok in enumerate([True, False]):
+            q = _q(f"题{i}")
+            self.bank.upsert(q, _a(q, [0]), correct=ok, platform="alpha")
+        rows = {r["platform"]: r for r in self.bank.platform_stats()}
+        self.assertEqual(rows["alpha"]["questions"], 2)
+        self.assertEqual(rows["alpha"]["graded"], 2)
+        self.assertEqual(rows["alpha"]["correct"], 1)
+        self.assertEqual(rows["alpha"]["accuracy"], 0.5)
+
+    def test_by_platform_is_always_global(self) -> None:
+        for name in ("alpha", "beta"):
+            q = _q(f"{name}的题")
+            self.bank.upsert(q, _a(q, [0]), platform=name)
+        scoped = self.bank.stats("alpha")
+        self.assertEqual(scoped["total"], 1)
+        self.assertEqual(scoped["by_platform"], {"alpha": 1, "beta": 1},
+                         "by_platform 始终是全量，供对比用")
+
+    def test_empty_platform_shows_as_unknown(self) -> None:
+        q = _q("没标平台的题")
+        self.bank.upsert(q, _a(q, [0]))
+        self.assertIn("<未知>", self.bank.stats()["by_platform"])
+
+    def test_existing_platform_not_overwritten_by_blank(self) -> None:
+        q = _q("已归属平台的题")
+        self.bank.upsert(q, _a(q, [0]), platform="alpha")
+        self.bank.upsert(q, _a(q, [1]), platform="")
+        self.assertEqual(self.bank.stats("alpha")["total"], 1)
+        self.assertNotIn("", self.bank.stats()["by_platform"], "空写入不该把归属抹掉")
+
+    def test_blank_platform_filled_in_by_later_write(self) -> None:
+        q = _q("先没归属后来有")
+        self.bank.upsert(q, _a(q, [0]))
+        self.bank.upsert(q, _a(q, [1]), platform="alpha")
+        self.assertEqual(self.bank.stats("alpha")["total"], 1)
+
+
+class TestSchemaMigration(unittest.TestCase):
+    """旧库（没有 platform 列）必须能自动补列且不丢数据。"""
+
+    def _make_legacy_db(self, path: Path) -> None:
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE questions (
+                fingerprint TEXT PRIMARY KEY, norm_stem TEXT NOT NULL,
+                stem TEXT NOT NULL, qtype TEXT NOT NULL, options TEXT NOT NULL,
+                choices TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0,
+                hits INTEGER NOT NULL DEFAULT 0, correct INTEGER,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE TABLE runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL,
+                assignment_id TEXT NOT NULL, status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '{}', started_at TEXT, finished_at TEXT);
+            CREATE TABLE submissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL,
+                assignment_id TEXT NOT NULL, ok INTEGER NOT NULL, score REAL,
+                message TEXT NOT NULL DEFAULT '', raw TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL);
+            INSERT INTO questions VALUES
+                ('fp1','题干','题干','single','[]','[0]','','bank_hit',1.0,0,1,
+                 '2026-01-01','2026-01-01');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+    def test_adds_column_and_keeps_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            self._make_legacy_db(path)
+
+            bank = QuestionBank(path)
+            try:
+                cols = {r["name"] for r in bank._conn.execute("PRAGMA table_info(questions)")}
+                self.assertIn("platform", cols)
+                self.assertEqual(bank.stats()["total"], 1, "旧数据不能丢")
+                self.assertEqual(bank.stats()["correct"], 1)
+            finally:
+                bank.close()
+
+    def test_migration_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            self._make_legacy_db(path)
+            for _ in range(3):
+                QuestionBank(path).close()
+
+    def test_legacy_rows_are_addressable_by_platform_after_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            self._make_legacy_db(path)
+            bank = QuestionBank(path)
+            try:
+                q = Question(stem="题干")
+                bank.upsert(q, Answer(question=q, choices=[1],
+                                      source=AnswerSource.BANK_HIT), platform="alpha")
+                self.assertEqual(bank.stats("alpha")["total"], 1)
+            finally:
+                bank.close()
+
+
+class TestProgressStorePlatformFilters(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = ProgressStore(":memory:")
+        self.addCleanup(self.store.close)
+        for platform, status in (("alpha", RunStatus.SUCCEEDED),
+                                 ("alpha", RunStatus.FAILED),
+                                 ("beta", RunStatus.SUCCEEDED)):
+            run_id = self.store.start_run(
+                RunRecord(platform=platform, assignment_id=f"{platform}-{status.value}")
+            )
+            self.store.finish_run(run_id, status)
+
+    def test_status_counts_scoped(self) -> None:
+        self.assertEqual(self.store.status_counts(platform="alpha")["total"], 2)
+        self.assertEqual(self.store.status_counts(platform="beta")["total"], 1)
+        self.assertEqual(self.store.status_counts()["total"], 3)
+
+    def test_recent_runs_scoped(self) -> None:
+        alpha = self.store.recent_runs(platform="alpha")
+        self.assertEqual(len(alpha), 2)
+        self.assertTrue(all(r["platform"] == "alpha" for r in alpha))
+
+    def test_platform_stats_comparison(self) -> None:
+        rows = {r["platform"]: r for r in self.store.platform_stats()}
+        self.assertEqual(rows["alpha"]["succeeded"], 1)
+        self.assertEqual(rows["alpha"]["failed"], 1)
+        self.assertEqual(rows["beta"]["total"], 1)
+
+    def test_recent_submissions_scoped(self) -> None:
+        self.store.record_submission(
+            "alpha", SubmissionResult(assignment_id="a", ok=True)
+        )
+        self.store.record_submission(
+            "beta", SubmissionResult(assignment_id="b", ok=False)
+        )
+        self.assertEqual(len(self.store.recent_submissions(platform="alpha")), 1)
+        self.assertEqual(len(self.store.recent_submissions()), 2)
 
 
 if __name__ == "__main__":

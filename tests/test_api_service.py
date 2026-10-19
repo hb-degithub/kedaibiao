@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from kedaibiao import adapters
@@ -350,6 +351,247 @@ class TestParseKinds(unittest.TestCase):
     def test_invalid(self) -> None:
         with self.assertRaises(ConsoleError):
             _parse_kinds(["nope"])
+
+
+class TestPlatformScoping(ServiceTestBase):
+    """`?platform=` 的过滤语义。"""
+
+    def _seed_runs(self) -> None:
+        from kedaibiao.bank.store import ProgressStore
+        from kedaibiao.core.models import RunRecord, RunStatus
+
+        store = ProgressStore(self.root / "api.db")
+        for platform, status in ((GOOD, RunStatus.SUCCEEDED), (GOOD, RunStatus.FAILED),
+                                 (NOSUBMIT, RunStatus.SUCCEEDED)):
+            run_id = store.start_run(
+                RunRecord(platform=platform, assignment_id=f"{platform}-x")
+            )
+            store.finish_run(run_id, status)
+        store.close()
+
+    def test_overview_scoped(self) -> None:
+        self._seed_runs()
+        allp = self.service.overview()
+        scoped = self.service.overview(GOOD)
+        self.assertIsNone(allp["platform"])
+        self.assertEqual(scoped["platform"], GOOD)
+        self.assertEqual(allp["runs"]["total"], 3)
+        self.assertEqual(scoped["runs"]["total"], 2)
+        self.assertEqual(scoped["runs"]["failed"], 1)
+
+    def test_runs_scoped(self) -> None:
+        self._seed_runs()
+        rows = self.service.runs(platform=GOOD)["runs"]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(r["platform"] == GOOD for r in rows))
+        self.assertEqual(len(self.service.runs()["runs"]), 3)
+
+    def test_bank_scoped(self) -> None:
+        from kedaibiao.bank.store import QuestionBank
+
+        bank = QuestionBank(self.root / "api.db")
+        q = Question(stem="题", options=["甲"], remote_id="q1")
+        bank.upsert(q, Answer(question=q, choices=[0], source=AnswerSource.BANK_HIT),
+                    platform=GOOD)
+        bank.close()
+
+        self.assertEqual(self.service.bank(GOOD)["total"], 1)
+        self.assertEqual(self.service.bank(NOSUBMIT)["total"], 0)
+        self.assertEqual(self.service.bank()["total"], 1)
+
+    def test_unknown_platform_is_404_not_empty(self) -> None:
+        for call in (
+            lambda: self.service.overview("ghost"),
+            lambda: self.service.runs(platform="ghost"),
+            lambda: self.service.bank("ghost"),
+            lambda: self.service.jobs("ghost"),
+        ):
+            with self.subTest(call=call):
+                with self.assertRaises(ConsoleError) as cm:
+                    call()
+                self.assertEqual(cm.exception.kind, "unknown_platform")
+                self.assertEqual(cm.exception.status, 404)
+
+    def test_blank_platform_means_all(self) -> None:
+        self.assertIsNone(self.service.overview("")["platform"])
+        self.assertIsNone(self.service.overview("   ")["platform"])
+
+    def test_jobs_scoped(self) -> None:
+        self.seed_bank()
+        with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
+            self.service.start_run(GOOD)
+            self.wait()
+        self.assertEqual(len(self.service.jobs(GOOD)["jobs"]), 1)
+        self.assertEqual(len(self.service.jobs(NOSUBMIT)["jobs"]), 0)
+
+
+class TestStatistics(ServiceTestBase):
+    def test_empty_state_lists_all_registered_platforms(self) -> None:
+        data = self.service.statistics()
+        names = {r["platform"] for r in data["platforms"]}
+        self.assertIn(GOOD, names)
+        self.assertIn(NOSUBMIT, names, "没有数据的平台也要出现，否则对比表缺行")
+        self.assertEqual(data["platforms"][0]["questions"], 0)
+        self.assertIsNone(data["platforms"][0]["accuracy"])
+
+    def test_merges_runs_and_questions(self) -> None:
+        from kedaibiao.bank.store import ProgressStore, QuestionBank
+        from kedaibiao.core.models import RunRecord, RunStatus
+
+        bank = QuestionBank(self.root / "api.db")
+        q = Question(stem="题", options=["甲"], remote_id="q1")
+        bank.upsert(q, Answer(question=q, choices=[0], source=AnswerSource.BANK_HIT),
+                    correct=True, platform=GOOD)
+        bank.close()
+
+        store = ProgressStore(self.root / "api.db")
+        run_id = store.start_run(RunRecord(platform=GOOD, assignment_id="a"))
+        store.finish_run(run_id, RunStatus.SUCCEEDED)
+        store.record_submission(GOOD, SubmissionResult(assignment_id="a", ok=True))
+        store.close()
+
+        rows = {r["platform"]: r for r in self.service.statistics()["platforms"]}
+        self.assertEqual(rows[GOOD]["succeeded"], 1)
+        self.assertEqual(rows[GOOD]["questions"], 1)
+        self.assertEqual(rows[GOOD]["accuracy"], 1.0)
+        self.assertEqual(rows[GOOD]["submissions"], 1)
+
+
+class TestSettingsView(ServiceTestBase):
+    def test_shape_and_no_secrets(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {f"KEDAIBIAO_{GOOD.upper()}_USER": "stu",
+             f"KEDAIBIAO_{GOOD.upper()}_PASS": "topsecret"},
+            clear=True,
+        ):
+            data = self.service.settings_view()
+
+        for key in ("dry_run", "max_concurrency", "db_path", "dotenv_present",
+                    "env_keys_seen", "optional_deps", "platforms"):
+            self.assertIn(key, data)
+
+        blob = repr(data)
+        self.assertNotIn("topsecret", blob, "设置页绝不能带出凭据值")
+        self.assertNotIn("stu", blob, "用户名也不该带出")
+
+    def test_env_keys_seen_lists_names_only(self) -> None:
+        with mock.patch.dict(
+            os.environ, {f"KEDAIBIAO_{GOOD.upper()}_PASS": "secret"}, clear=True
+        ):
+            keys = self.service.settings_view()["env_keys_seen"]
+        self.assertIn(f"KEDAIBIAO_{GOOD.upper()}_PASS", keys)
+
+    def test_credentials_hint_shows_expected_keys(self) -> None:
+        rows = {p["name"]: p for p in self.service.settings_view()["platforms"]}
+        self.assertIn(f"KEDAIBIAO_{GOOD.upper()}_USER", rows[GOOD]["credentials_hint"])
+
+    def test_dotenv_present_flag(self) -> None:
+        self.assertFalse(self.service.settings_view()["dotenv_present"])
+        (self.root / ".env").write_text("X=1\n", encoding="utf-8")
+        service = ConsoleService(root=self.root)
+        self.assertTrue(service.settings_view()["dotenv_present"])
+
+
+class TestActions(ServiceTestBase):
+    def setUp(self) -> None:
+        super().setUp()
+        from kedaibiao.api.actions import ActionParam, ActionSpec, message, register
+
+        async def _ping(adapter: Any, params: dict) -> dict:
+            return message(platform=GOOD, action="ping", label="测试动作",
+                           message=f"pong:{params.get('who', '')}")
+
+        register(
+            ActionSpec(platform=GOOD, name="ping", label="测试动作",
+                       params=(ActionParam("who", "对象", required=True),)),
+            _ping,
+        )
+
+    def test_list_actions(self) -> None:
+        data = self.service.actions(GOOD)
+        self.assertEqual(data["platform"], GOOD)
+        self.assertEqual([a["name"] for a in data["actions"]], ["ping"])
+        self.assertTrue(data["actions"][0]["params"][0]["required"])
+
+    def test_actions_for_platform_without_any(self) -> None:
+        self.assertEqual(self.service.actions(NOSUBMIT)["actions"], [])
+
+    def test_actions_unknown_platform(self) -> None:
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.actions("ghost")
+        self.assertEqual(cm.exception.kind, "unknown_platform")
+
+    def test_unknown_action(self) -> None:
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.run_action(GOOD, "nope", {})
+        self.assertEqual(cm.exception.kind, "unknown_action")
+        self.assertEqual(cm.exception.status, 404)
+
+    def test_missing_required_param(self) -> None:
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.run_action(GOOD, "ping", {})
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertIn("对象", str(cm.exception))
+
+    def test_missing_credentials(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(ConsoleError) as cm:
+                self.service.run_action(GOOD, "ping", {"who": "x"})
+        self.assertEqual(cm.exception.kind, "no_credentials")
+
+    def test_success(self) -> None:
+        with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
+            out = self.service.run_action(GOOD, "ping", {"who": "world"})
+        self.assertEqual(out["kind"], "message")
+        self.assertEqual(out["message"], "pong:world")
+
+    def test_platform_exception_becomes_platform_error(self) -> None:
+        from kedaibiao.api.actions import ActionSpec, register
+
+        async def _boom(adapter: Any, params: dict) -> dict:
+            raise RuntimeError("平台炸了")
+
+        register(ActionSpec(platform=GOOD, name="boom", label="炸"), _boom)
+        with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
+            with self.assertRaises(ConsoleError) as cm:
+                self.service.run_action(GOOD, "boom", {})
+        self.assertEqual(cm.exception.kind, "platform_error")
+        self.assertEqual(cm.exception.status, 502)
+        self.assertIn("平台炸了", str(cm.exception))
+
+
+class TestParamValidation(unittest.TestCase):
+    def _spec(self):
+        from kedaibiao.api.actions import ActionParam, ActionSpec
+
+        return ActionSpec(
+            platform="x", name="a", label="A",
+            params=(
+                ActionParam("rid", "编号", required=True),
+                ActionParam("n", "数量", type="int"),
+            ),
+        )
+
+    def test_int_coercion(self) -> None:
+        out = ConsoleService._validate_params(self._spec(), {"rid": "1", "n": "7"})
+        self.assertEqual(out, {"rid": "1", "n": 7})
+
+    def test_bad_int(self) -> None:
+        with self.assertRaises(ConsoleError):
+            ConsoleService._validate_params(self._spec(), {"rid": "1", "n": "abc"})
+
+    def test_optional_param_skipped_when_blank(self) -> None:
+        out = ConsoleService._validate_params(self._spec(), {"rid": "1", "n": "  "})
+        self.assertEqual(out, {"rid": "1"})
+
+    def test_required_whitespace_rejected(self) -> None:
+        with self.assertRaises(ConsoleError):
+            ConsoleService._validate_params(self._spec(), {"rid": "   "})
+
+    def test_non_dict_rejected(self) -> None:
+        with self.assertRaises(ConsoleError):
+            ConsoleService._validate_params(self._spec(), ["nope"])  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

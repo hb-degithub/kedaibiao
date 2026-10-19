@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS questions (
     confidence  REAL NOT NULL DEFAULT 0,
     hits        INTEGER NOT NULL DEFAULT 0,
     correct     INTEGER,
+    platform    TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -93,7 +94,27 @@ class _SqliteBase:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """把旧库补到当前 schema。
+
+        用 ``CREATE TABLE IF NOT EXISTS`` 只能建新库，已有库缺列不会自动补 ——
+        所以这里显式检查并按需 ``ALTER TABLE``。迁移必须幂等：每次开库都会跑。
+
+        索引也在这里建：旧库在补列之前建 ``idx_questions_platform`` 会直接报
+        「no such column」，所以它不能留在 ``SCHEMA`` 里。
+        """
+        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(questions)")}
+        if cols and "platform" not in cols:
+            self._conn.execute(
+                "ALTER TABLE questions ADD COLUMN platform TEXT NOT NULL DEFAULT ''"
+            )
+        if cols:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_questions_platform ON questions(platform)"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -115,11 +136,21 @@ class QuestionBank(_SqliteBase):
 
     # -- 写入 -------------------------------------------------------------
 
-    def upsert(self, question: Question, answer: Answer, *, correct: bool | None = None) -> str:
+    def upsert(
+        self,
+        question: Question,
+        answer: Answer,
+        *,
+        correct: bool | None = None,
+        platform: str = "",
+    ) -> str:
         """写入或更新一条题目答案，返回 fingerprint。
 
         已存在时做合并而非覆盖：旧答案有平台判分背书（``correct`` 非空）
         而新答案没有时，保留旧答案。
+
+        ``platform`` 用于按平台分维度统计（控制台的「统计」页）。旧库里已有
+        的题目 ``platform`` 为空串，合并时若新值非空会补上。
 
         题目无法唯一标识时抛 ``UnidentifiableQuestionError`` —— 这类题目
         （无题干且无平台 ID）的指纹会退化成同一个哨兵值，入库即互相覆盖。
@@ -133,7 +164,8 @@ class QuestionBank(_SqliteBase):
         now = _now()
         with self._cursor() as cur:
             row = cur.execute(
-                "SELECT choices, text, source, confidence, correct FROM questions WHERE fingerprint=?",
+                "SELECT choices, text, source, confidence, correct, platform "
+                "FROM questions WHERE fingerprint=?",
                 (fp,),
             ).fetchone()
 
@@ -141,8 +173,8 @@ class QuestionBank(_SqliteBase):
                 cur.execute(
                     """INSERT INTO questions
                        (fingerprint, norm_stem, stem, qtype, options, choices, text,
-                        source, confidence, hits, correct, created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?)""",
+                        source, confidence, hits, correct, platform, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?)""",
                     (
                         fp,
                         normalize_question(question.stem),
@@ -154,24 +186,31 @@ class QuestionBank(_SqliteBase):
                         answer.source.value,
                         answer.confidence,
                         None if correct is None else int(correct),
+                        platform or "",
                         now,
                         now,
                     ),
                 )
             else:
                 keep_old = row["correct"] is not None and correct is None
+                # 已有平台归属就别被空值冲掉：一道题可能是先从别的平台进来的
+                keep_platform = row["platform"] or platform or ""
                 if keep_old:
-                    cur.execute("UPDATE questions SET updated_at=? WHERE fingerprint=?", (now, fp))
+                    cur.execute(
+                        "UPDATE questions SET platform=?, updated_at=? WHERE fingerprint=?",
+                        (keep_platform, now, fp),
+                    )
                 else:
                     cur.execute(
                         """UPDATE questions SET choices=?, text=?, source=?, confidence=?,
-                           correct=?, updated_at=? WHERE fingerprint=?""",
+                           correct=?, platform=?, updated_at=? WHERE fingerprint=?""",
                         (
                             json.dumps(answer.choices),
                             answer.text,
                             answer.source.value,
                             answer.confidence,
                             None if correct is None else int(correct),
+                            keep_platform,
                             now,
                             fp,
                         ),
@@ -232,13 +271,36 @@ class QuestionBank(_SqliteBase):
         """精确优先，其次模糊。"""
         return self.lookup(question) or self.fuzzy_lookup(question)
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self, platform: str | None = None) -> dict[str, Any]:
+        """题库统计。``platform`` 非空时只统计该平台。
+
+        额外返回 ``by_platform``（各平台题目数），供控制台的「统计」页做对比；
+        即使只看单个平台也会带上，方便前端一处渲染。
+        """
+        where = " WHERE platform=?" if platform else ""
+        args: tuple[Any, ...] = (platform,) if platform else ()
         with self._cursor() as cur:
-            total = cur.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
-            graded = cur.execute("SELECT COUNT(*) FROM questions WHERE correct IS NOT NULL").fetchone()[0]
-            right = cur.execute("SELECT COUNT(*) FROM questions WHERE correct=1").fetchone()[0]
+            total = cur.execute(
+                f"SELECT COUNT(*) FROM questions{where}", args
+            ).fetchone()[0]
+            graded = cur.execute(
+                f"SELECT COUNT(*) FROM questions{where}{' AND' if where else ' WHERE'}"
+                " correct IS NOT NULL",
+                args,
+            ).fetchone()[0]
+            right = cur.execute(
+                f"SELECT COUNT(*) FROM questions{where}{' AND' if where else ' WHERE'}"
+                " correct=1",
+                args,
+            ).fetchone()[0]
             by_source = cur.execute(
-                "SELECT source, COUNT(*) c FROM questions GROUP BY source ORDER BY c DESC"
+                f"SELECT source, COUNT(*) c FROM questions{where}"
+                " GROUP BY source ORDER BY c DESC",
+                args,
+            ).fetchall()
+            by_platform = cur.execute(
+                "SELECT platform, COUNT(*) c FROM questions GROUP BY platform"
+                " ORDER BY c DESC"
             ).fetchall()
         return {
             "total": total,
@@ -247,9 +309,33 @@ class QuestionBank(_SqliteBase):
             "accuracy": round(right / graded, 4) if graded else None,
             "ungraded": total - graded,
             "by_source": {r["source"]: r["c"] for r in by_source},
+            "by_platform": {(r["platform"] or "<未知>"): r["c"] for r in by_platform},
         }
 
     # -- 导入导出 ---------------------------------------------------------
+
+    def platform_stats(self) -> list[dict[str, Any]]:
+        """各平台的题目数与判分准确率，供「统计」页做对比。"""
+        with self._cursor() as cur:
+            rows = cur.execute(
+                """SELECT platform,
+                          COUNT(*) AS total,
+                          SUM(CASE WHEN correct IS NOT NULL THEN 1 ELSE 0 END) AS graded,
+                          SUM(CASE WHEN correct=1 THEN 1 ELSE 0 END) AS correct
+                   FROM questions GROUP BY platform ORDER BY total DESC"""
+            ).fetchall()
+        return [
+            {
+                "platform": r["platform"] or "",
+                "questions": r["total"],
+                "graded": r["graded"] or 0,
+                "correct": r["correct"] or 0,
+                "accuracy": (
+                    round((r["correct"] or 0) / r["graded"], 4) if r["graded"] else None
+                ),
+            }
+            for r in rows
+        ]
 
     def export_jsonl(self, path: str | Path) -> int:
         out = Path(path)
@@ -369,31 +455,69 @@ class ProgressStore(_SqliteBase):
             ).fetchone()
         return row is not None
 
-    def recent_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+    def recent_runs(self, limit: int = 50, *, platform: str | None = None) -> list[dict[str, Any]]:
+        where = " WHERE platform=?" if platform else ""
+        args: tuple[Any, ...] = ((platform, limit) if platform else (limit,))
         with self._cursor() as cur:
             rows = cur.execute(
-                "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)
+                f"SELECT * FROM runs{where} ORDER BY id DESC LIMIT ?", args
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def status_counts(self) -> dict[str, int]:
+    def status_counts(self, *, platform: str | None = None) -> dict[str, int]:
         """按状态汇总执行记录。
 
         给控制台/CLI 用：``{"total": 40, "succeeded": 30, ...}``。
         未知状态不丢，照原样计数 —— 免得将来加了新状态这里悄悄漏掉。
         """
+        where = " WHERE platform=?" if platform else ""
+        args: tuple[Any, ...] = (platform,) if platform else ()
         with self._cursor() as cur:
             rows = cur.execute(
-                "SELECT status, COUNT(*) AS c FROM runs GROUP BY status"
+                f"SELECT status, COUNT(*) AS c FROM runs{where} GROUP BY status", args
             ).fetchall()
         counts = {row["status"]: row["c"] for row in rows}
         counts["total"] = sum(counts.values())
         return counts
 
-    def recent_submissions(self, limit: int = 50) -> list[dict[str, Any]]:
+    def platform_stats(self) -> list[dict[str, Any]]:
+        """各平台的成败对比，供「统计」页用。"""
         with self._cursor() as cur:
             rows = cur.execute(
-                "SELECT * FROM submissions ORDER BY id DESC LIMIT ?", (limit,)
+                """SELECT platform,
+                          COUNT(*) AS total,
+                          SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                          SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END) AS failed,
+                          SUM(CASE WHEN status='skipped'   THEN 1 ELSE 0 END) AS skipped
+                   FROM runs GROUP BY platform ORDER BY total DESC"""
+            ).fetchall()
+            subs = cur.execute(
+                """SELECT platform,
+                          COUNT(*) AS total,
+                          SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END) AS ok
+                   FROM submissions GROUP BY platform"""
+            ).fetchall()
+        sub_map = {r["platform"]: {"submissions": r["total"], "submit_ok": r["ok"]} for r in subs}
+        return [
+            {
+                "platform": r["platform"],
+                "total": r["total"],
+                "succeeded": r["succeeded"] or 0,
+                "failed": r["failed"] or 0,
+                "skipped": r["skipped"] or 0,
+                **sub_map.get(r["platform"], {"submissions": 0, "submit_ok": 0}),
+            }
+            for r in rows
+        ]
+
+    def recent_submissions(
+        self, limit: int = 50, *, platform: str | None = None
+    ) -> list[dict[str, Any]]:
+        where = " WHERE platform=?" if platform else ""
+        args: tuple[Any, ...] = ((platform, limit) if platform else (limit,))
+        with self._cursor() as cur:
+            rows = cur.execute(
+                f"SELECT * FROM submissions{where} ORDER BY id DESC LIMIT ?", args
             ).fetchall()
         return [dict(r) for r in rows]
 
