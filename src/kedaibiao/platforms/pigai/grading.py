@@ -73,6 +73,8 @@ class EssaySnapshot:
     raw_state: str = ""
     #: 触发分析时平台拒绝的原因（「没找到作文」这类）——空串表示没出错
     analysis_error: str = ""
+    #: 详情页读不到（老作文的页面换了形态）时的说明；分数可能来自列表
+    detail_error: str = ""
 
     @property
     def graded(self) -> bool:
@@ -133,6 +135,7 @@ class EssaySnapshot:
             "feedback_lines": self.feedback_lines(),
             "raw_state": self.raw_state,
             "analysis_error": self.analysis_error,
+            "detail_error": self.detail_error,
             "graded": self.graded,
         }
 
@@ -223,9 +226,11 @@ async def fetch_snapshot(
 
     rows = await adapter.list_finished_essays()
     state = ""
+    list_score: float | None = None
     for row in rows:
         if row.rid == rid and row.eid == eid:
             state = row.score_raw
+            list_score = row.score
             break
 
     # 注意：**列表里写「未截止」不代表没有分**。实测有些作业老师开了提前批改，
@@ -235,12 +240,34 @@ async def fetch_snapshot(
         detail = await adapter.fetch_essay_detail(rid, eid)
     except (PigaiParseError, Exception) as exc:  # noqa: BLE001 - 页面形态未知就当没出分
         log.warning("评分详情解析失败（按未出分处理）: %s", exc)
+        # 老作文的详情页换了形态（只有 JS 中转页 / 只加载正文），但**列表里有分数**。
+        # 这时候不能装作没分 —— 用户明明看得到分，只是拿不到批注。
+        if list_score is not None:
+            return EssaySnapshot(
+                rid=rid, eid=eid, score=list_score, full_marks=None,
+                raw_state=state or "仅列表分数",
+                detail_error=(
+                    "详情页读不到（老作文的页面形态不同），分数取自「已提交列表」，"
+                    "但拿不到四维、评语和逐句批注。"
+                ),
+            )
         return EssaySnapshot(rid=rid, eid=eid, raw_state=state or "解析失败")
+
+    # 详情页解析成功但没读到分数（老作文跳转后的页面只给正文），
+    # 而列表里明明有分 → 用列表分数，别让用户以为「没分」。
+    score = detail.score
+    detail_error = ""
+    if score is None and list_score is not None:
+        score = list_score
+        detail_error = (
+            "详情页只读到了正文，没读到分数；分数取自「已提交列表」，"
+            "四维、评语与逐句批注拿不到。"
+        )
 
     return EssaySnapshot(
         rid=rid,
         eid=eid,
-        score=detail.score,
+        score=score,
         full_marks=detail.full_marks,
         topic=detail.topic or "",
         essay_text=detail.essay_text or "",
@@ -252,6 +279,7 @@ async def fetch_snapshot(
             for a in detail.annotations
         ],
         raw_state=state,
+        detail_error=detail_error,
     )
 
 

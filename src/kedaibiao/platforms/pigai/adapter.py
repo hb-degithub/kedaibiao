@@ -262,9 +262,31 @@ class PigaiAdapter(PlatformAdapter):
         return parse_essay_rows(html)
 
     async def fetch_essay_detail(self, rid: str, eid: str) -> protocol.EssayDetail:
-        """作文评分详情：总分 / 四维 / 总评 / **正文** / 按句点评。见 §6.3-6.6。"""
+        """作文评分详情：总分 / 四维 / 总评 / **正文** / 按句点评。见 §6.3-6.6。
+
+        老作文的 `a=view` 页只有一段 JS 跳转（实测 2026-10）：页面里是
+        `url="/index.php?c=v2&a=view3&eid=…"`，真正的详情在跳转后的页面。
+        这里识别这种「中转页」并跟过去，避免把跳转壳当成「页面结构变了」。
+        """
+        import re as _re
+
         html = await self.client.get(protocol.Endpoints.essay_view(eid, rid))
         _guard_session(html)
+        hop = _re.search(r'id="redirect"', html)
+        if hop:
+            target = _re.search(r'url\s*=\s*"([^"]+)"', html) or _re.search(
+                r'href="([^"]*a=view[^"]*)"', html
+            )
+            if target:
+                follow = target.group(1)
+                # client.get 只接受站内路径（以 / 开头），绝对地址会被拒
+                if follow.startswith("http"):
+                    follow = urlsplit(follow).path + (
+                        "?" + urlsplit(follow).query if urlsplit(follow).query else ""
+                    )
+                self.log.info("详情页是中转页，跟到: %s", follow)
+                html = await self.client.get(follow)
+                _guard_session(html)
         return parse_essay_detail(html, rid=rid, eid=eid)
 
     async def fetch_assignment_by_rid(self, rid: str) -> protocol.WritePage:

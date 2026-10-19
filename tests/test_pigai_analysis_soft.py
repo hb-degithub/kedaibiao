@@ -104,3 +104,72 @@ class TestGradeLoopSoft(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestListScoreFallback(unittest.IsolatedAsyncioTestCase):
+    """老作文详情页读不到时，分数要回落到「已提交列表」，不能装作没分。"""
+
+    async def test_parse_error_uses_list_score(self) -> None:
+        from kedaibiao.platforms.pigai import grading as g
+
+        class Adapter:
+            async def list_finished_essays(self):
+                from kedaibiao.platforms.pigai.protocol import EssayRow
+                return [EssayRow(rid="R", eid="E", title="T", score_raw="87.5")]
+
+            async def fetch_essay_detail(self, rid, eid):
+                raise RuntimeError("找不到任何已知锚点")
+
+        snap = await g.fetch_snapshot(Adapter(), rid="R", eid="E")
+        self.assertTrue(snap.graded)
+        self.assertEqual(snap.score, 87.5)
+        self.assertIn("列表", snap.detail_error)
+
+    async def test_detail_without_score_uses_list_score(self) -> None:
+        from kedaibiao.platforms.pigai import grading as g
+
+        class Detail:
+            score = None
+            full_marks = None
+            topic = ""
+            essay_text = "正文"
+            dimensions = []
+            overall_comment = ""
+            annotations = []
+
+        class Adapter:
+            async def list_finished_essays(self):
+                from kedaibiao.platforms.pigai.protocol import EssayRow
+                return [EssayRow(rid="R", eid="E", title="T", score_raw="75")]
+
+            async def fetch_essay_detail(self, rid, eid):
+                return Detail()
+
+        snap = await g.fetch_snapshot(Adapter(), rid="R", eid="E")
+        self.assertEqual(snap.score, 75.0)
+        self.assertEqual(snap.essay_text, "正文")
+        self.assertIn("正文", snap.detail_error)
+
+    async def test_real_detail_score_wins(self) -> None:
+        from kedaibiao.platforms.pigai import grading as g
+
+        class Detail:
+            score = 83.0
+            full_marks = 100.0
+            topic = "t"
+            essay_text = "正文"
+            dimensions = []
+            overall_comment = "ok"
+            annotations = []
+
+        class Adapter:
+            async def list_finished_essays(self):
+                from kedaibiao.platforms.pigai.protocol import EssayRow
+                return [EssayRow(rid="R", eid="E", title="T", score_raw="未截止")]
+
+            async def fetch_essay_detail(self, rid, eid):
+                return Detail()
+
+        snap = await g.fetch_snapshot(Adapter(), rid="R", eid="E")
+        self.assertEqual(snap.score, 83.0)
+        self.assertEqual(snap.detail_error, "", "详情页有分就不该标 detail_error")

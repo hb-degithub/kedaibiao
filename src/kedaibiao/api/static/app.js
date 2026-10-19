@@ -2191,7 +2191,7 @@
   var GRADER_STOP_TEXT = {
     reached: '已达目标分',
     exhausted: '轮次用尽，仍未达标',
-    unavailable: '平台未给分（作业未到期）',
+    unavailable: '暂时没取到分数',
     error: '出错了',
     timeout: '等批改超时（稿子已交，只是还没出分）'
   };
@@ -2339,8 +2339,8 @@
       if (job.message) { stop.appendChild(el('p', 'res-message', job.message)); }
       if (job.stop_reason === 'unavailable') {
         stop.appendChild(el('p', 'hint',
-          '这个作业还没到截止时间，平台不公布分数。**不要重复提交** —— ' +
-          '等它到期后再用「只取分」即可。'));
+          '批改网有些作业在截止前就有分（老师开了提前批改），也有些确实还没批完。' +
+          '先点「只取分」看看详情页；确定这篇还能改，再用「直接改写重交」。'));
       }
       box.appendChild(stop);
     }
@@ -2466,9 +2466,8 @@
         say('出分了：' + score + ' 分'
           + (body.raw_state ? '（' + body.raw_state + '）' : '')
           + '。想看批注可以用「手动获取一次」，想继续提分就再开自动改写。', true);
-      } else if (String((body && body.raw_state) || '').includes('未截止')) {
-        say('这个作业还没到截止时间，平台不公布分数 —— 不用再等了，' +
-          '到期后再点「手动获取一次」即可。', false);
+      } else if (body && body.detail_error) {
+        say('列表里有分数，但详情页读不到：' + body.detail_error, true);
       } else {
         say('拿到了结果但还没出分（' + ((body && body.raw_state) || '未知状态') + '）。', false);
       }
@@ -2577,7 +2576,7 @@
       var reason = snap.analysis_error
         ? ('平台拒绝了分析请求（' + String(snap.analysis_error).slice(0, 120) + '）' +
            ' —— 这篇可能已经批过了；可以「直接改写重交」，或稍后再取。')
-        : (snap.raw_state || '待分析');
+        : (snap.detail_error || snap.raw_state || '待分析');
       var attempt = Object.assign({ attempt: 0 }, snap);
       attempt.word_count = (snap.essay_text || '').trim() ? (snap.essay_text || '').length : 0;
       var job = {
