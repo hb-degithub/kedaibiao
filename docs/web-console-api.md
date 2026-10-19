@@ -84,6 +84,92 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 
 ---
 
+## 1.5 认证、角色与数据隔离
+
+### 角色
+
+| 角色 | 能看什么 | 能做什么 |
+| --- | --- | --- |
+| `superadmin` | **所有人的数据**；默认视图是全部，可用 `?owner_id=` 收到某个人 | 管理用户（增删改、改密、停用、改角色）；管理任意账号 |
+| `user` | **只有自己的数据** | 管理自己的平台账号 |
+
+**隔离是存储层强制的，不是界面隐藏。** 普通用户带 `?owner_id=` 指向别人 → 403。
+
+### 会话
+
+登录成功后服务端下发 **HttpOnly Cookie**（`kdb_session`，`SameSite=Strict`）。
+前端**不要**把令牌存到 localStorage —— cookie 由浏览器自动带上，前端不需要管。
+
+未登录访问任何 `/api/*`（除 `auth/*`）→ **401 + `kind: "unauthorized"`**。
+前端收到 401 就切到登录页。
+
+### 接口
+
+#### `POST /api/auth/login`
+
+```json
+{ "username": "admin", "password": "……" }
+```
+
+成功：`200` + `Set-Cookie` + `{"user": {…}}`；失败：`401` + `kind: "unauthorized"`。
+
+#### `POST /api/auth/logout` —— 清会话
+
+#### `GET /api/auth/me`
+
+```json
+{ "user": { "id": 1, "username": "admin", "role": "superadmin", "disabled": false },
+  "is_superadmin": true }
+```
+
+#### 用户管理（**仅超管**，否则 403）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/users` | 用户列表 + 每人账号数 |
+| `POST` | `/api/users` | `{username, password, role, note}` 创建 |
+| `POST` | `/api/users/<id>/update` | `{username?, password?, role?, disabled?, note?}` |
+| `POST` | `/api/users/<id>/delete` | 删除（**不允许删掉最后一个超管**） |
+
+> 密码规则：至少 8 位，否则 400。响应里**永远不返回密码或哈希**。
+
+### 平台账号（换号）
+
+每个用户对每个平台可以有**多个账号**，随时切换当前号。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/accounts?platform=` | 自己的账号列表（超管可加 `?owner_id=`） |
+| `POST` | `/api/accounts` | `{platform, label, username, password, login?}` —— **创建时可选立即登录** |
+| `POST` | `/api/accounts/<id>/activate` | 设为该平台的当前号 |
+| `POST` | `/api/accounts/<id>/login` | `{password}` —— 重新登录（会话过期时用） |
+| `POST` | `/api/accounts/<id>/update` | `{label?, username?}` |
+| `POST` | `/api/accounts/<id>/delete` | 删除 |
+
+账号对象：
+
+```json
+{ "id": 3, "owner_id": 1, "platform": "pigai", "label": "我的号",
+  "display": "我的号", "username": "zhangsan", "is_active": true,
+  "created_at": "2026-10-19T13:00:00",
+  "last_login_at": "2026-10-19T13:05:00", "last_login_ok": true,
+  "last_login_note": "" }
+```
+
+> **不落盘平台密码。** 密码只在登录那一刻用来换 cookie，换完就丢；数据库里
+> 没有可解密的平台凭据。代价是会话过期后要重新输一次密码 —— 所以
+> `last_login_ok` / `last_login_at` 要显眼地显示出来，失效时明确提示用户重登。
+>
+> 每个账号的 cookie 存在**自己的文件**里，切换当前号 = 切换 cookie，互不影响。
+
+#### 数据接口的归属
+
+登录后所有既有接口**自动按当前用户过滤**，前端不需要额外传参。
+超管可用 `?owner_id=<id>` 看某个用户的数据；省略则看全部。
+列表类响应每行都带 `owner_id`，聚合视图里要能看出「这条是谁的」。
+
+---
+
 ## 2. 接口
 
 ### `GET /api/overview?platform=<可选>` —— 概览卡片

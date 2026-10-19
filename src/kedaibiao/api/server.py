@@ -27,7 +27,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from kedaibiao.api.service import ConsoleError, ConsoleService
+from kedaibiao.api.service import ConsoleError, ConsoleService, Viewer
+from kedaibiao.security.auth import SESSION_TTL
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +42,17 @@ STATIC_TYPES = {
     ".png": "image/png",
 }
 MAX_BODY = 64 * 1024
+
+SESSION_COOKIE = "kdb_session"
+#: 不需要登录就能访问的路径
+PUBLIC_PATHS = {"/api/auth/login"}
+#: 登录页也要能拿到静态资源
+PUBLIC_PREFIXES = ("/static/",)
+CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+    "img-src 'self' data:; font-src 'self'; form-action 'none'; base-uri 'none'; "
+    "frame-ancestors 'none'"
+)
 
 
 class ConsoleHandler(BaseHTTPRequestHandler):
@@ -62,6 +74,13 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        pending = getattr(self, "_session_cookie", None)
+        if pending:
+            self.send_header("Set-Cookie", pending)
+            self._session_cookie = None
         for key, value in extra.items():
             self.send_header(key.replace("_", "-"), value)
         self.end_headers()
@@ -111,6 +130,48 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    # -- 会话 -------------------------------------------------------------
+
+    def _token(self) -> str:
+        raw = self.headers.get("Cookie") or ""
+        for part in raw.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == SESSION_COOKIE:
+                return value.strip()
+        return ""
+
+    def _viewer(self) -> Viewer:
+        token = self._token()
+        if not token:
+            return Viewer()
+        user = self.service.user_for_token(token)
+        if user is None:
+            return Viewer()
+        return Viewer(
+            user_id=int(user["id"]),
+            is_superadmin=user.get("role") == "superadmin",
+            username=user.get("username", ""),
+        )
+
+    def _require_auth(self, path: str, viewer: Viewer) -> bool:
+        """返回 True 表示放行。未登录时已经写好 401，调用方直接返回。"""
+        if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+            return True
+        if viewer.authenticated:
+            return True
+        self._error(HTTPStatus.UNAUTHORIZED, "请先登录", "unauthorized")
+        return False
+
+    def _set_session_cookie(self, token: str, max_age: int) -> None:
+        self._session_cookie = (
+            f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}"
+        )
+
+    def _clear_session_cookie(self) -> None:
+        self._session_cookie = (
+            f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+        )
+
     def _query(self) -> dict[str, list[str]]:
         return parse_qs(urlparse(self.path).query)
 
@@ -147,22 +208,54 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path.rstrip("/") or "/"
         try:
+            viewer = self._viewer()
+            if not self._require_auth(path, viewer):
+                return
             if method == "GET":
-                self._route_get(path)
+                self._route_get(path, viewer)
             else:
-                self._route_post(path)
+                self._route_post(path, viewer)
         except ConsoleError as exc:
             self._error(exc.status, str(exc), exc.kind)
         except Exception as exc:  # noqa: BLE001 - 兜底，别让服务线程静默死掉
             log.exception("处理 %s %s 失败", method, path)
             self._error(500, f"{type(exc).__name__}: {exc}", "internal")
 
-    def _route_get(self, path: str) -> None:
+    def _route_get(self, path: str, viewer: Viewer) -> None:
         svc = self.service
         if path in ("/", "/index.html"):
             return self._static("index.html")
         if path.startswith("/static/"):
             return self._static(path[len("/static/") :])
+
+        # -- 认证与用户 --
+        if path == "/api/auth/me":
+            return self._json(200, {
+                "user": {
+                    "id": viewer.user_id,
+                    "username": viewer.username,
+                    "role": "superadmin" if viewer.is_superadmin else "user",
+                },
+                "is_superadmin": viewer.is_superadmin,
+            })
+        if path == "/api/users":
+            return self._json(200, svc.users(viewer))
+        if path.startswith("/api/users/"):
+            return self._error(404, f"没有这个路由: {path}", "not_found")
+        if path == "/api/accounts":
+            return self._json(200, svc.accounts(
+                viewer,
+                platform=self._query().get("platform", [None])[0],
+                owner_id=self._owner_param(),
+            ))
+        if path == "/api/questions":
+            return self._json(200, {
+                "questions": svc.recent_questions(
+                    self._int_param("limit", 50),
+                    platform=self._query().get("platform", [None])[0],
+                    owner_id=viewer.owner_filter(self._owner_param()),
+                )
+            })
 
         # 注意顺序：/api/platforms/<name>/actions 必须先于 /api/platforms 判断
         if path.startswith("/api/platforms/"):
@@ -173,28 +266,108 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
         scope = self._platform_param()
         if path == "/api/overview":
-            return self._json(200, svc.overview(scope))
+            return self._json(200, svc.overview(scope, owner_id=self._owner_param(), viewer=viewer))
         if path == "/api/statistics":
-            return self._json(200, svc.statistics())
+            return self._json(200, svc.statistics(owner_id=self._owner_param(), viewer=viewer))
         if path == "/api/settings":
             return self._json(200, svc.settings_view())
         if path == "/api/platforms":
             return self._json(200, svc.platforms())
         if path == "/api/runs":
-            return self._json(200, svc.runs(self._int_param("limit", 50), scope))
+            return self._json(200, svc.runs(self._int_param("limit", 50), scope, owner_id=self._owner_param(), viewer=viewer))
         if path == "/api/submissions":
-            return self._json(200, svc.submissions(self._int_param("limit", 50), scope))
+            return self._json(200, svc.submissions(self._int_param("limit", 50), scope, owner_id=self._owner_param(), viewer=viewer))
         if path == "/api/bank":
-            return self._json(200, svc.bank(scope))
+            return self._json(200, svc.bank(scope, owner_id=self._owner_param(), viewer=viewer))
         if path == "/api/events":
             return self._json(200, svc.events(self._int_param("limit", 100)))
         if path == "/api/jobs":
-            return self._json(200, svc.jobs(scope))
+            return self._json(200, svc.jobs(scope, viewer=viewer))
         if path.startswith("/api/jobs/"):
             return self._json(200, svc.job(path[len("/api/jobs/") :]))
         self._error(404, f"没有这个路由: {path}", "not_found")
 
-    def _route_post(self, path: str) -> None:
+    def _route_post(self, path: str, viewer: Viewer) -> None:
+        # -- 认证 --
+        if path == "/api/auth/login":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            user, session = self.service.login(
+                str(payload.get("username") or ""), str(payload.get("password") or "")
+            )
+            self._set_session_cookie(session.token, int(SESSION_TTL.total_seconds()))
+            return self._json(200, {"user": user})
+
+        if path == "/api/auth/logout":
+            self.service.logout(self._token())
+            self._clear_session_cookie()
+            return self._json(200, {"ok": True})
+
+        # -- 用户管理 --
+        if path == "/api/users":
+            return self._json(200, self._create_user(viewer))
+        if path.startswith("/api/users/"):
+            parts = path[len("/api/users/") :].split("/")
+            if len(parts) == 2 and parts[0].isdigit():
+                user_id = int(parts[0])
+                if parts[1] == "delete":
+                    self.service.delete_user(viewer, user_id)
+                    return self._json(200, {"ok": True})
+                if parts[1] == "update":
+                    payload = self._body_json()
+                    if not isinstance(payload, dict):
+                        raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+                    return self._json(200, self.service.update_user(
+                        viewer, user_id,
+                        username=payload.get("username"),
+                        password=payload.get("password"),
+                        role=payload.get("role"),
+                        disabled=payload.get("disabled"),
+                        note=payload.get("note"),
+                    ))
+            return self._error(404, f"没有这个路由: {path}", "not_found")
+
+        # -- 平台账号 --
+        if path == "/api/accounts":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(201, self.service.add_account(
+                viewer,
+                str(payload.get("platform") or ""),
+                label=str(payload.get("label") or ""),
+                username=str(payload.get("username") or ""),
+                password=str(payload.get("password") or ""),
+                login_now=bool(payload.get("login", True)),
+                owner_id=payload.get("owner_id"),
+            ))
+        if path.startswith("/api/accounts/"):
+            parts = path[len("/api/accounts/") :].split("/")
+            if len(parts) == 2 and parts[0].isdigit():
+                account_id = int(parts[0])
+                if parts[1] == "activate":
+                    return self._json(200, self.service.activate_account(viewer, account_id))
+                if parts[1] == "delete":
+                    self.service.delete_account(viewer, account_id)
+                    return self._json(200, {"ok": True})
+                if parts[1] == "login":
+                    payload = self._body_json()
+                    if not isinstance(payload, dict):
+                        raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+                    return self._json(200, self.service.login_account(
+                        viewer, account_id, str(payload.get("password") or "")
+                    ))
+                if parts[1] == "update":
+                    payload = self._body_json()
+                    if not isinstance(payload, dict):
+                        raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+                    return self._json(200, self.service.update_account(
+                        viewer, account_id,
+                        label=payload.get("label"), username=payload.get("username"),
+                    ))
+            return self._error(404, f"没有这个路由: {path}", "not_found")
+
         if path.startswith("/api/platforms/"):
             parts = path[len("/api/platforms/") :].split("/")
             if len(parts) == 3 and parts[1] == "actions" and parts[0] and parts[2]:
@@ -203,7 +376,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     raise ConsoleError(
                         "请求体必须是 JSON 对象", kind="bad_request", status=400
                     )
-                return self._json(200, self.service.run_action(parts[0], parts[2], payload))
+                return self._json(200, self.service.run_action(
+                    parts[0], parts[2], payload, viewer=viewer
+                ))
             return self._error(404, f"没有这个路由: {path}", "not_found")
 
         if path != "/api/run":
@@ -231,8 +406,31 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             live=bool(payload.get("live", False)),
             limit=limit,
             kinds=[str(k) for k in kinds],
+            viewer=viewer,
         )
         self._json(HTTPStatus.ACCEPTED, job)
+
+    def _owner_param(self) -> int | None:
+        """超管用 ``?owner_id=`` 指定看谁的数据。普通用户传别人会被 403。"""
+        raw = self._query().get("owner_id", [None])[0]
+        if raw in (None, ""):
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            raise ConsoleError("owner_id 必须是整数", kind="bad_request", status=400) from None
+
+    def _create_user(self, viewer: Viewer) -> dict[str, Any]:
+        payload = self._body_json()
+        if not isinstance(payload, dict):
+            raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+        return self.service.create_user(
+            viewer,
+            str(payload.get("username") or ""),
+            str(payload.get("password") or ""),
+            role=str(payload.get("role") or "user"),
+            note=str(payload.get("note") or ""),
+        )
 
     def _platform_param(self) -> str | None:
         """``?platform=`` 原样返回给服务层校验（不在这里判存在性）。"""
@@ -330,6 +528,17 @@ def serve(
         if exc.errno in (48, 98):  # EADDRINUSE
             raise SystemExit(f"端口 {port} 已被占用；换一个 --port 再试。") from exc
         raise
+    # 首次启动创建超管（密码只在这一刻打印一次）
+    created, generated = service.bootstrap_admin()
+    if created is not None and generated:
+        print("=" * 60)
+        print("已创建超级管理员账号：")
+        print(f"  用户名: {created['username']}")
+        print(f"  密码  : {generated}")
+        print("这串密码只显示这一次，请立刻保存（库里只存哈希，无法找回）。")
+        print("=" * 60)
+        sys.stdout.flush()
+
     actual = httpd.server_address[1]
     shown = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
     url = f"http://{shown}:{actual}/"

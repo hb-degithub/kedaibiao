@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from enum import Enum
 from importlib.util import find_spec
@@ -38,6 +38,15 @@ from kedaibiao.config.settings import (
 )
 from kedaibiao.core.models import TaskKind
 from kedaibiao.runtime import build_runtime, persist_http_cookies
+from kedaibiao.security.accounts import AccountError, AccountStore, PlatformAccount
+from kedaibiao.security.auth import (
+    ROLE_SUPERADMIN,
+    ROLE_USER,
+    AuthError,
+    AuthStore,
+    Session,
+    User,
+)
 from kedaibiao.security.credentials import CredentialError, env_key, load_credentials
 from kedaibiao.tasks.pipeline import PipelineConfig
 
@@ -55,6 +64,45 @@ class ConsoleError(Exception):
         super().__init__(message)
         self.kind = kind
         self.status = status
+
+
+@dataclass(frozen=True, slots=True)
+class Viewer:
+    """当前请求是谁在看。
+
+    ``user_id=None`` 表示**未登录**，只允许内部/测试使用；HTTP 层在进入任何
+    数据方法之前就会拦掉未登录请求（见 ``api/server.py`` 的鉴权门），
+    所以生产路径上 viewer 一定是真实用户。
+    """
+
+    user_id: int | None = None
+    is_superadmin: bool = False
+    username: str = ""
+
+    @property
+    def authenticated(self) -> bool:
+        return self.user_id is not None
+
+    def owner_filter(self, requested: int | None = None) -> int | None:
+        """把请求里的 ``?owner_id=`` 解析成实际用于过滤的归属。
+
+        - 普通用户：只能是自己。指定别人 → 403（**不是**静默当成自己）；
+        - 超级管理员：指定谁就是谁；不指定 = ``None`` = 不过滤（全量视图）；
+        - 未登录：不过滤（内部/测试路径）。
+        """
+        if not self.authenticated:
+            return requested
+        if self.is_superadmin:
+            return requested
+        if requested is not None and int(requested) != self.user_id:
+            raise ConsoleError(
+                "无权查看其他用户的数据", kind="forbidden", status=403
+            )
+        return self.user_id
+
+    def require_superadmin(self) -> None:
+        if self.authenticated and not self.is_superadmin:
+            raise ConsoleError("需要超级管理员权限", kind="forbidden", status=403)
 
 
 def _jsonable(value: Any) -> Any:
@@ -85,10 +133,14 @@ def _now() -> str:
 class ConsoleService:
     """控制台的全部数据与动作。线程安全（Web 服务是多线程的）。"""
 
-    def __init__(self, *, root: str | Path = ".", settings: Settings | None = None) -> None:
+    def __init__(
+        self, *, root: str | Path = ".", settings: Settings | None = None,
+        environ: dict[str, str] | None = None,
+    ) -> None:
         self.root = Path(root)
         self._settings = settings  # 懒加载；每次跑批都会重新读配置
-        self._environ: dict[str, str] | None = None
+        #: 显式注入的环境变量（测试用）。``None`` 表示每次从 .env + os.environ 现算。
+        self._environ: dict[str, str] | None = dict(environ) if environ is not None else None
         self._lock = threading.RLock()
         self._jobs: list[dict[str, Any]] = []
         self._jobs_by_id: dict[str, dict[str, Any]] = {}
@@ -108,14 +160,17 @@ class ConsoleService:
 
     @property
     def environ(self) -> dict[str, str]:
-        """本次运行认的环境变量快照（``.env`` + 真实环境变量）。
+        """本次运行认的环境变量（``.env`` + 真实环境变量）。
 
         凭据与平台扫描都要走这一份，不能各自去读 ``os.environ`` ——
         否则 ``.env`` 里配的凭据在控制台上会显示成「未配置」。
+
+        **每次现算**（除非构造时显式注入过）：用户改了 ``.env`` 之后刷新页面
+        就该生效，不该要求重启服务。解析一个几百字节的文件，开销可以忽略。
         """
-        if self._environ is None:
-            self._environ = resolve_environ(self.root)
-        return self._environ
+        if self._environ is not None:
+            return self._environ
+        return resolve_environ(self.root)
 
     def _db_path(self) -> Path:
         return self.settings.db_path
@@ -163,8 +218,12 @@ class ConsoleService:
 
     # -- 只读接口 ---------------------------------------------------------
 
-    def overview(self, platform: str | None = None) -> dict[str, Any]:
+    def overview(
+        self, platform: str | None = None, *, owner_id: int | None = None,
+        viewer: Viewer | None = None,
+    ) -> dict[str, Any]:
         scope = self._check_platform(platform)
+        owner = (viewer or Viewer()).owner_filter(owner_id)
         settings = self.settings
         db = self._db_path()
         exists = db.is_file()
@@ -180,8 +239,8 @@ class ConsoleService:
         if exists:
             def collect(handle: Any) -> tuple[dict[str, Any], dict[str, int]]:
                 return (
-                    handle.bank.stats(scope),
-                    handle.store.status_counts(platform=scope),
+                    handle.bank.stats(scope, owner_id=owner),
+                    handle.store.status_counts(platform=scope, owner_id=owner),
                 )
 
             bank_stats, run_counts = self._read(collect)
@@ -225,37 +284,55 @@ class ConsoleService:
             })
         return {"platforms": items}
 
-    def runs(self, limit: int = 50, platform: str | None = None) -> dict[str, Any]:
+    def runs(
+        self, limit: int = 50, platform: str | None = None, *,
+        owner_id: int | None = None, viewer: Viewer | None = None,
+    ) -> dict[str, Any]:
         scope = self._check_platform(platform)
+        owner = (viewer or Viewer()).owner_filter(owner_id)
         if not self._db_path().is_file():
             return {"platform": scope, "runs": []}
         rows = self._read(
-            lambda h: h.store.recent_runs(_clamp(limit, 1, 500), platform=scope)
+            lambda h: h.store.recent_runs(_clamp(limit, 1, 500), platform=scope, owner_id=owner)
         )
         return {"platform": scope, "runs": [_jsonable(r) for r in rows]}
 
-    def submissions(self, limit: int = 50, platform: str | None = None) -> dict[str, Any]:
+    def submissions(
+        self, limit: int = 50, platform: str | None = None, *,
+        owner_id: int | None = None, viewer: Viewer | None = None,
+    ) -> dict[str, Any]:
         scope = self._check_platform(platform)
+        owner = (viewer or Viewer()).owner_filter(owner_id)
         if not self._db_path().is_file():
             return {"platform": scope, "submissions": []}
         rows = self._read(
-            lambda h: h.store.recent_submissions(_clamp(limit, 1, 500), platform=scope)
+            lambda h: h.store.recent_submissions(_clamp(limit, 1, 500), platform=scope, owner_id=owner)
         )
         return {"platform": scope, "submissions": [_jsonable(r) for r in rows]}
 
-    def bank(self, platform: str | None = None) -> dict[str, Any]:
+    def bank(
+        self, platform: str | None = None, *, owner_id: int | None = None,
+        viewer: Viewer | None = None,
+    ) -> dict[str, Any]:
         scope = self._check_platform(platform)
+        owner = (viewer or Viewer()).owner_filter(owner_id)
         empty: dict[str, Any] = {
             "total": 0, "graded": 0, "correct": 0, "accuracy": None,
             "ungraded": 0, "by_source": {}, "by_platform": {},
         }
         if not self._db_path().is_file():
             return {**empty, "platform": scope, "db_path": str(self._db_path())}
-        stats = self._read(lambda h: h.bank.stats(scope))
+        stats = self._read(lambda h: h.bank.stats(scope, owner_id=owner))
         return {**stats, "platform": scope, "db_path": str(self._db_path())}
 
-    def statistics(self) -> dict[str, Any]:
-        """跨平台对比。**刻意不接受 platform 参数** —— 它本身就是横向视图。"""
+    def statistics(
+        self, *, owner_id: int | None = None, viewer: Viewer | None = None
+    ) -> dict[str, Any]:
+        """跨平台对比。**刻意不接受 platform 参数** —— 它本身就是横向视图。
+
+        归属仍然隔离：普通用户只统计自己的数据。
+        """
+        owner = (viewer or Viewer()).owner_filter(owner_id)
         registered = adapters.names()
         empty_bank: dict[str, Any] = {
             "total": 0, "graded": 0, "correct": 0, "accuracy": None,
@@ -269,9 +346,9 @@ class ConsoleService:
 
         def collect(handle: Any) -> tuple[Any, Any, Any]:
             return (
-                handle.bank.stats(),
-                handle.bank.platform_stats(),
-                handle.store.platform_stats(),
+                handle.bank.stats(owner_id=owner),
+                handle.bank.platform_stats(owner_id=owner),
+                handle.store.platform_stats(owner_id=owner),
             )
 
         bank, question_rows, run_rows = self._read(collect)
@@ -340,12 +417,17 @@ class ConsoleService:
         with self._lock:
             return {"events": list(self._events[-_clamp(limit, 1, EVENT_HISTORY):])}
 
-    def jobs(self, platform: str | None = None) -> dict[str, Any]:
+    def jobs(
+        self, platform: str | None = None, *, viewer: Viewer | None = None
+    ) -> dict[str, Any]:
         scope = self._check_platform(platform)
+        viewer = viewer or Viewer()
         with self._lock:
             items = [_jsonable(j) for j in reversed(self._jobs)]
         if scope:
             items = [j for j in items if j.get("platform") == scope]
+        if viewer.authenticated and not viewer.is_superadmin:
+            items = [j for j in items if j.get("owner_id") == viewer.user_id]
         return {"platform": scope, "jobs": items}
 
     def job(self, job_id: str) -> dict[str, Any]:
@@ -367,7 +449,8 @@ class ConsoleService:
         }
 
     def run_action(
-        self, platform: str, action: str, params: dict[str, Any] | None = None
+        self, platform: str, action: str, params: dict[str, Any] | None = None,
+        *, viewer: Viewer | None = None,
     ) -> dict[str, Any]:
         scope = self._check_platform(platform)
         assert scope is not None
@@ -380,7 +463,7 @@ class ConsoleService:
             )
         spec = next(s for s in register_platform(scope) if s.name == action)
         cleaned = self._validate_params(spec, params or {})
-        return asyncio.run(self._execute_action(scope, action, cleaned))
+        return asyncio.run(self._execute_action(scope, action, cleaned, viewer))
 
     @staticmethod
     def _validate_params(spec: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -410,17 +493,25 @@ class ConsoleService:
         return out
 
     async def _execute_action(
-        self, platform: str, action: str, params: dict[str, Any]
+        self, platform: str, action: str, params: dict[str, Any],
+        viewer: Viewer | None = None,
     ) -> dict[str, Any]:
-        """跑一个只读动作。每次都新建 Runtime —— 它们各自持有 sqlite 连接。"""
-        runtime = build_runtime(root=self.root, environ=self.environ)
+        """跑一个只读动作。每次都新建 Runtime —— 它们各自持有 sqlite 连接。
+
+        登录用「当前账号」的 cookie 文件；没有绑定账号时回退到 ``.env``。
+        """
+        try:
+            creds, cookie_file = self._resolve_login(platform, viewer)
+        except CredentialError as exc:
+            raise ConsoleError(str(exc), kind="no_credentials", status=400) from exc
+
+        runtime = build_runtime(
+            root=self.root, environ=self.environ, cookie_file=cookie_file,
+            owner_id=viewer.user_id if (viewer and viewer.authenticated) else 0,
+        )
         adapter: Any = None
         try:
             adapter = runtime.make_adapter(platform)
-            try:
-                creds = load_credentials(platform, require=True, environ=self.environ)
-            except CredentialError as exc:
-                raise ConsoleError(str(exc), kind="no_credentials", status=400) from exc
 
             try:
                 logged_in = await adapter.refresh_session(creds)
@@ -457,6 +548,305 @@ class ConsoleService:
                 await adapter.close()
             runtime.close()
 
+    def recent_questions(
+        self, limit: int = 50, *, platform: str | None = None,
+        owner_id: int | None = None, viewer: Viewer | None = None,
+    ) -> list[dict[str, Any]]:
+        """最近的题目与作答（「详细作答信息」用）。"""
+        scope = self._check_platform(platform)
+        owner = (viewer or Viewer()).owner_filter(owner_id)
+        if not self._db_path().is_file():
+            return []
+        return self._read(
+            lambda h: h.bank.recent_questions(
+                _clamp(limit, 1, 500), platform=scope, owner_id=owner
+            )
+        )
+
+    # -- 认证与用户 -------------------------------------------------------
+
+    def _with_auth(self, fn: Any) -> Any:
+        store = AuthStore(self._db_path())
+        try:
+            return fn(store)
+        finally:
+            store.close()
+
+    def _with_accounts(self, fn: Any) -> Any:
+        store = AccountStore(self._db_path())
+        try:
+            return fn(store)
+        finally:
+            store.close()
+
+    def bootstrap_admin(self) -> tuple[dict[str, Any] | None, str | None]:
+        """首次启动创建超级管理员，并把「无归属」的历史数据认领给它。
+
+        认领这一步很关键：升级前所有数据 ``owner_id=0``，如果不认领，
+        登录后就"什么都看不见"，用户会以为数据丢了。
+        """
+        user, generated = self._with_auth(
+            lambda st: st.ensure_bootstrap_admin()
+        )
+        if user is None:
+            return None, None
+        # 历史数据认领给首个超管
+        def claim(handle: Any) -> None:
+            handle.bank.claim_ownerless(user.id)
+
+        if self._db_path().is_file():
+            self._read(claim)
+        return user.public(), generated
+
+    def login(self, username: str, password: str) -> tuple[dict[str, Any], Session]:
+        user = self._with_auth(lambda st: st.verify_login(username, password))
+        if user is None:
+            raise ConsoleError("账号或密码不正确", kind="unauthorized", status=401)
+        if user.disabled:
+            raise ConsoleError("该账号已被停用", kind="unauthorized", status=401)
+        session = self._with_auth(lambda st: st.create_session(user.id))
+        return user.public(), session
+
+    def logout(self, token: str) -> None:
+        if token:
+            self._with_auth(lambda st: st.delete_session(token))
+
+    def user_for_token(self, token: str) -> dict[str, Any] | None:
+        session = self._with_auth(lambda st: st.get_session(token))
+        if session is None:
+            return None
+        user = self._with_auth(lambda st: st.get_user_by_id(session.user_id))
+        if user is None or user.disabled:
+            return None
+        return user.public()
+
+    # -- 用户管理（仅超管）------------------------------------------------
+
+    def users(self, viewer: Viewer) -> dict[str, Any]:
+        viewer.require_superadmin()
+
+        users = self._with_auth(lambda st: st.list_users())
+        counts = self._with_accounts(lambda st: st.counts_by_owner())
+        out = []
+        for user in users:
+            row = user.public()
+            row["account_count"] = counts.get(user.id, 0)
+            out.append(row)
+        return {"users": out, "account_counts": counts}
+
+    def create_user(
+        self, viewer: Viewer, username: str, password: str, *,
+        role: str = ROLE_USER, note: str = "",
+    ) -> dict[str, Any]:
+        viewer.require_superadmin()
+        try:
+            user = self._with_auth(
+                lambda st: st.create_user(username, password, role=role, note=note)
+            )
+        except AuthError as exc:
+            raise ConsoleError(str(exc), kind=exc.kind, status=exc.status) from exc
+        return user.public()
+
+    def update_user(self, viewer: Viewer, user_id: int, **fields: Any) -> dict[str, Any]:
+        viewer.require_superadmin()
+
+        def apply(st: AuthStore) -> User:
+            if st.get_user_by_id(user_id) is None:
+                raise ConsoleError("用户不存在", kind="not_found", status=404)
+            if fields.get("password"):
+                st.set_password(user_id, fields["password"])
+            if fields.get("username"):
+                st.rename_user(user_id, fields["username"])
+            if fields.get("role"):
+                st.set_role(user_id, fields["role"])
+            if fields.get("disabled") is not None:
+                # 不允许把自己停用（会把管理入口锁死）
+                if int(user_id) == viewer.user_id and fields["disabled"]:
+                    raise ConsoleError(
+                        "不能停用当前登录的账号", kind="bad_request", status=400
+                    )
+                st.set_disabled(user_id, bool(fields["disabled"]))
+            user = st.get_user_by_id(user_id)
+            assert user is not None
+            return user
+
+        try:
+            user = self._with_auth(apply)
+        except AuthError as exc:
+            raise ConsoleError(str(exc), kind=exc.kind, status=exc.status) from exc
+        return user.public()
+
+    def delete_user(self, viewer: Viewer, user_id: int) -> None:
+        viewer.require_superadmin()
+        if int(user_id) == viewer.user_id:
+            raise ConsoleError("不能删除当前登录的账号", kind="bad_request", status=400)
+
+        def apply(st: AuthStore) -> None:
+            if st.get_user_by_id(user_id) is None:
+                raise ConsoleError("用户不存在", kind="not_found", status=404)
+            st.delete_user(user_id)
+
+        try:
+            self._with_auth(apply)
+        except AuthError as exc:
+            raise ConsoleError(str(exc), kind=exc.kind, status=exc.status) from exc
+        # 连带清掉他的平台账号（数据行本身留着，便于超管追溯）
+        self._with_accounts(lambda st: st.delete_for_owner(user_id))
+
+    # -- 平台账号（多号切换）----------------------------------------------
+
+    def _require_account(self, viewer: Viewer, account_id: int) -> PlatformAccount:
+        account = self._with_accounts(lambda st: st.get(account_id))
+        if account is None:
+            raise ConsoleError("账号不存在", kind="not_found", status=404)
+        if (
+            viewer.authenticated
+            and not viewer.is_superadmin
+            and account.owner_id != viewer.user_id
+        ):
+            raise ConsoleError("无权操作其他用户的账号", kind="forbidden", status=403)
+        return account
+
+    def accounts(
+        self, viewer: Viewer, *, platform: str | None = None,
+        owner_id: int | None = None,
+    ) -> dict[str, Any]:
+        """账号列表。普通用户只看自己；超管可用 ``owner_id`` 指定某人。"""
+        if platform:
+            self._check_platform(platform)
+        if not viewer.authenticated:
+            target = owner_id
+        elif viewer.is_superadmin:
+            target = owner_id
+        else:
+            if owner_id is not None and int(owner_id) != viewer.user_id:
+                raise ConsoleError("无权查看其他用户的账号", kind="forbidden", status=403)
+            target = viewer.user_id
+        rows = self._with_accounts(lambda st: st.list_for(target, platform))
+        return {
+            "platform": platform,
+            "owner_id": target,
+            "accounts": [a.public() for a in rows],
+        }
+
+    def add_account(
+        self, viewer: Viewer, platform: str, *,
+        label: str = "", username: str = "", password: str = "",
+        login_now: bool = True, owner_id: int | None = None,
+    ) -> dict[str, Any]:
+        self._check_platform(platform)
+        if not viewer.authenticated:
+            raise ConsoleError("未登录", kind="unauthorized", status=401)
+        if owner_id is not None and not viewer.is_superadmin and int(owner_id) != viewer.user_id:
+            raise ConsoleError("无权操作其他用户的账号", kind="forbidden", status=403)
+        target = owner_id if (viewer.is_superadmin and owner_id is not None) else viewer.user_id
+        if not username.strip():
+            raise ConsoleError("请填写平台用户名", kind="bad_request", status=400)
+
+        account = self._with_accounts(
+            lambda st: st.add(target, platform, label=label, username=username)
+        )
+        if login_now and password:
+            ok, note = self._login_account(account, password)
+            self._with_accounts(lambda st: st.record_login(account.id, ok=ok, note=note))
+            if not ok:
+                raise ConsoleError(
+                    f"{platform} 登录失败：{note}", kind=PLATFORM_ERROR, status=502
+                )
+        fresh = self._with_accounts(lambda st: st.get(account.id))
+        return (fresh or account).public()
+
+    def activate_account(self, viewer: Viewer, account_id: int) -> dict[str, Any]:
+        account = self._require_account(viewer, account_id)
+        self._with_accounts(
+            lambda st: st.set_active(account.owner_id, account.platform, account.id)
+        )
+        fresh = self._with_accounts(lambda st: st.get(account.id))
+        return (fresh or account).public()
+
+    def login_account(self, viewer: Viewer, account_id: int, password: str) -> dict[str, Any]:
+        account = self._require_account(viewer, account_id)
+        ok, note = self._login_account(account, password)
+        self._with_accounts(lambda st: st.record_login(account.id, ok=ok, note=note))
+        if not ok:
+            raise ConsoleError(
+                f"{account.platform} 登录失败：{note}", kind=PLATFORM_ERROR, status=502
+            )
+        fresh = self._with_accounts(lambda st: st.get(account.id))
+        return (fresh or account).public()
+
+    def update_account(
+        self, viewer: Viewer, account_id: int, *,
+        label: str | None = None, username: str | None = None,
+    ) -> dict[str, Any]:
+        account = self._require_account(viewer, account_id)
+        try:
+            updated = self._with_accounts(
+                lambda st: st.update(account.id, label=label, username=username)
+            )
+        except AccountError as exc:
+            raise ConsoleError(str(exc), kind=exc.kind, status=exc.status) from exc
+        return updated.public()
+
+    def delete_account(self, viewer: Viewer, account_id: int) -> None:
+        account = self._require_account(viewer, account_id)
+        self._with_accounts(lambda st: st.delete(account.id))
+        try:
+            settings = load_settings(root=self.root, environ=self.environ)
+            account.cookie_path(settings.session_dir).unlink(missing_ok=True)
+        except OSError:
+            log.debug("删除 cookie 文件失败", exc_info=True)
+
+    def _login_account(self, account: PlatformAccount, password: str) -> tuple[bool, str]:
+        """用给定密码登录该账号，成功则把 cookie 落到**它自己的文件**里。
+
+        密码只在这里用一次，不落盘。
+        """
+        settings = load_settings(root=self.root, environ=self.environ)
+        cookie_file = account.cookie_path(settings.session_dir)
+        runtime = build_runtime(
+            root=self.root, environ=self.environ, cookie_file=str(cookie_file)
+        )
+        adapter: Any = None
+        try:
+            adapter = runtime.make_adapter(account.platform)
+            creds = Credentials(username=account.username, password=password)
+            ok = asyncio.run(adapter.login(creds))
+            if ok:
+                persist_http_cookies(adapter, settings)
+                return True, ""
+            return False, "平台拒绝了这次登录（账号或密码不对？）"
+        except Exception as exc:  # noqa: BLE001 - 平台异常统一成失败原因
+            log.warning("账号 %s 登录异常: %s", account.id, exc)
+            return False, f"{type(exc).__name__}: {exc}"
+        finally:
+            if adapter is not None:
+                try:
+                    asyncio.run(adapter.close())
+                except Exception:  # noqa: BLE001
+                    log.debug("关闭适配器失败", exc_info=True)
+            runtime.close()
+
+    def _resolve_login(
+        self, platform: str, viewer: Viewer | None
+    ) -> tuple[Credentials, str | None]:
+        """这次请求用哪个号、哪个 cookie 文件。
+
+        有绑定账号就用绑定账号（会话来自它自己的 cookie 文件）；否则回退到
+        ``.env`` 里的平台凭据（单账号的老用法，仍然可用）。
+        """
+        if viewer is not None and viewer.authenticated:
+            account = self._with_accounts(
+                lambda st: st.active_for(viewer.user_id, platform)  # type: ignore[arg-type]
+            )
+            if account is not None:
+                settings = load_settings(root=self.root, environ=self.environ)
+                return (
+                    Credentials(username=account.username or "", password=""),
+                    str(account.cookie_path(settings.session_dir)),
+                )
+        return load_credentials(platform, require=True, environ=self.environ), None
+
     # -- 触发跑批 ---------------------------------------------------------
 
     def start_run(
@@ -466,6 +856,7 @@ class ConsoleService:
         live: bool = False,
         limit: int = 0,
         kinds: list[str] | None = None,
+        viewer: Viewer | None = None,
     ) -> dict[str, Any]:
         """校验并启动一次跑批。校验全部前置，好让 HTTP 层返回准确的状态码。"""
         if platform not in adapters:
@@ -489,9 +880,10 @@ class ConsoleService:
         # 干跑也要登录（要拉课程才能规划），所以凭据一律前置校验 ——
         # 放在这里比让后台线程抛异常再标 failed 更容易排查。
         try:
-            load_credentials(platform, require=True, environ=self.environ)
+            _creds, cookie_file = self._resolve_login(platform, viewer)
         except CredentialError as exc:
             raise ConsoleError(str(exc), kind="no_credentials", status=400) from exc
+        owner_id = viewer.user_id if (viewer and viewer.authenticated) else 0
 
         parsed_kinds = _parse_kinds(kinds or [])
         limit = _clamp(int(limit), 0, 10_000)
@@ -517,6 +909,7 @@ class ConsoleService:
                 "live_requested": bool(live),
                 "limit": limit,
                 "kinds": sorted(k.value for k in parsed_kinds),
+                "owner_id": owner_id,
             }
             self._jobs.append(job)
             self._jobs_by_id[job_id] = job
@@ -528,7 +921,7 @@ class ConsoleService:
 
         thread = threading.Thread(
             target=self._execute,
-            args=(job_id, platform, bool(live), limit, parsed_kinds),
+            args=(job_id, platform, bool(live), limit, parsed_kinds, owner_id, cookie_file),
             name=f"kedaibiao-job-{job_id}",
             daemon=True,
         )
@@ -556,6 +949,8 @@ class ConsoleService:
         live: bool,
         limit: int,
         kinds: frozenset[TaskKind],
+        owner_id: int = 0,
+        cookie_file: str | None = None,
     ) -> None:
         """在后台线程里跑一次流水线。
 
@@ -574,6 +969,8 @@ class ConsoleService:
                     kinds=kinds,
                     max_assignments=limit,
                 ),
+                owner_id=owner_id,
+                cookie_file=cookie_file,
             )
             runtime.bus.on("*", self._record_event)
 

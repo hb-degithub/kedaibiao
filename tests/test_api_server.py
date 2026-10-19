@@ -101,6 +101,27 @@ class ServerTestBase(unittest.TestCase):
         )
         self.thread.start()
         self.addCleanup(self._stop)
+        self.token = self._bootstrap_login()
+
+    def _bootstrap_login(self, username: str = "admin", password: str = "adminpass123") -> str:
+        """建一个超管并登录，返回会话令牌。
+
+        控制台现在有登录门，所有数据路由都要求会话 —— 所以测试基类统一登录一次。
+        """
+        from kedaibiao.security.auth import AuthStore
+
+        store = AuthStore(self.root / "api.db")
+        try:
+            existing = store.get_user_by_name(username)
+            if existing is None:
+                store.create_user(username, password, role="superadmin")
+            else:
+                # 已存在（例如 bootstrap 建过）就把密码设成已知值
+                store.set_password(existing.id, password)
+        finally:
+            store.close()
+        _user, session = self.service.login(username, password)
+        return session.token
 
     def _stop(self) -> None:
         self.httpd.shutdown()
@@ -117,9 +138,12 @@ class ServerTestBase(unittest.TestCase):
         bank.close()
 
     def call(self, path: str, *, method: str = "GET", json_body=None,
-             raw: bytes | None = None, headers: dict[str, str] | None = None):
+             raw: bytes | None = None, headers: dict[str, str] | None = None,
+             auth: bool = True):
         url = f"http://127.0.0.1:{self.port}{path}"
         hdrs = dict(headers or {})
+        if auth and getattr(self, "token", None):
+            hdrs.setdefault("Cookie", f"kdb_session={self.token}")
         data = raw
         if json_body is not None:
             data = json.dumps(json_body).encode()
@@ -146,6 +170,8 @@ class ServerTestBase(unittest.TestCase):
         try:
             conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
             conn.putheader("Host", host)
+            if getattr(self, "token", None):
+                conn.putheader("Cookie", f"kdb_session={self.token}")
             conn.endheaders()
             resp = conn.getresponse()
             return resp.status, resp.read()

@@ -101,6 +101,7 @@ class Pipeline:
         scheduler: Scheduler | None = None,
         notifier: Notifier | None = None,
         config: PipelineConfig | None = None,
+        owner_id: int = 0,
     ) -> None:
         self.answerer = answerer
         self.bank = bank
@@ -109,6 +110,8 @@ class Pipeline:
         self.scheduler = scheduler or Scheduler()
         self.notifier = notifier or NullNotifier()
         self.config = config or PipelineConfig()
+        #: 这次跑批产生的数据归谁。0 = 未登录/内部路径。
+        self.owner_id = owner_id
 
     # -- 平台级 -----------------------------------------------------------
 
@@ -203,7 +206,7 @@ class Pipeline:
 
         record.status = RunStatus.RUNNING
         record.started_at = datetime.now()
-        run_id = self.store.start_run(record) if self.store else 0
+        run_id = self.store.start_run(record, owner_id=self.owner_id) if self.store else 0
         await self.bus.emit(
             EVENT_RUN_START, platform=adapter.name, assignment=assignment.title
         )
@@ -278,7 +281,7 @@ class Pipeline:
         result = await adapter.submit(assignment, answers)
         record.detail["submit"] = {"ok": result.ok, "score": result.score, "msg": result.message}
         if self.store:
-            self.store.record_submission(adapter.name, result)
+            self.store.record_submission(adapter.name, result, owner_id=self.owner_id)
         if not result.ok:
             raise RuntimeError(f"提交被拒: {result.message}")
 
@@ -309,7 +312,9 @@ class Pipeline:
                 skipped += 1
                 continue
             correct = verdicts.get(q.remote_id) if q.remote_id else None
-            self.bank.upsert(q, a, correct=correct, platform=platform)
+            self.bank.upsert(
+                q, a, correct=correct, platform=platform, owner_id=self.owner_id
+            )
         if skipped:
             log.warning(
                 "题库回写跳过 %d 道无法唯一标识的题目（无题干且无平台 ID）", skipped

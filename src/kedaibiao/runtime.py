@@ -45,14 +45,21 @@ def build_notifier(settings: Settings) -> Notifier:
     return ConsoleNotifier()
 
 
-def build_http_client(settings: Settings) -> HttpClient:
-    """装配协议型平台用的 HTTP 客户端，并把 cookie 落盘以复用登录态。"""
+def build_http_client(settings: Settings, *, cookie_file: str | Path | None = None) -> HttpClient:
+    """装配协议型平台用的 HTTP 客户端，并把 cookie 落盘以复用登录态。
+
+    ``cookie_file`` 指定 cookie 落盘位置。**多账号时必须按账号传不同的文件** ——
+    否则切换账号就变成"共用同一个会话"，等于没切。
+    省略时回退到旧的全局文件（``http_cookies.json``），保持单账号场景兼容。
+    """
     transport = UrllibTransport()
-    cookies = Path(settings.session_dir) / "http_cookies.json"
+    cookies = Path(cookie_file) if cookie_file else Path(settings.session_dir) / "http_cookies.json"
     restored = transport.load_cookies(cookies)
     if restored:
         log.info("已恢复 %d 条 cookie: %s", restored, cookies)
-    return HttpClient(transport)
+    client = HttpClient(transport)
+    client.cookie_file = cookies  # 供落盘时使用
+    return client
 
 
 def build_context(
@@ -62,10 +69,11 @@ def build_context(
     bank: QuestionBank | None = None,
     store: ProgressStore | None = None,
     notifier: Notifier | None = None,
+    cookie_file: str | Path | None = None,
 ) -> AdapterContext:
     return AdapterContext(
         bus=bus or EventBus(),
-        http=build_http_client(settings),
+        http=build_http_client(settings, cookie_file=cookie_file),
         bank=bank,
         store=store,
         notifier=notifier,
@@ -81,10 +89,13 @@ def persist_http_cookies(adapter: PlatformAdapter, settings: Settings) -> bool:
     （可能触发风控），对用户也慢。存下来之后 ``refresh_session`` 会先探
     ``is_logged_in()``，会话还有效就直接跳过登录。
     """
-    transport = getattr(getattr(adapter.ctx, "http", None), "transport", None)
+    client = getattr(adapter.ctx, "http", None)
+    transport = getattr(client, "transport", None)
     if not isinstance(transport, UrllibTransport):
         return False
-    path = Path(settings.session_dir) / "http_cookies.json"
+    path = getattr(client, "cookie_file", None) or (
+        Path(settings.session_dir) / "http_cookies.json"
+    )
     transport.save_cookies(path)
     return True
 
@@ -103,6 +114,10 @@ class Runtime:
     #: 凭据必须走这一份，不能各自去读 ``os.environ`` —— 否则 ``.env`` 里的
     #: 凭据到不了凭据层。
     environ: dict[str, str] = field(default_factory=dict)
+    #: 适配器用的 cookie 文件。多账号场景下每个账号一个，切换账号 = 换会话。
+    cookie_file: str | None = None
+    #: 这次运行产生的数据归谁
+    owner_id: int = 0
 
     def make_adapter(self, platform: str) -> PlatformAdapter:
         if platform not in adapters:
@@ -116,6 +131,7 @@ class Runtime:
             bank=self.bank,
             store=self.store,
             notifier=self.notifier,
+            cookie_file=self.cookie_file,
         )
         return cls(ctx)
 
@@ -147,6 +163,8 @@ def build_runtime(
     settings: Settings | None = None,
     config: PipelineConfig | None = None,
     environ: dict[str, str] | None = None,
+    cookie_file: str | None = None,
+    owner_id: int = 0,
 ) -> Runtime:
     # 先算一次「本次认哪些环境变量」，配置与凭据共用同一份
     resolved_env = resolve_environ(root, environ=environ)
@@ -173,6 +191,7 @@ def build_runtime(
             dry_run=settings.dry_run,
             min_confidence=settings.min_confidence,
         ),
+        owner_id=owner_id,
     )
     return Runtime(
         settings=settings,
@@ -182,4 +201,6 @@ def build_runtime(
         pipeline=pipeline,
         notifier=notifier,
         environ=resolved_env,
+        cookie_file=cookie_file,
+        owner_id=owner_id,
     )
