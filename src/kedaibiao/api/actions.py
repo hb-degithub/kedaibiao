@@ -59,6 +59,9 @@ class ActionSpec:
     label: str
     description: str = ""
     params: tuple[ActionParam, ...] = ()
+    #: True = 框架契约里本来就有的通用能力（courses / assignments），它们有专属
+    #: 功能页。控制台的「工具」页应过滤掉这些，避免与专属页重复。
+    builtin: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +69,7 @@ class ActionSpec:
             "label": self.label,
             "description": self.description,
             "params": [p.to_dict() for p in self.params],
+            "builtin": self.builtin,
         }
 
 
@@ -545,6 +549,7 @@ def ensure_generic_actions(platform: str) -> None:
                 name="courses",
                 label="课程列表",
                 description="该平台的课程 / 班级列表（只读，会真的访问平台）",
+                builtin=True,
             ),
             _generic_courses,
         )
@@ -555,6 +560,7 @@ def ensure_generic_actions(platform: str) -> None:
                 name="assignments",
                 label="作业列表",
                 description="各课程下的作业 / 任务（只读，会真的访问平台）",
+                builtin=True,
                 params=(
                     ActionParam("course", "课程号", hint="留空 = 全部课程"),
                 ),
