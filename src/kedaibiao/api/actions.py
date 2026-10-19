@@ -612,7 +612,11 @@ def _itest_exam_cookies(adapter: Any) -> list[dict[str, Any]]:
     from kedaibiao.platforms.itest.exam import cookies_from_jar
 
     client = adapter.client()
-    jar = getattr(getattr(client, "http", None), "cookies", None)
+    http = getattr(client, "http", None)
+    # cookie 挂在传输层的 jar 上（UrllibTransport.cookies），HttpClient 本身没有
+    jar = getattr(getattr(http, "transport", None), "cookies", None)
+    if jar is None:
+        jar = getattr(http, "cookies", None)
     cookies = cookies_from_jar(jar) if jar is not None else []
     if not cookies:
         raise ActionInputError(
@@ -788,7 +792,9 @@ async def _itest_fill(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
             f"翻译 {filled.get('textarea', 0)}；"
             f"未匹配 {len(filled.get('missing', []))}；"
             f"核验不符 {checked.get('total', 0)}。"
-            "只改了页面，**没有交卷**；截图已存 " + str(data["shot"])
+            "只改了页面，**没有交卷**；动作结束浏览器就关了，平台每分钟一次的自动保存"
+            "可能还没跑 —— 要真正留存，请用「交卷」（同一个会话里填完直接交）。截图已存 "
+            + str(data["shot"])
         ),
         columns=[
             column("qid", "qid", mono=True),

@@ -913,11 +913,23 @@ class ConsoleService:
         settings = load_settings(root=self.root, environ=self.environ)
         owner = viewer.user_id if (viewer and viewer.authenticated) else None
         try:
-            return self._with_accounts(
-                lambda st: st.resolve_credentials(
-                    platform, owner_id=owner, session_dir=settings.session_dir
+            try:
+                return self._with_accounts(
+                    lambda st: st.resolve_credentials(
+                        platform, owner_id=owner, session_dir=settings.session_dir
+                    )
                 )
-            )
+            except AccountError:
+                # 超级管理员没给自己绑号时，退回「全量视角」：命令行/早期绑定过的
+                # 账号 owner_id=0，管理员在控制台里也应该能用（否则页面上看得到
+                # 账号，点动作却报「还没有绑定账号」）。
+                if not (viewer and viewer.is_superadmin):
+                    raise
+                return self._with_accounts(
+                    lambda st: st.resolve_credentials(
+                        platform, owner_id=None, session_dir=settings.session_dir
+                    )
+                )
         except AccountError as exc:
             raise ConsoleError(str(exc), kind=exc.kind, status=exc.status) from exc
 
