@@ -163,6 +163,11 @@ def _absolute(href: str) -> str:
     return resolved
 
 
+#: 平台在「没有待完成作业」时的页面文案（实测原话）。
+#: 用它区分「真的空了」与「页面改版/登录失效」—— 后者必须继续报错，不能静默返回空。
+EMPTY_PENDING_TEXT = "目前没有待完成的作业"
+
+
 class PigaiAdapter(PlatformAdapter):
     """只读的批改网适配器。"""
 
@@ -224,10 +229,30 @@ class PigaiAdapter(PlatformAdapter):
     # -- 只读辅助（本适配器的实际用途）--------------------------------------
 
     async def list_pending_assignments(self) -> list[Assignment]:
-        """未完成作业。数据源已实测（见 docs/research/pigai.md §6.1）。"""
+        """未完成作业。数据源已实测（见 docs/research/pigai.md §6.1）。
+
+        ⚠️ **空列表是合法状态**：全部作业都交完后，页面不再有表头
+        ``ul.reItemM``（实测）。原实现把「找不到表头」一律当页面异常抛错，
+        结果交完最后一个待办作业后，控制台的作业页会整页报错、看起来像坏了。
+
+        这里只在**连数据行** ``ul.reItemS`` 都没有时才当空列表；
+        有数据行却没有表头说明是真的改版了，仍然抛错（不能掩盖）。
+        """
+        from kedaibiao.platforms.pigai.parse import HeaderMismatchError
+
         html = await self.client.get(protocol.Endpoints.ASSIGNMENTS_PENDING)
         _guard_session(html)
-        rows = parse_assignment_rows(html)
+        try:
+            rows = parse_assignment_rows(html)
+        except HeaderMismatchError:
+            # 判定「真空列表」需要**两个条件同时成立**，否则可能是改版或登录页：
+            #   1. 一个数据行都没有（LIST_ROW_CLASS 不出现）
+            #   2. 页面出现平台的空态文案「目前没有待完成的作业」（实测抓到的原话）
+            # 只满足一个就照旧抛错 —— 宁可报错，也不要把「页面变了」误判成「没有作业」。
+            if protocol.LIST_ROW_CLASS in html or EMPTY_PENDING_TEXT not in html:
+                raise
+            self.log.info("未完成列表为空（平台空态文案命中）—— 按「没有待办」处理")
+            return []
         return [_to_pending_assignment(row) for row in rows]
 
     async def list_finished_essays(self) -> list[protocol.EssayRow]:

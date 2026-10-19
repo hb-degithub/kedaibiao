@@ -506,3 +506,52 @@ class TestDiscovery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEmptyPendingList(unittest.TestCase):
+    """「一个待办都没有」是合法状态，不是页面异常。
+
+    回归背景：交完最后一个待办作业后，未完成页只剩空态文案「目前没有待完成的
+    作业」、没有表头 —— 原实现把「找不到表头」一律当异常，于是控制台作业页
+    整页报错，看起来像坏了。
+    """
+
+    EMPTY_PAGE = (
+        "<html><body><div class='tab'>未完成</div>"
+        "<div id='essayList'>目前没有待完成的作业</div></body></html>"
+    )
+
+    def _adapter(self, page: str):
+        from kedaibiao.net.http import Response
+
+        response = Response(status=200, url=protocol.BASE_URL + "/", body=page.encode())
+        return _adapter(response)
+
+    def test_empty_state_returns_empty_list(self) -> None:
+        import asyncio
+
+        adapter = self._adapter(self.EMPTY_PAGE)
+        self.assertEqual(asyncio.run(adapter.list_pending_assignments()), [])
+
+    def test_page_without_empty_marker_still_raises(self) -> None:
+        """没有空态文案、也没有表头 → 仍然必须报错，不能静默返回空。"""
+        import asyncio
+
+        from kedaibiao.platforms.pigai.parse import HeaderMismatchError
+
+        page = "<html><body><div>某个未知页面</div></body></html>"
+        adapter = self._adapter(page)
+        with self.assertRaises(HeaderMismatchError):
+            asyncio.run(adapter.list_pending_assignments())
+
+    def test_rows_without_header_still_raises(self) -> None:
+        """有数据行却没表头 = 真的改版了，必须报错。"""
+        import asyncio
+
+        from kedaibiao.platforms.pigai.parse import HeaderMismatchError
+
+        page = ("<html><body><div>目前没有待完成的作业</div>"
+                "<ul class='reItemS'><li>奇怪的行</li></ul></body></html>")
+        adapter = self._adapter(page)
+        with self.assertRaises(HeaderMismatchError):
+            asyncio.run(adapter.list_pending_assignments())
