@@ -241,6 +241,11 @@ class GradeLoop:
                 self._emit("loop.finish", stop_reason=result.stop_reason,
                            best_score=None, message=result.message)
                 return result
+            except grading.AnalysisFailed as exc:
+                # 平台拒绝触发分析（例如这篇早就批过了）—— 不是失败，按「暂时没分」处理
+                self._emit("attempt.error", attempt=0, error=str(exc))
+                if current is not None:
+                    current.analysis_error = str(exc)
             except Exception as exc:  # noqa: BLE001 - 读不到分就按未出分处理
                 self._emit("attempt.error", attempt=0,
                            error=f"{type(exc).__name__}: {exc}")
@@ -349,6 +354,14 @@ class GradeLoop:
                     "可以「继续等待 N 秒」或「手动获取一次」，不需要重新提交。"
                 )
                 break
+            except grading.AnalysisFailed as exc:
+                # 平台说「没找到作文」之类：不算崩，按「还没出分」处理
+                record.note = f"平台拒绝分析：{exc}"
+                self._emit("attempt.error", attempt=attempt, error=record.note)
+                snapshot = grading.EssaySnapshot(
+                    rid=rid, eid=eid, raw_state="分析被拒",
+                    analysis_error=str(exc),
+                )
             except Exception as exc:  # noqa: BLE001 - 单轮失败不该炸掉整个循环
                 record.note = f"{type(exc).__name__}: {exc}"
                 result.attempts.append(record)
@@ -390,8 +403,9 @@ class GradeLoop:
                                raw_state=record.raw_state)
                     continue
                 result.stop_reason = STOP_UNAVAILABLE
+                reason = getattr(snapshot, "analysis_error", "") or record.raw_state or "待分析"
                 result.message = (
-                    f"平台还没给出分数（{record.raw_state or '待分析'}）。"
+                    f"平台还没给出分数（{reason}）。"
                     "可以先「手动获取一次」或「继续等待 N 秒」；"
                     "要接着改就点「直接改写重交」。"
                 )

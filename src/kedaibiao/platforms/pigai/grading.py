@@ -71,6 +71,8 @@ class EssaySnapshot:
     annotations: list[Annotation] = field(default_factory=list)
     #: 平台原始状态（例如「未截止」表示分数未公布）
     raw_state: str = ""
+    #: 触发分析时平台拒绝的原因（「没找到作文」这类）——空串表示没出错
+    analysis_error: str = ""
 
     @property
     def graded(self) -> bool:
@@ -130,6 +132,7 @@ class EssaySnapshot:
             ],
             "feedback_lines": self.feedback_lines(),
             "raw_state": self.raw_state,
+            "analysis_error": self.analysis_error,
             "graded": self.graded,
         }
 
@@ -272,7 +275,14 @@ async def wait_for_grade(
     # 「未截止」也可能已经有分（提前批改），fetch_snapshot 已经读过详情页了；
     # 真的没分才去触发/等分析。
 
-    key = await start_analysis(http, base=base, rid=rid, eid=eid)
+    try:
+        key = await start_analysis(http, base=base, rid=rid, eid=eid)
+    except AnalysisFailed as exc:
+        # 平台拒绝触发分析（常见：这篇已经批过了 / 分析队列不认这个 eid）。
+        # 不是致命错误 —— 把原因带回给调用方，界面提示「手动获取 / 直接改写重交」。
+        log.warning("触发分析被拒（rid=%s eid=%s）: %s", rid, eid, exc)
+        snapshot.analysis_error = str(exc)
+        return snapshot
     await poll_analysis(http, base=base, rid=rid, key=key, timeout=timeout, on_tick=on_tick)
     # 分析刚结束时列表可能还没刷新，稍等一下再读
     for attempt in range(6):

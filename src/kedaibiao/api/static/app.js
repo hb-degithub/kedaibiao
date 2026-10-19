@@ -2574,12 +2574,18 @@
     }).then(function (snap) {
       grader.busy = false;
       grader.note = '';
+      var reason = snap.analysis_error
+        ? ('平台拒绝了分析请求（' + String(snap.analysis_error).slice(0, 120) + '）' +
+           ' —— 这篇可能已经批过了；可以「直接改写重交」，或稍后再取。')
+        : (snap.raw_state || '待分析');
+      var attempt = Object.assign({ attempt: 0 }, snap);
+      attempt.word_count = (snap.essay_text || '').trim() ? (snap.essay_text || '').length : 0;
       var job = {
         job_id: 'fetch', status: 'done', target_score: grader.target,
         best_score: snap.score, max_attempts: 0, events: [],
-        attempts: [snap], stop_reason: snap.graded ? 'reached' : 'unavailable',
+        attempts: [attempt], stop_reason: snap.graded ? 'reached' : 'unavailable',
         message: snap.graded ? ('当前分数 ' + snap.score)
-          : ('平台未给分：' + (snap.raw_state || '待分析'))
+          : ('没取到分数：' + reason)
       };
       grader.job = job;
       graderRender();
