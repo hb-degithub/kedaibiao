@@ -25,6 +25,7 @@ from kedaibiao.net.http import HttpClient, UrllibTransport
 from kedaibiao.notify.base import ConsoleNotifier, Notifier, NullNotifier, WebhookNotifier
 from kedaibiao.platforms.base import AdapterContext, PlatformAdapter
 from kedaibiao.tasks.answerer import BankAnswerer, ChainAnswerer, RuleAnswerer
+from kedaibiao.tasks.llm import build_llm_answerer
 from kedaibiao.tasks.pipeline import Pipeline, PipelineConfig, PipelineReport
 
 log = logging.getLogger(__name__)
@@ -232,10 +233,15 @@ def build_runtime(
     store = ProgressStore(settings.db_path)
     notifier = build_notifier(settings)
 
-    answerer = ChainAnswerer(
-        [BankAnswerer(bank), RuleAnswerer()],
-        min_confidence=settings.min_confidence,
-    )
+    # 答题链顺序：题库（最可靠）→ 大模型（会用外部 API，未配置则跳过）→ 规则兜底。
+    # 规则放最后：它只会瞎猜，置信度刻意压低，用来避免「整份一题都不答」。
+    chain: list[Any] = [BankAnswerer(bank)]
+    llm = build_llm_answerer(resolved_env)
+    if llm is not None:
+        chain.append(llm)
+        log.info("大模型答题器已启用: %s", llm.config.describe())
+    chain.append(RuleAnswerer())
+    answerer = ChainAnswerer(chain, min_confidence=settings.min_confidence)
     pipeline = Pipeline(
         answerer=answerer,
         bank=bank,

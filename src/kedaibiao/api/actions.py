@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -535,6 +536,91 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
     )
 
 
+
+
+async def _generic_assignment_detail(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """作业详情（双击作业行时调用）。
+
+    只读：把该作业的题目、题型、选项列出来，并把平台原始载荷放进 sections，
+    方便排查「为什么这题没答出来」。
+    """
+    name = getattr(adapter, "name", "?")
+    assignment_id = str(params.get("assignment_id") or "").strip()
+    if not assignment_id:
+        raise ActionInputError("缺少 assignment_id")
+
+    # 先在所有课程里把这个作业找出来
+    target = None
+    course_name = ""
+    for course in await adapter.list_courses():
+        for item in await adapter.list_assignments(course):
+            if item.remote_id == assignment_id:
+                target, course_name = item, course.name
+                break
+        if target is not None:
+            break
+    if target is None:
+        raise ActionInputError(f"在 {name} 里找不到作业 {assignment_id!r}")
+
+    questions = list(target.questions)
+    if not questions and getattr(adapter.capabilities, "fetch_questions", False):
+        questions = await adapter.fetch_questions(target)
+
+    fields = [
+        {"label": "任务号", "value": target.remote_id},
+        {"label": "名称", "value": target.title or "—"},
+        {"label": "课程", "value": course_name or "—"},
+        {"label": "类型", "value": _KIND_LABEL.get(target.kind, target.kind.value)},
+        {"label": "截止", "value": _fmt_deadline(target.deadline) or "—"},
+        {"label": "状态", "value": "已完成" if target.finished else "未完成"},
+        {"label": "进度", "value": f"{target.progress:.0%}"},
+        {"label": "题目数", "value": len(questions)},
+    ]
+
+    sections: list[dict[str, Any]] = []
+    if questions:
+        rows = []
+        for i, q in enumerate(questions):
+            rows.append({
+                "index": i + 1,
+                "type": q.type.value,
+                "stem": q.stem or "（平台未提供题干）",
+                "options": " / ".join(
+                    f"{n}. {o}" for n, o in enumerate(q.options)
+                ) or "—",
+            })
+        sections.append(
+            _table_section(
+                "题目",
+                [
+                    column("index", "#"),
+                    column("type", "题型"),
+                    column("stem", "题干"),
+                    column("options", "选项"),
+                ],
+                rows,
+            )
+        )
+
+    # 平台原始载荷：排查用，默认收起
+    if target.raw:
+        sections.append({
+            "label": "平台原始数据",
+            "kind": "text",
+            "text": json.dumps(target.raw, ensure_ascii=False, indent=2)[:4000],
+        })
+
+    return detail(
+        platform=name,
+        action="detail",
+        label="作业详情",
+        title=f"{target.title or target.remote_id}",
+        note="只读数据，不会提交任何内容。" if not questions else "",
+        fields=fields,
+        sections=sections,
+    )
+
+
 def ensure_generic_actions(platform: str) -> None:
     """给某个平台补上通用动作。
 
@@ -552,6 +638,18 @@ def ensure_generic_actions(platform: str) -> None:
                 builtin=True,
             ),
             _generic_courses,
+        )
+    if not has_action(platform, "detail"):
+        register(
+            ActionSpec(
+                platform=platform,
+                name="detail",
+                label="作业详情",
+                description="查看单个作业的题目与平台原始数据（只读）",
+                builtin=True,
+                params=(ActionParam("assignment_id", "任务号", required=True),),
+            ),
+            _generic_assignment_detail,
         )
     if not has_action(platform, "assignments"):
         register(

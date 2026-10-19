@@ -631,6 +631,119 @@ class TestActions(ServiceTestBase):
         self.assertIn("平台炸了", str(cm.exception))
 
 
+class TestAssignmentDetailAndSubmit(ServiceTestBase):
+    """单个作业：详情（双击）与提交（目前所有平台都未实现，必须明确拒绝）。"""
+
+    def test_detail_returns_envelope(self) -> None:
+        out = self.service.assignment_detail(GOOD, "a1")
+        self.assertEqual(out["kind"], "detail")
+        self.assertEqual(out["action"], "detail")
+        labels = [f["label"] for f in out["fields"]]
+        self.assertIn("任务号", labels)
+        self.assertIn("题目数", labels)
+
+    def test_detail_unknown_assignment(self) -> None:
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.assignment_detail(GOOD, "nope")
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertIn("找不到", str(cm.exception))
+
+    def test_detail_requires_id(self) -> None:
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.assignment_detail(GOOD, "  ")
+        self.assertEqual(cm.exception.kind, "bad_request")
+
+    def test_submit_refused_when_platform_lacks_capability(self) -> None:
+        """pigai / unipus 都是 submit=False —— 必须 501 明确拒绝，不能假装成功。"""
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.submit_assignment(NOSUBMIT, "a1")
+        self.assertEqual(cm.exception.kind, "not_supported")
+        self.assertEqual(cm.exception.status, 501)
+        self.assertIn("尚未实现提交", str(cm.exception))
+
+
+class SubmitCapableAdapter(FakeAdapter):
+    """假想一个「已实现提交」的平台，用来验证提交链路的接线是否正确。"""
+
+    name = "apisubmit"
+    display_name = "能提交的假平台"
+
+    def __init__(self, ctx=None, **kw) -> None:
+        super().__init__(ctx, **kw)
+        self.submitted: list[tuple] = []
+
+    async def submit(self, assignment, answers):
+        self.submitted.append((assignment.remote_id, list(answers)))
+        return SubmissionResult(assignment_id=assignment.remote_id, ok=True,
+                                score=88.0, message="交卷成功")
+
+
+class TestSubmitPipeline(unittest.IsolatedAsyncioTestCase):
+    """提交链路的接线测试：用「能提交的假平台」跑通，证明平台一实现就能用。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "config").mkdir()
+        (self.root / "config" / "local.toml").write_text(
+            "[kedaibiao]\n"
+            f'db_url = "sqlite:///{self.root}/x.db"\n'
+            f'session_dir = "{self.root}/s"\n'
+            'min_confidence = 0.5\n',
+            encoding="utf-8",
+        )
+        adapters.register(SubmitCapableAdapter.name, SubmitCapableAdapter, override=True)
+        self.addCleanup(adapters.unregister, SubmitCapableAdapter.name)
+
+        from kedaibiao.security.accounts import AccountStore
+
+        store = AccountStore(self.root / "x.db")
+        self.account = store.add(0, SubmitCapableAdapter.name, username="stu")
+        store.close()
+
+        # 题库里预置答案，让作答链有货
+        from kedaibiao.bank.store import QuestionBank
+        bank = QuestionBank(self.root / "x.db")
+        q = Question(stem="已知题", options=["甲", "乙"], remote_id="q1")
+        bank.upsert(q, Answer(question=q, choices=[0],
+                              source=AnswerSource.BANK_HIT, confidence=1.0))
+        bank.close()
+        self.service = ConsoleService(root=self.root)
+
+    def test_dry_run_does_not_submit(self) -> None:
+        out = self.service.submit_assignment(SubmitCapableAdapter.name, "a1")
+        self.assertFalse(out["submitted"])
+        self.assertTrue(out["dry_run"])
+        self.assertEqual(out["answered"], 1)
+        self.assertIn("干跑", out["note"])
+
+    def test_confirm_submits(self) -> None:
+        out = self.service.submit_assignment(
+            SubmitCapableAdapter.name, "a1", confirm=True
+        )
+        self.assertTrue(out["submitted"])
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["score"], 88.0)
+
+    def test_low_confidence_blocks_confirm(self) -> None:
+        """置信度不够时，即使 confirm=true 也拒绝提交。"""
+        from kedaibiao.bank.store import QuestionBank
+
+        bank = QuestionBank(self.root / "x.db")
+        for row in bank.fetchall("SELECT owner_id, fingerprint FROM questions"):
+            bank.execute("DELETE FROM questions WHERE fingerprint=?",
+                         (row["fingerprint"],))
+        bank.close()
+        out = self.service.submit_assignment(
+            SubmitCapableAdapter.name, "a1", confirm=True
+        ) if False else None  # noqa: F841 - 下面用异常断言
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.submit_assignment(
+                SubmitCapableAdapter.name, "a1", confirm=True
+            )
+        self.assertEqual(cm.exception.status, 400)
+
+
 class TestParamValidation(unittest.TestCase):
     def _spec(self):
         from kedaibiao.api.actions import ActionParam, ActionSpec

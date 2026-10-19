@@ -386,6 +386,27 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 ))
             return self._error(404, f"没有这个路由: {path}", "not_found")
 
+        if path == "/api/assignments/detail":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.assignment_detail(
+                str(payload.get("platform") or ""),
+                str(payload.get("assignment_id") or ""),
+                viewer=viewer,
+            ))
+
+        if path == "/api/assignments/submit":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.submit_assignment(
+                str(payload.get("platform") or ""),
+                str(payload.get("assignment_id") or ""),
+                viewer=viewer,
+                confirm=bool(payload.get("confirm", False)),
+            ))
+
         if path != "/api/run":
             return self._error(404, f"没有这个路由: {path}", "not_found")
 

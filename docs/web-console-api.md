@@ -80,6 +80,7 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 | `busy` | 409 | 已有跑批在跑，同一时刻只允许一个 |
 | `forbidden` | 403 | Host 或 Origin 被安全策略拒绝 |
 | `platform_error` | 502 | 平台侧失败（未登录、找不到内容、网络异常），另带 `detail` = 平台异常类名 |
+| `not_supported` | 501 | 该平台还没实现这个能力（例如提交） |
 | `internal` | 500 | 服务端自身异常 |
 
 ---
@@ -515,6 +516,32 @@ run 是「一个作业的处理结果」，job 是「一次跑批的整体结果
 
 > 这四个是**平台专属**的，其他平台没有。前端不要为 pigai 写专属页面 ——
 > 按 `GET /api/platforms/<name>/actions` 返回的清单通用渲染即可。
+
+### `POST /api/assignments/detail` —— 单个作业详情（双击作业行）
+
+```json
+{ "platform": "pigai", "assignment_id": "1000001" }
+```
+
+返回 `kind: detail` 的展示信封（含任务号、名称、课程、截止、题目列表、
+平台原始数据）。等同于调用动作 `detail`。
+
+### `POST /api/assignments/submit` —— 针对单个作业提交
+
+```json
+{ "platform": "pigai", "assignment_id": "1000001", "confirm": false }
+```
+
+- `confirm=false`（默认）：**只规划不提交**，返回每题打算怎么答 + 置信度
+- `confirm=true`：真的调平台写接口
+
+**平台没实现提交时返回 `501 not_supported`**，`error` 会说明原因。
+目前 pigai / unipus 都是 `capabilities.submit = false`，
+pinco 的提交请求体结构也还没由真实样本确认 —— **不会假装成功**。
+
+两条硬门槛（即使 `confirm=true` 也拦）：
+1. 一题都没答出来 → 400
+2. 最低置信度低于 `min_confidence` → 400（宁可交白卷也不交错答案）
 
 ### 错误
 

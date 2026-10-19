@@ -887,6 +887,157 @@ class ConsoleService:
         except AccountError as exc:
             raise ConsoleError(str(exc), kind=exc.kind, status=exc.status) from exc
 
+    # -- 单个作业：详情与提交 ---------------------------------------------
+
+    def assignment_detail(
+        self, platform: str, assignment_id: str, *, viewer: Viewer | None = None
+    ) -> dict[str, Any]:
+        """作业详情（控制台双击作业行时调用）。走通用动作，返回展示信封。"""
+        if not str(assignment_id or "").strip():
+            raise ConsoleError("缺少任务号", kind="bad_request", status=400)
+        return self.run_action(
+            platform, "detail", {"assignment_id": str(assignment_id).strip()}, viewer=viewer
+        )
+
+    def submit_assignment(
+        self,
+        platform: str,
+        assignment_id: str,
+        *,
+        viewer: Viewer | None = None,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """针对**单个作业**作答并提交。
+
+        ``confirm=False``（默认）= 只规划不提交，返回「打算交什么」。
+        ``confirm=True`` 才会真的调平台的写接口。
+
+        平台没实现提交时**明确拒绝**（501 not_supported），而不是假装成功 ——
+        现在 pigai / unipus 都是 ``capabilities.submit = False``，
+        pinco 的请求体结构也还没由真实样本确认。
+        """
+        scope = self._check_platform(platform)
+        assert scope is not None
+        cls: Any = adapters.get(scope)
+        caps = getattr(cls, "capabilities", None)
+        display = getattr(cls, "display_name", None) or scope
+        if caps is not None and not getattr(caps, "submit", False):
+            raise ConsoleError(
+                f"{display} 尚未实现提交（capabilities.submit = False）。"
+                f"当前平台只能读数据；提交需要先按真实抓包实现该平台的写接口。",
+                kind="not_supported", status=501,
+            )
+
+        assignment_id = str(assignment_id or "").strip()
+        if not assignment_id:
+            raise ConsoleError("缺少任务号", kind="bad_request", status=400)
+
+        return asyncio.run(
+            self._submit_one(scope, assignment_id, viewer=viewer, confirm=confirm)
+        )
+
+    async def _submit_one(
+        self, platform: str, assignment_id: str, *, viewer: Viewer | None, confirm: bool
+    ) -> dict[str, Any]:
+        creds, cookie_file = self._resolve_login(platform, viewer)
+        settings = load_settings(root=self.root, environ=self.environ)
+        owner_id = viewer.user_id if (viewer and viewer.authenticated) else 0
+        runtime = build_runtime(
+            root=self.root, environ=self.environ, cookie_file=cookie_file,
+            owner_id=owner_id,
+        )
+        adapter: Any = None
+        try:
+            adapter = runtime.make_adapter(platform)
+            restore_adapter_session(adapter, cookie_file)
+            if not await adapter.refresh_session(creds):
+                raise ConsoleError(
+                    f"{platform} 登录失败（会话可能已失效，请到「账号」页重新登录）",
+                    kind=PLATFORM_ERROR, status=502,
+                )
+
+            target = None
+            for course in await adapter.list_courses():
+                for item in await adapter.list_assignments(course):
+                    if item.remote_id == assignment_id:
+                        target = item
+                        break
+                if target is not None:
+                    break
+            if target is None:
+                raise ConsoleError(
+                    f"在 {platform} 里找不到作业 {assignment_id!r}",
+                    kind="not_found", status=404,
+                )
+
+            questions = list(target.questions)
+            if not questions and getattr(adapter.capabilities, "fetch_questions", False):
+                questions = await adapter.fetch_questions(target)
+            if not questions:
+                raise ConsoleError(
+                    "没有取到题目，无法作答", kind="bad_request", status=400
+                )
+
+            answers = await runtime.pipeline.answerer.answer(questions)
+            answerable = [a for a in answers if not a.is_empty()]
+            weakest = min((a.confidence for a in answerable), default=0.0)
+            plan = {
+                "platform": platform,
+                "assignment_id": assignment_id,
+                "title": target.title,
+                "question_count": len(questions),
+                "answered": len(answerable),
+                "min_confidence": round(weakest, 4),
+                "threshold": runtime.settings.min_confidence,
+                "dry_run": not confirm,
+                "answers": [
+                    {
+                        "index": i + 1,
+                        "stem": (a.question.stem or "")[:120],
+                        "choices": a.choices,
+                        "text": a.text,
+                        "source": a.source.value,
+                        "confidence": a.confidence,
+                        "needs_human": a.confidence < runtime.settings.min_confidence,
+                    }
+                    for i, a in enumerate(answers)
+                ],
+            }
+
+            if not confirm:
+                plan["submitted"] = False
+                plan["note"] = "这是干跑结果，没有向平台提交任何内容。确认无误后带 confirm=true 再调用。"
+                return plan
+
+            if not answerable:
+                raise ConsoleError("一题都没答出来，拒绝提交", kind="bad_request", status=400)
+            if weakest < runtime.settings.min_confidence:
+                raise ConsoleError(
+                    f"最低置信度 {weakest:.2f} 低于阈值 {runtime.settings.min_confidence:.2f}，"
+                    f"拒绝提交（宁可交白卷也不交错答案）",
+                    kind="bad_request", status=400,
+                )
+
+            result = await adapter.submit(target, answers)
+            if runtime.store is not None:
+                runtime.store.record_submission(
+                    platform, result, owner_id=owner_id
+                )
+            plan["submitted"] = True
+            plan["ok"] = result.ok
+            plan["score"] = result.score
+            plan["message"] = result.message
+            return plan
+        finally:
+            if adapter is not None:
+                try:
+                    persist_http_cookies(adapter, settings)
+                    save_adapter_session(adapter, cookie_file)
+                except Exception:  # noqa: BLE001
+                    log.debug("保存会话失败", exc_info=True)
+                await adapter.close()
+            runtime.close()
+
     # -- 触发跑批 ---------------------------------------------------------
 
     def start_run(
