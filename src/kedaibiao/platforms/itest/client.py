@@ -89,6 +89,10 @@ class ExamEntry:
     start_at: str = ""
     end_at: str = ""
     duration: str = ""
+    #: 是否已完成（平台的 finish=1）
+    finished: bool = False
+    #: 交卷时间（平台给的 ms 时间戳，格式化成可读串）
+    submitted_at: str = ""
     raw: dict[str, Any] | None = None
 
     def to_assignment_fields(self) -> dict[str, str]:
@@ -100,6 +104,26 @@ class ExamEntry:
             "end_at": self.end_at,
             "duration": self.duration,
         }
+
+
+def _format_ms(value: Any) -> str:
+    """把平台的毫秒时间戳转成 ``YYYY-MM-DD HH:MM``。
+
+    平台很多时间字段是 13 位毫秒数（例如 ``1792354500000``）。
+    直接展示原始数字对用户毫无意义 —— 实测控制台就显示成了
+    「开始 1792354500000」，所以在解析层统一转掉。
+    """
+    if value in (None, ""):
+        return ""
+    text = str(value).strip()
+    if text.isdigit() and len(text) >= 12:
+        try:
+            from datetime import datetime
+
+            return datetime.fromtimestamp(int(text) / 1000).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, OSError, OverflowError):
+            return ""
+    return text
 
 
 def _pick(raw: dict[str, Any], *names: str) -> str:
@@ -137,14 +161,20 @@ def parse_exam_list(payload: Any) -> list[ExamEntry]:
         exam_id = _pick(item, "ksdId", "examId", "id")
         if not exam_id:
             continue
+        # 时长在平台上是分钟数（ksLimit=999 表示 999 分钟）
+        minutes = _pick(item, "limitTime", "examTime", "ksLimit")
         out.append(
             ExamEntry(
                 exam_id=exam_id,
                 title=_pick(item, "examName", "name", "title", "ksName"),
                 code=_pick(item, "examCode", "code"),
-                start_at=_pick(item, "beginTime", "startTime", "beginDate"),
-                end_at=_pick(item, "endTime", "stopTime", "endDate"),
-                duration=_pick(item, "limitTime", "duration", "examTime"),
+                start_at=_format_ms(_pick(item, "restrictBeginTime", "beginTime",
+                                          "startTime", "beginDate")),
+                end_at=_format_ms(_pick(item, "restrictEndTime", "endTime",
+                                        "stopTime", "endDate")),
+                duration=f"{minutes} 分钟" if minutes.isdigit() else minutes,
+                finished=str(item.get("finish") or "0") not in ("0", "", "None"),
+                submitted_at=_format_ms(_pick(item, "ansSubmitTime")),
                 raw=item,
             )
         )

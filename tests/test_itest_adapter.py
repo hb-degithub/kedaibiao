@@ -60,7 +60,7 @@ class TestParseExamList(unittest.TestCase):
         self.assertEqual(len(exams), 1)
         self.assertEqual(exams[0].exam_id, "1001")
         self.assertEqual(exams[0].title, "期中测试")
-        self.assertEqual(exams[0].duration, "120")
+        self.assertEqual(exams[0].duration, "120 分钟", "时长带上单位，别只给个裸数字")
 
     def test_alternative_field_names(self) -> None:
         """平台版本之间字段名有差异，按已知别名取，取不到留空。"""
@@ -225,3 +225,44 @@ class TestExamOperations(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExamListFormatting(unittest.TestCase):
+    """考试列表的字段规范化。
+
+    回归背景：平台的 `beginTime` 是 13 位毫秒时间戳，原先原样透传，
+    控制台就显示成「开始 1792354500000」—— 对用户毫无意义。
+    """
+
+    def test_ms_timestamp_formatted(self) -> None:
+        from kedaibiao.platforms.itest.client import _format_ms
+
+        self.assertRegex(_format_ms(1792354500000), r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+
+    def test_empty_stays_empty(self) -> None:
+        from kedaibiao.platforms.itest.client import _format_ms
+
+        self.assertEqual(_format_ms(None), "")
+        self.assertEqual(_format_ms(""), "")
+
+    def test_non_numeric_passthrough(self) -> None:
+        from kedaibiao.platforms.itest.client import _format_ms
+
+        self.assertEqual(_format_ms("2026-10-19 04:15"), "2026-10-19 04:15")
+
+    def test_parse_uses_restrict_window_and_finish(self) -> None:
+        payload = {"rs": {"data": [{
+            "ksdId": "1", "ksName": "卷子",
+            "restrictBeginTime": 1792354500000,
+            "restrictEndTime": 1794844500000,
+            "ksLimit": 999, "finish": 1,
+        }]}}
+        exam = parse_exam_list(payload)[0]
+        self.assertRegex(exam.start_at, r"^\d{4}-\d{2}-\d{2}")
+        self.assertRegex(exam.end_at, r"^\d{4}-\d{2}-\d{2}")
+        self.assertEqual(exam.duration, "999 分钟")
+        self.assertTrue(exam.finished, "finish=1 应识别为已完成")
+
+    def test_unfinished_exam(self) -> None:
+        payload = {"rs": {"data": [{"ksdId": "2", "finish": 0}]}}
+        self.assertFalse(parse_exam_list(payload)[0].finished)

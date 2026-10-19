@@ -462,6 +462,7 @@ async def _itest_exams(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
         {
             "exam_id": e.exam_id,
             "title": e.title or "—",
+            "status": "已交卷" if e.finished else "未完成",
             "start": e.start_at or "—",
             "end": e.end_at or "—",
             "duration": e.duration or "—",
@@ -477,6 +478,7 @@ async def _itest_exams(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
         columns=[
             column("exam_id", "考试号", mono=True),
             column("title", "名称"),
+            column("status", "状态"),
             column("start", "开始"),
             column("end", "结束"),
             column("duration", "时长"),
