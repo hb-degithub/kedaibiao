@@ -67,6 +67,8 @@ log = logging.getLogger(__name__)
 
 JOB_HISTORY = 50
 EVENT_HISTORY = 500
+#: 每个平台保留多少行「详细日志」
+PLATFORM_LOG_HISTORY = 400
 OPTIONAL_DEPS = ("playwright", "fastapi", "uvicorn", "faster_whisper")
 
 
@@ -189,6 +191,8 @@ class ConsoleService:
         self._jobs: list[dict[str, Any]] = []
         self._jobs_by_id: dict[str, dict[str, Any]] = {}
         self._events: list[dict[str, Any]] = []
+        #: 按平台分开的执行日志（终端式面板用）。每个平台独立一份，互不串味。
+        self._platform_logs: dict[str, list[dict[str, Any]]] = {}
         self._seq = 0
         self._active_job_id: str | None = None
         # 动作与适配器注册表都是进程级的，重复登记会覆盖，这里调用是幂等的。
@@ -614,6 +618,30 @@ class ConsoleService:
             "platforms": platforms,
         }
 
+    def _plog(self, platform: str, level: str, text: str) -> None:
+        """追加一行「某平台的执行日志」。
+
+        和 job 的 logs 分开存：job 属于**一次**任务，这里属于**一个平台**的历史。
+        控制台的「详细日志」面板看的是这一份（切平台就换一份，互不干扰）。
+        """
+        name = str(platform or "")
+        if not name:
+            return
+        with self._lock:
+            lines = self._platform_logs.setdefault(name, [])
+            lines.append({"at": _now(), "level": str(level), "text": str(text)[:600]})
+            del lines[:-PLATFORM_LOG_HISTORY]
+
+    def platform_logs(self, platform: str, limit: int = 200) -> dict[str, Any]:
+        scope = self._check_platform(platform)
+        with self._lock:
+            lines = list(self._platform_logs.get(scope or "", []))
+        return {
+            "platform": scope,
+            "logs": lines[-_clamp(limit, 1, 400):],
+            "total": len(lines),
+        }
+
     def events(self, limit: int = 100) -> dict[str, Any]:
         with self._lock:
             return {"events": list(self._events[-_clamp(limit, 1, EVENT_HISTORY):])}
@@ -664,7 +692,20 @@ class ConsoleService:
             )
         spec = next(s for s in register_platform(scope) if s.name == action)
         cleaned = self._validate_params(spec, params or {})
-        return asyncio.run(self._execute_action(scope, action, cleaned, viewer))
+        detail = json.dumps(cleaned, ensure_ascii=False) if cleaned else ""
+        self._plog(scope, "info", f"$ 动作 {action} {detail}".rstrip())
+        try:
+            result = asyncio.run(self._execute_action(scope, action, cleaned, viewer))
+        except ConsoleError as exc:
+            self._plog(scope, "error", f"✗ {action}：{exc}")
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self._plog(scope, "error", f"✗ {action}：{type(exc).__name__}: {exc}")
+            raise
+        envelope_kind = (result or {}).get("kind")
+        title = (result or {}).get("title") or (result or {}).get("label") or ""
+        self._plog(scope, "ok", f"→ {action} {envelope_kind or ''} {title}".rstrip())
+        return result
 
     @staticmethod
     def _validate_params(spec: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -1186,6 +1227,12 @@ class ConsoleService:
                 return
             job["logs"].append({"at": _now(), "level": level, "text": str(text)})
             del job["logs"][:-800]
+            # 同一行也进「平台日志」—— 控制台切到该平台就能翻到这次任务的输出
+            name = str(job.get("platform") or "")
+            if name:
+                lines = self._platform_logs.setdefault(name, [])
+                lines.append({"at": _now(), "level": str(level), "text": str(text)[:600]})
+                del lines[:-PLATFORM_LOG_HISTORY]
 
     def _job_step(self, job_id: str, name: str, ok: bool, detail: str = "") -> None:
         with self._lock:
@@ -1549,6 +1596,20 @@ class ConsoleService:
                         return
                     job["events"].append({"at": _now(), **_jsonable(event)})
                     del job["events"][:-400]
+                    kind = str(event.get("kind") or "")
+                    if kind:
+                        extra = ""
+                        if event.get("score") is not None:
+                            extra = f" {event.get('score')} 分"
+                        elif event.get("message"):
+                            extra = f" {event.get('message')}"
+                        lines = self._platform_logs.setdefault("pigai", [])
+                        lines.append({
+                            "at": _now(),
+                            "level": "error" if "fail" in kind else "info",
+                            "text": f"· {kind}{extra}"[:600],
+                        })
+                        del lines[:-PLATFORM_LOG_HISTORY]
                     if event.get("kind") == "attempt.graded":
                         score = event.get("score")
                         if isinstance(score, (int, float)):
@@ -1706,9 +1767,29 @@ class ConsoleService:
         if not assignment_id:
             raise ConsoleError("缺少任务号", kind="bad_request", status=400)
 
-        return asyncio.run(
-            self._submit_one(scope, assignment_id, viewer=viewer, confirm=confirm)
-        )
+        self._plog(scope, "info",
+                   f"$ 提交 {assignment_id}（{'真交，不可逆' if confirm else '干跑，不提交'}）")
+        try:
+            result = asyncio.run(
+                self._submit_one(scope, assignment_id, viewer=viewer, confirm=confirm)
+            )
+        except ConsoleError as exc:
+            self._plog(scope, "error", f"✗ 提交 {assignment_id}：{exc}")
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self._plog(scope, "error",
+                       f"✗ 提交 {assignment_id}：{type(exc).__name__}: {exc}")
+            raise
+        if isinstance(result, dict):
+            if result.get("dry_run", True) is False or result.get("submitted") is not None:
+                self._plog(scope, "ok",
+                           f"→ 提交完成 submitted={result.get('submitted')} "
+                           f"finish={result.get('server_finish')}")
+            else:
+                self._plog(scope, "ok",
+                           f"→ 干跑 {result.get('question_count', '?')} 题，"
+                           f"有答案 {result.get('answered', '?')} 题")
+        return result
 
     async def _submit_one(
         self, platform: str, assignment_id: str, *, viewer: Viewer | None, confirm: bool
@@ -1893,6 +1974,10 @@ class ConsoleService:
                     del self._jobs_by_id[stale]
             self._active_job_id = job_id
 
+        self._plog(platform, "info",
+                   f"$ 跑批 {job_id}（{'live 真跑' if live else '干跑'}，"
+                   f"kinds={sorted(k.value for k in parsed_kinds) or '全部'}，"
+                   f"limit={limit or '不限'}）")
         thread = threading.Thread(
             target=self._execute,
             args=(job_id, platform, bool(live), limit, parsed_kinds, owner_id,
@@ -1955,6 +2040,8 @@ class ConsoleService:
 
             report = asyncio.run(runtime.run(platform, credentials=credentials))
 
+            self._plog(platform, "ok" if report.failed == 0 else "warn",
+                       f"→ 跑批 {job_id} 结束：{report.summary()}")
             with self._lock:
                 job = self._jobs_by_id[job_id]
                 job["summary"] = report.summary()
@@ -1969,6 +2056,7 @@ class ConsoleService:
                 ]
         except BaseException as exc:  # noqa: BLE001 - 后台线程里必须兜住，否则静默死掉
             log.exception("跑批任务 %s 异常结束", job_id)
+            self._plog(platform, "error", f"✗ 跑批 {job_id}：{type(exc).__name__}: {exc}")
             with self._lock:
                 job = self._jobs_by_id[job_id]
                 job["status"] = "failed"

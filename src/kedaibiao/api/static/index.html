@@ -8,7 +8,7 @@
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'none'; base-uri 'none'">
 <title>课代表 kedaibiao · 控制台</title>
-<link rel="stylesheet" href="/static/style.css?v=20261019e">
+<link rel="stylesheet" href="/static/style.css?v=20261019f">
 </head>
 <body>
 
@@ -341,6 +341,7 @@
                 <button id="assignments-submit" class="btn btn-run" type="submit">加载作业</button>
                 <button id="assignments-reload" class="btn" type="button">清空并重新加载全部</button>
                 <button id="auto-reopen" class="btn" type="button" hidden>继续查看自动化</button>
+                <button id="plog-open" class="btn" type="button">详细日志</button>
                 <span id="assignments-state" class="field-hint"></span>
               </div>
             </form>
@@ -358,6 +359,23 @@
           已完成的历史作业 / 课程与详细作答在「工具」页的平台专属动作里（如批改网的
           <span class="mono">finished</span> 历史作文、<span class="mono">essay</span> 作文详情）。
         </p>
+        <!-- ==================================================================
+             平台执行日志：每个平台独立一份（动作调用 / 跑批 / 评分循环 / 自动化）
+             ================================================================== -->
+        <div class="panel" id="plog-panel" hidden>
+          <div class="panel-head">
+            <h2>执行日志</h2>
+            <span id="plog-hint" class="hint">—</span>
+            <button id="plog-refresh" class="btn btn-sm" type="button">刷新</button>
+            <button id="plog-close" class="btn btn-sm" type="button">关闭</button>
+          </div>
+          <pre id="plog-log" class="auto-log" aria-live="polite"></pre>
+          <p class="note">
+            只显示<strong>当前平台</strong>的执行记录（动作调用、跑批、评分循环、一键自动化），
+            按时间倒序滚动；每个平台各存一份，切平台就换一份。
+          </p>
+        </div>
+
         <!-- ==================================================================
              一键自动化（iTEST）：取卷 → 转写答题 → 填 → 核验 → 复核 → 人工补 → 交卷
              下面这块就是「终端」：执行日志逐行追加，自动滚到底。
@@ -990,6 +1008,6 @@
   });
 })();
 </script>
-<script src="/static/app.js?v=20261019e"></script>
+<script src="/static/app.js?v=20261019f"></script>
 </body>
 </html>

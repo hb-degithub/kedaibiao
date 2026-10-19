@@ -423,6 +423,29 @@ run 是「一个作业的处理结果」，job 是「一次跑批的整体结果
 - `override_fields` 列出被界面覆盖的字段；
 - **`api_key` 的明文永远不出现**，只有 `api_key_set: true/false`。
 
+### `GET /api/platforms/<name>/logs` —— 该平台的执行日志
+
+每个平台各存一份（内存环形缓冲，最多 400 行，进程重启后清空）：
+
+```json
+{
+  "platform": "pigai",
+  "total": 12,
+  "logs": [
+    { "at": "2026-10-19T22:41:03", "level": "info",
+      "text": "$ 动作 assignments" },
+    { "at": "2026-10-19T22:41:09", "level": "ok",
+      "text": "→ assignments table 作业 / 任务（全部课程） —— 10 项" }
+  ]
+}
+```
+
+- `level` ∈ `info` / `ok` / `warn` / `error`（前端按级别着色）；
+- 写日志的时机：动作调用（开始 + 结果）、`/api/assignments/submit`（干跑/真交 + 结果）、
+  跑批任务（启动 + 结束/异常）、批改网评分循环的事件、iTEST 一键自动化的每一步；
+- `limit` 默认 200、上限 400，取的是**末尾** N 行，`total` 是总行数；
+- 未知平台 → 404 `unknown_platform`。
+
 ### `POST /api/platforms/itest/auto` —— 一键自动化（返回后台任务）
 
 一次跑完「取卷 → 音频转写 + AI 答题 → 填写 → 逐项核验 → 等自动保存 → 重新抓取复核」，

@@ -150,6 +150,8 @@
     /* 一键自动化：job 轮询、最后一份快照、人工答案 */
     auto: { jobId: null, timer: null, job: null, platform: '', examId: '', title: '',
             manual: {}, saving: false, submitting: false, logCount: 0 },
+    /* 平台执行日志面板 */
+    plog: { open: false, timer: null, platform: '' },
     actionPages: {
       courses: { busy: false, loaded: false, error: '', result: null, params: {}, seq: 0 },
       assignments: { busy: false, loaded: false, error: '', result: null, params: {}, seq: 0 }
@@ -1070,6 +1072,8 @@
     if (changedPage || changedPlat) { closeDrawer(); }
     /* 一键自动化同理：面板属于「某个平台某场考试」，切走就收起（后台任务不动）。 */
     if (changedPage || changedPlat) { closeAuto(true); }
+    /* 平台执行日志也是按平台区分的，切走就收起 */
+    if (changedPage || changedPlat) { closePlatLogs(); }
     renderChrome();
     showPage();
     if (changedPage || changedPlat) { loadPageData(); }
@@ -5282,8 +5286,8 @@
     }
   }
 
-  function setAutoLog(lines) {
-    var node = autoEl('auto-log');
+  /* 终端式日志的公用渲染：两个面板（一键自动化 / 平台执行日志）共用 */
+  function paintLog(node, lines) {
     if (!node) { return; }
     var atBottom = node.scrollTop + node.clientHeight + 24 >= node.scrollHeight;
     clear(node);
@@ -5297,6 +5301,10 @@
       node.appendChild(row);
     }
     if (atBottom) { node.scrollTop = node.scrollHeight; }
+  }
+
+  function setAutoLog(lines) {
+    paintLog(autoEl('auto-log'), lines);
   }
 
   function appendAutoLog(level, text) {
@@ -5543,6 +5551,59 @@
    * keepRef=true 时保留 last（job 还在后台跑），作业页会显示「继续查看自动化」入口；
    * 用户主动点「关闭」则连 last 一起清掉。
    */
+  /* ---- 平台执行日志（每个平台独立一份）---- */
+
+  function openPlatLogs() {
+    var p = state.plog;
+    var panel = $('plog-panel');
+    if (!panel || !state.platform) {
+      showToast('先选一个平台，再看它的执行日志');
+      return;
+    }
+    p.open = true;
+    p.platform = state.platform;
+    panel.hidden = false;
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    var hint = $('plog-hint');
+    if (hint) { hint.textContent = platformLabel(p.platform) + ' · 最近 200 行'; }
+    fetchPlatLogs();
+    panelPollStart();
+  }
+
+  function closePlatLogs() {
+    var p = state.plog;
+    if (p.timer) { clearInterval(p.timer); p.timer = null; }
+    p.open = false;
+    var panel = $('plog-panel');
+    if (panel) { panel.hidden = true; }
+  }
+
+  function panelPollStart() {
+    var p = state.plog;
+    if (p.timer) { clearInterval(p.timer); }
+    p.timer = setInterval(function () {
+      if (!p.open) { return; }
+      fetchPlatLogs();
+    }, 2500);
+  }
+
+  function fetchPlatLogs() {
+    var p = state.plog;
+    if (!p.open || !state.platform) { return; }
+    var plt = state.platform;
+    api('/api/platforms/' + encodeURIComponent(plt) + '/logs?limit=200').then(function (body) {
+      if (state.platform !== plt) { return; }
+      paintLog($('plog-log'), (body && body.logs) || []);
+      var hint = $('plog-hint');
+      if (hint) {
+        hint.textContent = platformLabel(plt) + ' · 共 ' + ((body && body.total) || 0) +
+          ' 行（显示最近 200 行）';
+      }
+    }).catch(function (e) {
+      paintLog($('plog-log'), [{ at: '', level: 'error', text: '加载失败：' + describeError(e) }]);
+    });
+  }
+
   function closeAuto(keepRef) {
     var a = state.auto;
     if (a.timer) { clearTimeout(a.timer); a.timer = null; }
@@ -5650,6 +5711,9 @@
     /* 一键自动化面板 */
     if ($('auto-close')) { $('auto-close').addEventListener('click', function () { closeAuto(false); }); }
     if ($('auto-reopen')) { $('auto-reopen').addEventListener('click', reopenAuto); }
+    if ($('plog-open')) { $('plog-open').addEventListener('click', openPlatLogs); }
+    if ($('plog-close')) { $('plog-close').addEventListener('click', closePlatLogs); }
+    if ($('plog-refresh')) { $('plog-refresh').addEventListener('click', fetchPlatLogs); }
     if ($('auto-manual-save')) { $('auto-manual-save').addEventListener('click', saveManual); }
     if ($('auto-submit')) { $('auto-submit').addEventListener('click', submitAuto); }
 

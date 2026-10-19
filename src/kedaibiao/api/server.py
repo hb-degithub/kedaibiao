@@ -265,6 +265,10 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         # 注意顺序：/api/platforms/<name>/actions 必须先于 /api/platforms 判断
         if path.startswith("/api/platforms/"):
             parts = path[len("/api/platforms/") :].split("/")
+            if len(parts) == 2 and parts[1] == "logs" and parts[0]:
+                return self._json(200, svc.platform_logs(
+                    parts[0], limit=self._int_param("limit", 200)
+                ))
             if len(parts) == 2 and parts[1] == "actions" and parts[0]:
                 return self._json(200, svc.actions(parts[0]))
             return self._error(404, f"没有这个路由: {path}", "not_found")
