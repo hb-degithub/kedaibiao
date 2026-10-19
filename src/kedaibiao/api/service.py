@@ -1389,6 +1389,17 @@ class ConsoleService:
                     kind="not_found", status=404,
                 )
 
+            # 原生作答链路的平台（iTEST）：取题/交卷都在浏览器里做，
+            # 不走通用的 fetch_questions → answerer → submit 三段式。
+            if getattr(adapter, "native_submit_flow", False):
+                if not confirm:
+                    plan = await adapter.native_plan(assignment_id)
+                    plan.setdefault("title", target.title)
+                    return plan
+                result = await adapter.native_submit(assignment_id)
+                result.setdefault("title", target.title)
+                return result
+
             questions = list(target.questions)
             if not questions and getattr(adapter.capabilities, "fetch_questions", False):
                 questions = await adapter.fetch_questions(target)

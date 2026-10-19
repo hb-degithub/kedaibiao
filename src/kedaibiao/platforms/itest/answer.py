@@ -6,10 +6,11 @@
   原句里用 ``[[词]]`` 标出要填的那个英文词。让模型把每个词对到释义字母。
 - **翻译**：中文句子 → 英文译文。
 
-## 听力（单选）为什么不代答
+## 听力（单选）
 
-短文听力的小题答案取决于**音频内容**，文字模型听不到。没有音频转写就不猜 ——
-留空由人补。这样交卷动作会因为「核验有缺口」而拒绝，不会把没答的卷子悄悄交上去。
+短文听力的小题答案取决于**音频内容**。有转写（``stt.py``）就按转写文字作答；
+没有转写就**不猜**，留空并记进 ``skipped`` —— 这样交卷会因为「核验有缺口」被拒绝，
+不会把没答的卷子悄悄交上去。
 
 ## 答案形态
 
@@ -87,9 +88,17 @@ def clean_chinese(text: str) -> str:
 
 
 async def answer_paper(
-    paper: Paper, llm: LLMAnswerer, *, kinds: tuple[str, ...] = (KIND_BLANK, KIND_WRITE)
+    paper: Paper, llm: LLMAnswerer, *, kinds: tuple[str, ...] | None = None,
+    transcripts: dict[int, str] | None = None,
 ) -> AnswerSheet:
-    """给整份试卷生成答案单。逐题型处理，失败的题记进 ``skipped``。"""
+    """给整份试卷生成答案单。逐题型处理，失败的题记进 ``skipped``。
+
+    ``transcripts`` 是 ``{section.index: 音频转写文本}``：给了就把听力题也一起答，
+    没给就跳过听力（见模块说明）。
+    """
+    if kinds is None:
+        kinds = (KIND_BLANK, KIND_WRITE, KIND_RADIO)
+    transcripts = transcripts or {}
     sheet = AnswerSheet()
     for section in paper.sections:
         blanks = [q for q in section.questions if q.kind == KIND_BLANK and KIND_BLANK in kinds]
@@ -128,11 +137,34 @@ async def answer_paper(
                      "slots": 1}
                 )
 
-        for question in section.questions:
-            if question.kind == KIND_RADIO:
+        radios = [q for q in section.questions if q.kind == KIND_RADIO]
+        if radios and KIND_RADIO not in kinds:
+            for question in radios:
                 sheet.skipped.append({
                     "qid": question.qid, "kind": "radio",
-                    "reason": "听力题依赖音频内容，文字模型听不到；需要音频转写或人工填",
+                    "reason": "本次没有要求答听力题",
+                })
+        elif radios:
+            transcript = transcripts.get(section.index, "")
+            for question in radios:
+                if not transcript:
+                    sheet.skipped.append({
+                        "qid": question.qid, "kind": "radio",
+                        "reason": "没有音频转写（未安装 faster-whisper 或转写失败）",
+                    })
+                    continue
+                try:
+                    letters = await _answer_radio(llm, question, transcript)
+                except (LLMError, AnswerError) as exc:
+                    log.warning("AI 答听力题失败 %s: %s", question.qid, exc)
+                    sheet.skipped.append({
+                        "qid": question.qid, "kind": "radio", "reason": str(exc)[:120],
+                    })
+                    continue
+                sheet.answers[question.qid] = " ".join(letters)
+                sheet.details.append({
+                    "qid": question.qid, "kind": "radio",
+                    "answer": " ".join(letters), "slots": len(letters),
                 })
     return sheet
 
@@ -180,6 +212,42 @@ async def _answer_blank(llm: LLMAnswerer, question: Question) -> list[str]:
     raise AnswerError(last or "模型没给出可用答案")
 
 
+async def _answer_radio(llm: LLMAnswerer, question: Question, transcript: str) -> list[str]:
+    """听一段转录文本，回答若干小题。字母按小题顺序返回。"""
+    subs: dict[int, list[str]] = {}
+    for choice in question.choices:
+        subs.setdefault(choice.sub, []).append(f"{choice.letter}. {choice.text}")
+    order = sorted(subs)
+    if not order:
+        raise AnswerError("这题没有选项")
+
+    parts = []
+    for index, sub in enumerate(order, 1):
+        parts.append(f"第 {index} 小题：\n" + "\n".join(subs[sub]))
+    prompt = (
+        "下面是一段英语听力录音的文字转录，以及基于这段录音的若干道选择题。\n"
+        "请根据转录内容为每道小题选出唯一正确答案。\n\n"
+        f"转录（可能有识别错误，按上下文理解）：\n{transcript[:6000]}\n\n"
+        + "\n\n".join(parts)
+        + f"\n\n只输出 JSON：{{\"letters\": [\"A\", ...]}}，必须正好 {len(order)} 个字母，"
+        "顺序与小题一致。"
+    )
+    content = await llm.complete(_SYSTEM, prompt, max_tokens=400)
+    try:
+        data = _extract_json(content)
+        picks = [str(x).strip().upper()[:1] for x in (data.get("letters") or [])
+                 if str(x).strip()]
+    except Exception as exc:  # noqa: BLE001
+        raise AnswerError(f"返回不是合法 JSON: {content[:80]}") from exc
+    if len(picks) != len(order):
+        raise AnswerError(f"字母数不对：要 {len(order)} 个，给了 {len(picks)} 个")
+    allowed = {c.letter for c in question.choices}
+    bad = [p for p in picks if p not in allowed]
+    if bad:
+        raise AnswerError(f"给了不在选项里的字母：{bad}")
+    return picks
+
+
 async def _answer_writes(llm: LLMAnswerer, questions: list[Question]) -> list[str]:
     numbered = "\n".join(
         f"{i}. {clean_chinese(q.text)}" for i, q in enumerate(questions, 1)
@@ -200,6 +268,44 @@ async def _answer_writes(llm: LLMAnswerer, questions: list[Question]) -> list[st
     if len(texts) != len(questions):
         raise AnswerError(f"译文条数不对：要 {len(questions)} 条，给了 {len(texts)} 条")
     return texts
+
+
+async def build_sheet(
+    paper: Paper,
+    llm: LLMAnswerer,
+    cache_dir: Any,
+    *,
+    environ: dict[str, str] | None = None,
+    transcribe: bool = True,
+) -> tuple[AnswerSheet, dict[int, str], str]:
+    """转写（可选）→ 生成答案单。
+
+    返回 ``(答案单, 转写文本, 说明)``；说明是给控制台看的一句话（转写了没有、为什么）。
+    """
+    import asyncio
+
+    from kedaibiao.platforms.itest import stt
+
+    transcripts: dict[int, str] = {}
+    note = ""
+    if transcribe and any(s.audios for s in paper.sections):
+        if not stt.available():
+            note = "听力改用音频转写：未安装 faster-whisper，本次跳过听力。"
+        else:
+            try:
+                transcripts = await asyncio.to_thread(
+                    stt.transcribe_paper, paper, cache_dir, environ=environ
+                )
+            except Exception as exc:  # noqa: BLE001 - 转写失败不该炸掉答题
+                log.warning("听力转写失败: %s", exc)
+                note = f"听力转写失败（{type(exc).__name__}），本次跳过听力。"
+            else:
+                note = (
+                    f"听力已转写 {len(transcripts)} 段音频"
+                    if transcripts else "听力音频转写为空，本次跳过听力。"
+                )
+    sheet = await answer_paper(paper, llm, transcripts=transcripts)
+    return sheet, transcripts, note
 
 
 def answers_json(sheet: AnswerSheet) -> str:

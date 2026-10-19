@@ -491,6 +491,25 @@ python3 scripts/itest_exam.py paper <ksdId>   # 浏览器进窗口 → 设备检
 `finish`** 为准，页面文字只作辅助证据；交卷后 `a.tijiao` 会消失，也可用作
 「已交」的信号。
 
+### 3.10.1 作业页的「提交」也走这条路
+
+「作业」页的提交抽屉（`POST /api/assignments/submit`）对 iTEST 走**原生链路**，
+不走通用三段式（`fetch_questions → answerer → submit`）：
+
+```
+confirm=false（干跑）→ adapter.native_plan()
+    读 data/itest/paper-<号>.json（没有就提示先「进考场取卷」）
+    + data/itest/answers-<号>.json（没有就现场生成，含听力转写）
+    → 返回逐题「打算交什么」+ 缺项清单（needs_human 标红）
+
+confirm=true（真交）→ adapter.native_submit()
+    缺任何一题就**拒绝**（交卷后不能改）
+    → 进考场 → 填答案 → 逐项核验（有不符拒绝）→ 交卷 → 回查服务端 finish
+```
+
+适配器上 `capabilities.submit = True` / `fetch_questions = True`，但通用钩子会
+明确抛 `NotSupportedError`（避免被误当成普通平台跑三段式）。
+
 ### 3.11 AI 答题（大模型接进控制台）
 
 取卷结果会缓存成 JSON，答题动作不碰浏览器、也不重复进考场：
@@ -501,13 +520,13 @@ answers  → data/itest/answers-<考试号>.json    （qid → 字母串 / 整�
 fill / submit 的 answers 参数留空时自动读这份缓存
 ```
 
-**能答什么：**
+**能答什么（2026-10-19 实测 B2U5 全对）：**
 
 | 题型 | 做法 | 可靠性 |
 | --- | --- | --- |
 | 词汇选择/匹配（填空） | 题干里的 `A) …` 释义 + 原句 `[[词]]` → 让模型选字母 | 实测 B2U5 8 题 **全部与人工答案一致** |
 | 翻译 | 中译英，按条数校验 | 语义等价，措辞与人工译文不同属正常 |
-| 短文听力（单选） | **不代答** —— 文字模型听不到音频 | 留空，交卷会因核验缺口拒绝 |
+| 短文听力（单选） | 下载 section 里的 mp3 → 本地 faster-whisper 转写 → 让模型按转写选答案 | 实测 B2U5 三题 **全部与人工答案一致** |
 
 **关键实现点：**
 
@@ -518,6 +537,29 @@ fill / submit 的 answers 参数留空时自动读这份缓存
 - 中途网关踩了两个坑：Cloudflare 对 Python 默认 UA 直接 403（`error code: 1010`），
   所以要带浏览器 UA；该网关的推理模型 `max_tokens` 太小会把额度全花在
   `reasoning_content` 上、`content` 为空。
+
+### 3.12 听力音频转写（`platforms/itest/stt.py`）
+
+iTEST 的听力 section 在试卷 HTML 的 `itest-hear-reslist` 里给出 CDN 直链：
+
+```json
+["https://itestres.unipus.cn/itest-product/574/quesitestmp3/202205/xxxx.mp3","5", …同一个 URL…]
+```
+
+- **公开可下**：不需要登录态，带浏览器 UA + `Referer: https://itestcloud.unipus.cn/` 即可；
+- 一个 section 里常有多个 `itest-hear-reslist`（隐藏占位是 `[]`），要遍历取带 http 的；
+- 转写用 **faster-whisper**（`pip install -e ".[stt]"`，首次自动下模型，默认 `base.en`）：
+  - `KEDAIBIAO_STT_MODEL` / `KEDAIBIAO_STT_DEVICE` / `KEDAIBIAO_STT_COMPUTE` 可调；
+  - CPU + int8，实测 3 段音频（约 7 分钟）**24 秒**转完；
+  - 转写文本进提示词，模型据此回答小题（字母数、字母合法性照旧校验）。
+- **降级**：没装 / 下载失败 / 转写失败都不抛，只把听力题记进 `skipped`，
+  其余题型照答 —— 别让一个可选能力把整条链拖死。
+- 踩坑：PyAV 19 删掉了 `metadata_errors` 参数，而 faster-whisper 还在传，
+  会报 `open() got an unexpected keyword argument 'metadata_errors'`；
+  代码里在进程内把 `av.open` 包了一层丢掉这个参数，不改第三方包。
+
+**答案单缓存会自愈**：早先没转写时生成的答案单缺听力，之后再点「提交」会先检查
+缺项；装了语音模型就重新生成一次，不会一直被「核验缺口」挡住。
 
 ## 4. 待实测清单（需登录态，按优先级）
 

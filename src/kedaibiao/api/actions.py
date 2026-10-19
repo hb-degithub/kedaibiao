@@ -649,7 +649,14 @@ def _itest_runner(adapter: Any) -> Any:
 
 
 def _itest_cache(adapter: Any, kind: str, exam_id: str) -> Path:
-    return _itest_shot_dir(adapter) / f"{kind}-{exam_id}.json"
+    from kedaibiao.platforms.itest import cache
+
+    settings = getattr(adapter.ctx, "settings", None)
+    if kind == "paper":
+        return cache.paper_path(settings, exam_id)
+    if kind == "answers":
+        return cache.answers_path(settings, exam_id)
+    return cache.cache_dir(settings) / f"{kind}-{exam_id}.json"
 
 
 def _itest_cached_answers(adapter: Any, exam_id: str) -> dict[str, str]:
@@ -670,9 +677,9 @@ def _itest_cached_answers(adapter: Any, exam_id: str) -> dict[str, str]:
 
 
 def _itest_shot_dir(adapter: Any) -> Path:
-    settings = getattr(adapter.ctx, "settings", None)
-    base = Path(getattr(settings, "session_dir", "./data/sessions") or "./data/sessions")
-    return base.parent / "itest"
+    from kedaibiao.platforms.itest import cache
+
+    return cache.cache_dir(getattr(adapter.ctx, "settings", None))
 
 
 def _itest_parse_answers(raw: Any) -> dict[str, str]:
@@ -822,7 +829,7 @@ async def _itest_answers(adapter: Any, params: dict[str, Any]) -> dict[str, Any]
 
     不碰平台：只读缓存试卷 + 调模型。听力题不代答（见 answer.py 的说明）。
     """
-    from kedaibiao.platforms.itest.answer import AnswerError, answer_paper
+    from kedaibiao.platforms.itest.answer import AnswerError, build_sheet
     from kedaibiao.platforms.itest.paper import Paper
     from kedaibiao.tasks.llm import LLMAnswerer, LLMConfig
 
@@ -845,15 +852,20 @@ async def _itest_answers(adapter: Any, params: dict[str, Any]) -> dict[str, Any]
         )
     llm = LLMAnswerer(config)
     try:
-        sheet = await answer_paper(paper, llm)
+        sheet, transcripts, stt_note = await build_sheet(
+            paper, llm, _itest_shot_dir(adapter),
+            environ=getattr(adapter.ctx, "environ", {}) or {},
+        )
     except AnswerError as exc:
         raise ActionInputError(f"AI 答案不合法：{exc}") from exc
 
     out = _itest_cache(adapter, "answers", exam_id)
     try:
         out.write_text(
-            json.dumps({"answers": sheet.answers, "skipped": sheet.skipped},
-                       ensure_ascii=False, indent=1),
+            json.dumps({
+                "answers": sheet.answers, "skipped": sheet.skipped,
+                "transcripts": {str(k): v for k, v in transcripts.items()},
+            }, ensure_ascii=False, indent=1),
             encoding="utf-8",
         )
     except OSError:  # noqa: BLE001
@@ -875,10 +887,11 @@ async def _itest_answers(adapter: Any, params: dict[str, Any]) -> dict[str, Any]
         })
     note = (
         f"模型 {config.model}；答出 {sheet.answered} 题、跳过 {len(sheet.skipped)} 题。"
-        "答案已存 " + str(out) + "，「填答案 / 交卷」留空 answers 就会用它。"
+        + (f" {stt_note}" if stt_note else "")
+        + " 答案已存 " + str(out) + "，「填答案 / 交卷」留空 answers 就会用它。"
     )
     if sheet.skipped:
-        note += " 跳过的主要是听力 —— 文字模型听不到音频，需要转写或人工补。"
+        note += " 跳过的题需要人工补（或见上一条说明）。"
     return table(
         platform=name,
         action="answers",

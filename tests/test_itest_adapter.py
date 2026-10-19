@@ -4,7 +4,7 @@
 - 登录链路的两步共用一个 cookie 会话（规格要求）；
 - 考试列表解析对字段名差异有容错，但不瞎猜；
 - judgeEntry 只签发令牌，不做任何写操作；
-- 能力声明如实反映「不取卷、不交卷」。
+- 能力声明如实：取题/交卷都做，但走浏览器原生链路（native_*），不走通用三段式。
 """
 
 from __future__ import annotations
@@ -14,13 +14,19 @@ import unittest
 
 from kedaibiao.core.models import Credentials
 from kedaibiao.net.http import HttpClient, Response
-from kedaibiao.platforms.base import AdapterContext, Capabilities
+from kedaibiao.platforms.base import AdapterContext
 from kedaibiao.platforms.itest.adapter import ItestAdapter
 from kedaibiao.platforms.itest.client import (
     ItestAuthError,
     ItestError,
     parse_exam_list,
 )
+
+
+def _assignment(**kwargs: object):
+    from kedaibiao.core.models import Assignment, TaskKind
+
+    return Assignment(remote_id="1000106858", title="练习卷", kind=TaskKind.EXAM, **kwargs)
 
 
 class FakeTransport:
@@ -88,12 +94,26 @@ class TestParseExamList(unittest.TestCase):
 
 
 class TestCapabilities(unittest.TestCase):
-    def test_declares_no_questions_and_no_submit(self) -> None:
+    def test_capabilities_and_native_flow(self) -> None:
         caps = ItestAdapter.capabilities
-        self.assertFalse(caps.fetch_questions, "取卷要进答题窗口并开始计时，不做")
-        self.assertFalse(caps.submit, "交卷是不可逆写操作，不做")
+        # 取题/交卷都做，但**不走通用三段式**：浏览器链路由 native_* 承担
+        self.assertTrue(caps.fetch_questions)
+        self.assertTrue(caps.submit)
+        self.assertTrue(getattr(ItestAdapter, "native_submit_flow", False))
         self.assertFalse(caps.course_playback, "考试平台没有刷课")
         self.assertTrue(caps.login)
+
+    def test_generic_hooks_refuse_clearly(self) -> None:
+        """通用 fetch_questions / submit 必须明确拒绝，别假装能跑。"""
+        import asyncio
+
+        from kedaibiao.platforms.base import NotSupportedError
+
+        adapter = ItestAdapter()
+        with self.assertRaises(NotSupportedError):
+            asyncio.run(adapter.fetch_questions(_assignment()))
+        with self.assertRaises(NotSupportedError):
+            asyncio.run(adapter.submit(_assignment(), []))
 
     def test_is_registered_platform(self) -> None:
         self.assertEqual(ItestAdapter.name, "itest")

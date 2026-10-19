@@ -266,13 +266,16 @@ def parse_paper(html: str) -> Paper:
             part2=_attr(raw, "part2"),
             section_type=_attr(raw, "sectionType"),
         )
-        audios = re.search(r'itest-hear-reslist[^>]*>\s*(\[[^\]]*\])', raw)
-        if audios:
+        # 一个 section 里可能有多个 itest-hear-reslist（隐藏的占位是 []，真有音频的才带
+        # URL），所以要**遍历全部**、只取带 http 的那些，不能只取第一个。
+        for found in re.finditer(r'itest-hear-reslist[^>]*>\s*(\[[^\]]*\])', raw):
             try:
-                items = json.loads(audios.group(1))
-                section.audios = [x for x in items if isinstance(x, str) and x.startswith("http")]
+                items = json.loads(found.group(1))
             except json.JSONDecodeError:
-                pass
+                continue
+            for item in items:
+                if isinstance(item, str) and item.startswith("http") and item not in section.audios:
+                    section.audios.append(item)
         section.questions = _questions(raw)
         paper.sections.append(section)
 

@@ -94,6 +94,41 @@ class TestAnswerPaper(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(skipped_writes), 2, "整批跳过并逐题记录")
         self.assertTrue(all("条数不对" in item["reason"] for item in skipped_writes))
 
+    async def test_listening_answered_when_transcript_given(self) -> None:
+        """给了转写就把听力题也答了，并且不再进 skipped。"""
+        paper = make_paper()
+        radio_q = paper.sections[1].questions[0]
+        sheet = await answer_paper(
+            paper, FakeLLM(letters=["A", "C"]),
+            transcripts={paper.sections[1].index: "They played hide-and-seek in the street."},
+        )
+        self.assertEqual(sheet.answers.get(radio_q.qid), "A C")
+        self.assertNotIn(radio_q.qid, [i["qid"] for i in sheet.skipped])
+
+    async def test_listening_prompt_carries_transcript(self) -> None:
+        paper = make_paper()
+        llm = FakeLLM(letters=["A", "C"])
+        await answer_paper(paper, llm,
+                           transcripts={paper.sections[1].index: "UNIQUE-TRANSCRIPT-MARK"})
+        radio_prompt = [p for p in llm.prompts if "UNIQUE-TRANSCRIPT-MARK" in p]
+        self.assertTrue(radio_prompt, "听力提示词里必须带上转写文本")
+
+    async def test_listening_without_transcript_is_skipped_with_reason(self) -> None:
+        paper = make_paper()
+        sheet = await answer_paper(paper, FakeLLM())
+        radio = [i for i in sheet.skipped if i["kind"] == "radio"]
+        self.assertEqual(len(radio), 1)
+        self.assertIn("转写", radio[0]["reason"])
+
+    async def test_listening_wrong_letter_count_is_skipped(self) -> None:
+        paper = make_paper()
+        sheet = await answer_paper(
+            paper, FakeLLM(letters=["A"]),  # 这题有 2 个小题
+            transcripts={paper.sections[1].index: "text"},
+        )
+        radio = [i for i in sheet.skipped if i["kind"] == "radio"]
+        self.assertTrue(any("字母数" in i["reason"] for i in radio), radio)
+
     async def test_prompt_contains_marked_word_and_options(self) -> None:
         llm = FakeLLM()
         await answer_paper(make_paper(), llm)
