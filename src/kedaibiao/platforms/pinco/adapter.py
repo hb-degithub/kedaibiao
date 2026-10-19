@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import http.cookiejar
 import logging
+import os
 from typing import Any
 
 from kedaibiao.core.models import (
@@ -49,6 +51,75 @@ from kedaibiao.platforms.pinco.solving import PlanBuilder, build_answerer
 from kedaibiao.tasks.answerer import Answerer
 
 log = logging.getLogger(__name__)
+
+#: 浏览器会话 cookie 的环境变量名。
+#:
+#: 为什么需要它：应用层 RPC 的 ``csrfToken`` 与浏览器会话上下文绑定，**单个
+#: authorization 值不够** —— 实测只带 authorization 调业务接口回
+#: ``403 missing csrf token``，于是 CLI/控制台那条路根本走不通（凭据层只认
+#: ``KEDAIBIAO_<平台>_TOKEN``）。所以要把浏览器里那一串 cookie 整体搬过来。
+COOKIE_ENV = "KEDAIBIAO_PINCO_COOKIE"
+
+#: 这些 cookie 挂在根域 ``.seewo.com`` 上（实测：``setToken`` 就是往根域写的），
+#: 其余按品课站点域装。装错域的话浏览器不会发，服务端自然看不到。
+_ROOT_DOMAIN_COOKIES = frozenset({"x-token", "x-samesite-none-token", "x-username"})
+
+#: 用来识别「这一串是 cookie」而不是「一个 authorization 值」的特征串。
+#: 用白名单而不是「含 = 就是 cookie」——``Bearer``/JWT 也可能含 ``=``（base64 填充），
+#: 误判成 authorization 只会得到一个清楚的 403，误判成 cookie 则会静默装错东西。
+_COOKIE_HINTS = ("csrfToken", "x-token", "x-samesite-none-token", "x-username")
+
+
+def looks_like_cookie_header(value: str) -> bool:
+    """判断一个字符串是「整串 cookie」还是「单个 authorization 值」。"""
+    text = value or ""
+    return any(f"{name}=" in text for name in _COOKIE_HINTS)
+
+
+def parse_cookie_header(header: str) -> dict[str, str]:
+    """把 ``a=1; b=2`` 解析成字典。丢弃没有 ``=`` 的片段。"""
+    out: dict[str, str] = {}
+    for part in (header or "").split(";"):
+        name, sep, value = part.strip().partition("=")
+        if sep and name.strip():
+            out[name.strip()] = value.strip()
+    return out
+
+
+def _install_cookies(ctx: AdapterContext, cookies: dict[str, str]) -> int:
+    """把 cookie 装进传输层的 cookie 罐，返回装了几条。
+
+    传输层没有罐子（单元测试里的假 Transport）就返回 0 —— 但 ``csrfToken``
+    仍然会通过 ``x-csrf-token`` 头发出去，所以假 Transport 下依然可测。
+    """
+    jar = getattr(getattr(getattr(ctx, "http", None), "transport", None), "cookies", None)
+    if jar is None:
+        return 0
+    installed = 0
+    for name, value in cookies.items():
+        domain = ".seewo.com" if name in _ROOT_DOMAIN_COOKIES else "pinco.seewo.com"
+        jar.set_cookie(
+            http.cookiejar.Cookie(
+                version=0,
+                name=name,
+                value=value,
+                port=None,
+                port_specified=False,
+                domain=domain,
+                domain_specified=True,
+                domain_initial_dot=domain.startswith("."),
+                path="/",
+                path_specified=True,
+                secure=True,
+                expires=None,
+                discard=False,
+                comment=None,
+                comment_url=None,
+                rest={},
+            )
+        )
+        installed += 1
+    return installed
 
 
 class PincoAdapter(PlatformAdapter):
@@ -105,6 +176,41 @@ class PincoAdapter(PlatformAdapter):
         self._session = PincoSession(username=username, logged_in=True, storage=storage)
         return self._session
 
+    def adopt_cookies(self, cookie_header: str, *, username: str = "") -> PincoSession:
+        """接管浏览器导出的**整串 cookie** —— 当前唯一真正能打通业务接口的方式。
+
+        做两件事：
+
+        1. 把所有 cookie 装进传输层的 cookie 罐（服务端从 ``Cookie`` 头读它们）；
+        2. 取出 ``csrfToken`` 交给客户端，它会放进 ``x-csrf-token`` 头。
+
+        **刻意不装 authorization**：实测把 SSO token 当 ``x-token`` / authorization
+        发出去会让接口行为变差（``GetV1CourseStudentworkbench`` 直接失败），而
+        cookie 串里本来就有 ``x-token`` —— 与浏览器保持一致最安全。
+        """
+        cookies = parse_cookie_header(cookie_header)
+        if not cookies:
+            raise PincoError(
+                "cookie 串解析为空。需要形如 `csrfToken=…; x-token=…` 的内容："
+                "浏览器 DevTools → Network → 任一 api.json 请求 → 复制请求头里的 "
+                "Cookie 整段。"
+            )
+        csrf = cookies.get(ep.CSRF_COOKIE, "")
+        if not csrf:
+            raise PincoError(
+                f"cookie 串里没有 {ep.CSRF_COOKIE} —— 那一项才是应用层鉴权的关键。"
+                "请确认复制的是 pinco.seewo.com 下的 Cookie（先打开一次学生端页面再复制）。"
+            )
+        installed = _install_cookies(self.ctx, cookies)
+        self._session = PincoSession(username=username, logged_in=True, storage={ep.CSRF_COOKIE: csrf})
+        self.log.info(
+            "已接管品课浏览器会话：装 %d 条 cookie，csrf 长度 %d，用户 %s",
+            installed,
+            len(csrf),
+            username or "<无用户名>",
+        )
+        return self._session
+
     def client(self) -> PincoClient:
         """构造请求客户端。每次都新建：它只持有引用，没有需要复用的状态。"""
         storage: dict[str, Any] = self._session.storage if self._session else {}
@@ -115,20 +221,42 @@ class PincoAdapter(PlatformAdapter):
         )
 
     async def login(self, credentials: Credentials) -> bool:
-        """登录。两条会话来源，主路径是接管浏览器会话。
+        """登录。三条会话来源，**只有「整串浏览器 cookie」那条真正能打通业务接口**。
 
-        (a) ``credentials.extra["token"]``（``KEDAIBIAO_PINCO_TOKEN``）→ 直接接管，
-            应用层可用；
-        (b) 账号密码 → 走实测跑通的 SSO 流程（:mod:`sso`）。**但它只解决身份层**：
-            应用层 RPC 的 csrf 与浏览器会话上下文绑定，纯 HTTP 拿不到（实测回
-            ``403 invalid csrf token``）。因此 (b) 成功后仍可能调不通业务接口，
-            这时请用浏览器导出的 cookie 调 :meth:`adopt_session`。
+        1. **整串浏览器 cookie（主路径）** —— 依次从三处取，先命中先用：
+           - ``credentials.extra["cookie"]``：凭据层认这个键时走 ``.env``；
+           - ``os.environ[KEDAIBIAO_PINCO_COOKIE]``：命令行内联导出即可用；
+           - ``credentials.extra["token"]`` **且它看起来是 cookie 串**：
+             ``KEDAIBIAO_PINCO_TOKEN="csrfToken=…; x-token=…"`` —— 这样不必等
+             共享凭据层新增键，今天就能从 ``.env`` 用起来。
+        2. ``credentials.extra["token"]`` 是普通 authorization → 只装这个头。
+           **实测这条路调不通业务接口**（回 ``403 missing csrf token``）；保留它
+           是为了兼容，并给出能照做的报错。
+        3. 账号密码 → SSO（:mod:`sso`，实测跑通）。只解决身份层，之后仍可能因缺
+           csrf 被应用层拒绝。
+
+        实测依据：应用层 RPC 的 ``csrfToken`` 与浏览器会话上下文绑定，纯 HTTP
+        复刻不出来。所以要让「抓取作业 / 学习任务」真的可用，必须把浏览器那份
+        cookie 整体搬过来 —— 这正是 CLI 与控制台唯一走得通的路。
         """
+        raw = (
+            credentials.extra.get("cookie", "")
+            or os.environ.get(COOKIE_ENV, "")
+            or credentials.extra.get("token", "")
+        ).strip()
+        if raw and looks_like_cookie_header(raw):
+            self.adopt_cookies(raw, username=credentials.username)
+            return True
+
         token = credentials.extra.get("token", "").strip()
         if token:
             self.adopt_session(authorization=token, username=credentials.username)
-            self.log.info(
-                "已接管品课会话（authorization 注入）：%s", credentials.username or "<无用户名>"
+            self.log.warning(
+                "只装到 authorization（%s）：实测这条调不通应用层业务接口，会回 "
+                "403 missing csrf token。抓取请改用整串 cookie（%s，或把 cookie 串"
+                "塞进 KEDAIBIAO_PINCO_TOKEN）。",
+                credentials.username or "<无用户名>",
+                COOKIE_ENV,
             )
             return True
 

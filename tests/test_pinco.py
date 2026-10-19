@@ -20,7 +20,9 @@ import base64
 import hashlib
 import pathlib
 import json
+import os
 import unittest
+import unittest.mock
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,7 +40,7 @@ from kedaibiao.core.models import (
     QuestionType,
     TaskKind,
 )
-from kedaibiao.net.http import HttpClient, Response
+from kedaibiao.net.http import HttpClient, Response, UrllibTransport
 from kedaibiao.notify.base import Notifier
 from kedaibiao.platforms.base import AdapterContext, NotSupportedError
 from kedaibiao.platforms.pinco import crypto
@@ -52,6 +54,7 @@ from kedaibiao.platforms.pinco import (
     solving,
 )
 from kedaibiao.platforms.pinco.adapter import PincoAdapter
+from kedaibiao.platforms.pinco import adapter as adapter_mod
 from kedaibiao.platforms.pinco.errors import (
     PincoApiError,
     PincoEndpointUnavailable,
@@ -2304,6 +2307,95 @@ class TestFixtureProvenance(unittest.TestCase):
             self.assertIn(field, data, f"真实抓包的 REST 信封必须保留 {field!r}，不要顺手精简")
         self.assertEqual(data["code"], 0)
         self.assertEqual(data["statusCode"], 200)
+
+
+class TestSessionInjection(unittest.IsolatedAsyncioTestCase):
+    """会话注入 —— 这是 CLI / 控制台**唯一走得通**的那条路。
+
+    背景：凭据层只给得了 authorization（``KEDAIBIAO_<平台>_TOKEN``），而应用层
+    RPC 要的是 ``csrfToken``。实测只带 authorization 调
+    ``GetV1CourseStudentworkbench`` 回 ``403 missing csrf token`` —— 也就是
+    适配器「谁也调不动」，``kedaibiao action pinco courses`` 直接失败。
+    所以必须支持把浏览器导出的一整串 cookie 搬进来。
+    """
+
+    HEADER = "csrfToken=csrf-123; x-token=tok-456; x-username=u%40x; acw_tc=abc"
+
+    def test_parse_cookie_header(self) -> None:
+        parsed = adapter_mod.parse_cookie_header(self.HEADER)
+        self.assertEqual(parsed["csrfToken"], "csrf-123")
+        self.assertEqual(parsed["x-token"], "tok-456")
+        self.assertEqual(parsed["acw_tc"], "abc")
+        self.assertEqual(adapter_mod.parse_cookie_header(""), {})
+        self.assertEqual(adapter_mod.parse_cookie_header("garbage-without-equals"), {})
+
+    def test_cookie_header_is_distinguished_from_authorization(self) -> None:
+        """authorization 值（含 base64 填充的 ``=``）不能被误判成 cookie 串。"""
+        self.assertTrue(adapter_mod.looks_like_cookie_header(self.HEADER))
+        self.assertTrue(adapter_mod.looks_like_cookie_header("csrfToken=only"))
+        self.assertFalse(
+            adapter_mod.looks_like_cookie_header("Bearer eyJhbGciOiJIUzI1NiJ9.abc==")
+        )
+        self.assertFalse(adapter_mod.looks_like_cookie_header("YWJjZGVmZ2hpamtsbW5vcA=="))
+
+    async def test_adopt_cookies_requires_csrf(self) -> None:
+        adapter, _, _, _ = make_adapter(login=False)
+        with self.assertRaises(PincoError) as cm:
+            adapter.adopt_cookies("x-token=only-token")
+        self.assertIn(ep.CSRF_COOKIE, str(cm.exception))
+
+    async def test_adopt_cookies_installs_into_transport_jar_with_right_domains(self) -> None:
+        """装错域浏览器就不会发 —— 根域 cookie 必须挂 ``.seewo.com``。"""
+        transport = UrllibTransport()
+        adapter = PincoAdapter(AdapterContext(http=HttpClient(transport=transport)))
+        adapter.adopt_cookies(self.HEADER)
+
+        pairs = {(c.domain, c.name) for c in transport.cookies}
+        self.assertIn(("pinco.seewo.com", ep.CSRF_COOKIE), pairs)
+        self.assertIn((".seewo.com", "x-token"), pairs)
+        self.assertIn((".seewo.com", "x-username"), pairs)
+        # csrf 同时进了会话存储：客户端会把它放进 x-csrf-token 头
+        self.assertEqual(adapter.session.storage[ep.CSRF_COOKIE], "csrf-123")
+        self.assertNotIn(ep.HEADER_AUTHORIZATION, adapter.session.storage)
+
+    async def test_login_accepts_cookie_string_in_token(self) -> None:
+        """cookie 串塞进 ``KEDAIBIAO_PINCO_TOKEN`` 也能用 —— ``.env`` 今天就生效。"""
+        adapter, _, _, _ = make_adapter(login=False)
+        creds = Credentials(username="stu", password="", extra={"token": self.HEADER})
+        self.assertTrue(await adapter.login(creds))
+        self.assertEqual(adapter.session.storage[ep.CSRF_COOKIE], "csrf-123")
+
+    async def test_login_reads_cookie_from_dedicated_env(self) -> None:
+        adapter, _, _, _ = make_adapter(login=False)
+        creds = Credentials(username="stu", password="", extra={})
+        with unittest.mock.patch.dict(
+            os.environ, {adapter_mod.COOKIE_ENV: self.HEADER}, clear=False
+        ):
+            self.assertTrue(await adapter.login(creds))
+        self.assertEqual(adapter.session.storage[ep.CSRF_COOKIE], "csrf-123")
+
+    async def test_cookie_env_beats_plain_token(self) -> None:
+        """两处都给时，cookie 必须赢 —— 否则又会退回那条走不通的路。"""
+        adapter, _, _, _ = make_adapter(login=False)
+        creds = Credentials(
+            username="stu", password="", extra={"token": "Bearer plain-token"}
+        )
+        with unittest.mock.patch.dict(
+            os.environ, {adapter_mod.COOKIE_ENV: self.HEADER}, clear=False
+        ):
+            self.assertTrue(await adapter.login(creds))
+        self.assertEqual(adapter.session.storage[ep.CSRF_COOKIE], "csrf-123")
+
+    async def test_plain_authorization_still_accepted_with_warning(self) -> None:
+        """普通 authorization 仍然接受（兼容），但要留下「这条路调不通」的告警。"""
+        adapter, _, _, _ = make_adapter(login=False)
+        creds = Credentials(username="stu", password="", extra={"token": "Bearer plain-token"})
+        with self.assertLogs("kedaibiao.pinco", level="WARNING") as logs:
+            self.assertTrue(await adapter.login(creds))
+        self.assertIn("csrf", " ".join(logs.output).lower())
+        self.assertEqual(
+            adapter.session.storage[ep.HEADER_AUTHORIZATION], "Bearer plain-token"
+        )
 
 
 if __name__ == "__main__":
