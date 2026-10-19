@@ -2166,14 +2166,14 @@
   function fetchDrawerLog(plt) {
     var pre = $('drawer-plog-log');
     if (!pre) { return; }
-    api('/api/platforms/' + encodeURIComponent(plt) + '/logs?limit=80')
+    api('/api/platforms/' + encodeURIComponent(plt) + '/logs?limit=200')
       .then(function (body) {
         var node = $('drawer-plog-log');
         if (!node) { return; }
         paintLog(node, (body && body.logs) || []);
         var hint = $('drawer-plog-hint');
         if (hint) {
-          hint.textContent = '共 ' + ((body && body.total) || 0) + ' 行（显示最近 80 行）';
+          hint.textContent = '共 ' + ((body && body.total) || 0) + ' 行（显示最近 200 行）';
         }
       })
       .catch(function (e) {

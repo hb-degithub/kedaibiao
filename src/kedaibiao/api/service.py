@@ -632,6 +632,20 @@ class ConsoleService:
             lines.append({"at": _now(), "level": str(level), "text": str(text)[:600]})
             del lines[:-PLATFORM_LOG_HISTORY]
 
+    def _plog_long(self, platform: str, level: str, text: str, *, max_chars: int = 6000) -> None:
+        """把可能很长的内容（提示词 / 作文正文 / 批注）分行写进平台日志。
+
+        终端面板里要能直接读到「我让它怎么改」「它改成了什么」，
+        所以这里按行切、每行限长，而不是整段截断成一行。
+        """
+        body = str(text or "")[:max_chars]
+        for raw in body.splitlines() or [""]:
+            line = raw.rstrip()
+            while len(line) > 300:
+                self._plog(platform, level, line[:300])
+                line = "    " + line[300:]
+            self._plog(platform, level, line)
+
     def platform_logs(self, platform: str, limit: int = 200) -> dict[str, Any]:
         scope = self._check_platform(platform)
         with self._lock:
@@ -1599,8 +1613,16 @@ class ConsoleService:
                         topic=topic, word_range=word_range, essay=current,
                         snapshot=snapshot, attempt=next_attempt,
                     )
+                    # 提示词、改后正文都进日志 —— 用户要能在这里直接看到「让它怎么改」和「改成了什么」
+                    self._plog(platform, "info",
+                               f"— 第 {next_attempt} 轮改写提示词（{len(prompt)} 字）—")
+                    self._plog_long(platform, "info", prompt, max_chars=6000)
                     text = await llm.complete(REWRITE_SYSTEM, prompt)
-                    return _clean_essay(text)
+                    cleaned = _clean_essay(text)
+                    self._plog(platform, "ok",
+                               f"— 第 {next_attempt} 轮改写完成：{len(cleaned.split())} 词 —")
+                    self._plog_long(platform, "ok", cleaned, max_chars=6000)
+                    return cleaned
 
             def on_event(event: dict[str, Any]) -> None:
                 with self._lock:
@@ -1722,6 +1744,41 @@ class ConsoleService:
                 return str(getattr(row, "eid", "") or "")
         return ""
 
+    def _log_snapshot(self, platform: str, rid: str, eid: str, snap: Any) -> None:
+        """把「分数 + 四维 + 总评 + 逐条批注 + 正文」写进平台日志。
+
+        控制台的执行日志面板要能直接看到平台给了什么评价、作文长什么样 ——
+        这是判断「按什么改写」的依据，不该只留在界面卡片里。
+        """
+        data = snap.to_dict() if hasattr(snap, "to_dict") else dict(snap or {})
+        score = data.get("score")
+        if score is None:
+            self._plog(platform, "warn",
+                       f"· 取分 {rid}/{eid}：暂无分数（{data.get('raw_state') or '待分析'}）")
+            return
+        self._plog(platform, "ok",
+                   f"· 取分 {rid}/{eid}：{score} / {data.get('full_marks') or '—'} 分"
+                   f"（{data.get('raw_state') or '—'}）")
+        dims = data.get("dimensions") or []
+        if dims:
+            self._plog(platform, "info", "  维度：" + "，".join(
+                f"{d.get('name')} {round(float(d.get('ratio') or 0) * 100)}%"
+                for d in dims
+            ))
+        overall = str(data.get("overall_comment") or "").strip()
+        if overall:
+            self._plog_long(platform, "info", "  总评：" + overall)
+        feedback = data.get("feedback_lines") or []
+        if feedback:
+            self._plog(platform, "info", f"  批注 {len(feedback)} 条：")
+            for item in feedback[:20]:
+                self._plog_long(platform, "info", "    - " + str(item), max_chars=600)
+        essay = str(data.get("essay_text") or "").strip()
+        if essay:
+            self._plog(platform, "info",
+                       f"  作文正文（{len(essay.split())} 词）：")
+            self._plog_long(platform, "info", essay, max_chars=4000)
+
     def fetch_essay_grade(self, platform: str, rid: str, eid: str, *,
                           viewer: Viewer | None = None,
                           trigger_analysis: bool = True) -> dict[str, Any]:
@@ -1745,6 +1802,7 @@ class ConsoleService:
                     adapter, http, base="https://www.pigai.org", rid=rid, eid=eid))
             else:
                 snap = asyncio.run(grading.fetch_snapshot(adapter, rid=rid, eid=eid))
+            self._log_snapshot(scope, rid, eid, snap)
             return snap.to_dict()
         finally:
             asyncio.run(adapter.close())
@@ -1792,6 +1850,7 @@ class ConsoleService:
                 }
             out = snap.to_dict()
             out.update({"timed_out": False})
+            self._log_snapshot(scope, rid, eid, snap)
             self._plog(scope, "ok",
                        f"→ 出分 {out.get('score') if out.get('graded') else '未出分'}"
                        f"（{out.get('raw_state') or '—'}）")

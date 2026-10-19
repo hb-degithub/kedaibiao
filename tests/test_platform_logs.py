@@ -142,3 +142,57 @@ class TestAutoJobLogsMirror(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSnapshotAndRewriteLogging(unittest.TestCase):
+    """分数、评价、正文、改写提示词与结果都要能落到平台日志里（用户要能看见）。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.service = make_service(Path(self.tmp.name))
+
+    class _Snap:
+        def to_dict(self):
+            return {
+                "score": 83.5, "full_marks": 100.0, "raw_state": "未截止",
+                "dimensions": [{"name": "词汇", "ratio": 0.94},
+                               {"name": "内容相关", "ratio": 0.53}],
+                "overall_comment": "行文稍欠流畅，应适当增加连接词的使用。",
+                "feedback_lines": ["[confusion] 易混词汇", "[i_suggest.word] 换词"],
+                "essay_text": "This is the essay body. It has two sentences.",
+            }
+
+    def test_snapshot_details_logged(self) -> None:
+        self.service._log_snapshot("pigai", "1000001", "9000001", self._Snap())
+        text = "\n".join(x["text"] for x in self.service.platform_logs("pigai")["logs"])
+        self.assertIn("83.5", text)
+        self.assertIn("维度：", text)
+        self.assertIn("词汇 94%", text)
+        self.assertIn("总评：", text)
+        self.assertIn("批注 2 条", text)
+        self.assertIn("易混词汇", text)
+        self.assertIn("作文正文", text)
+        self.assertIn("This is the essay body", text)
+
+    def test_ungraded_snapshot_logs_state_only(self) -> None:
+        class Snap:
+            def to_dict(self):
+                return {"score": None, "raw_state": "待分析"}
+
+        self.service._log_snapshot("pigai", "1", "2", Snap())
+        logs = self.service.platform_logs("pigai")["logs"]
+        self.assertTrue(any(x["level"] == "warn" and "暂无分数" in x["text"] for x in logs))
+
+    def test_plog_long_splits_and_keeps_content(self) -> None:
+        body = "\n".join(f"第 {i} 行内容" for i in range(5))
+        self.service._plog_long("pigai", "info", body)
+        logs = self.service.platform_logs("pigai")["logs"]
+        self.assertEqual(len(logs), 5)
+        self.assertIn("第 4 行内容", logs[-1]["text"])
+
+    def test_plog_long_wraps_very_long_line(self) -> None:
+        self.service._plog_long("pigai", "info", "长" * 700, max_chars=1000)
+        logs = self.service.platform_logs("pigai")["logs"]
+        self.assertGreaterEqual(len(logs), 3, "超长行要拆成多行，不能整段截断")
+        self.assertTrue(all(len(x["text"]) <= 300 for x in logs))
