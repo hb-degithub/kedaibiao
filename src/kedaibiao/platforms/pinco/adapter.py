@@ -290,6 +290,17 @@ class PincoAdapter(PlatformAdapter):
     async def is_logged_in(self) -> bool:
         return self._session is not None and self._session.logged_in
 
+    def _jar_cookie_header(self) -> str:
+        """从传输层 cookie 罐重建 cookie 串（用于会话落盘）。"""
+        jar = getattr(getattr(getattr(self.ctx, "http", None), "transport", None), "cookies", None)
+        if jar is None:
+            return ""
+        pairs: dict[str, str] = {}
+        for cookie in jar:
+            if cookie.name and cookie.value is not None:
+                pairs[cookie.name] = cookie.value
+        return "; ".join(f"{k}={v}" for k, v in pairs.items())
+
     def export_session(self) -> dict[str, Any] | None:
         """导出会话（令牌在 ``storage`` 里，**不是密码**）。
 
@@ -299,9 +310,12 @@ class PincoAdapter(PlatformAdapter):
         """
         if self._session is None or not self._session.logged_in:
             return None
+        header = self._jar_cookie_header()
         return {
             "username": self._session.username,
             "logged_in": True,
+            # 整串 cookie 是**主路径**（业务接口要 csrf，纯 HTTP 造不出来）
+            "cookie_header": header,
             "storage": dict(self._session.storage),
             "expires_at": (
                 self._session.expires_at.isoformat() if self._session.expires_at else None
@@ -309,7 +323,19 @@ class PincoAdapter(PlatformAdapter):
         }
 
     def import_session(self, data: dict[str, Any]) -> bool:
-        """从导出的会话恢复；``storage`` 为空就当没恢复。"""
+        """从导出的会话恢复。
+
+        优先恢复整串 cookie（``adopt_cookies``，业务接口唯一走得通的路）；
+        没有 cookie 串才退回只装 storage（仅身份层，业务接口可能 403）。
+        """
+        header = str(data.get("cookie_header") or "").strip()
+        if header:
+            try:
+                self.adopt_cookies(header, username=str(data.get("username") or ""))
+                return True
+            except Exception as exc:  # noqa: BLE001 - cookie 串损坏就退回下一条路
+                self.log.debug("从 cookie 串恢复会话失败: %s", exc)
+
         storage = data.get("storage") or {}
         if not isinstance(storage, dict) or not storage:
             return False

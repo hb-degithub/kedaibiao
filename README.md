@@ -157,6 +157,26 @@ PYTHONPATH=src python3 -m kedaibiao action pigai essay rid=200000001 eid=1000002
 > （`table` / `detail` / `message`），前端只按 `kind` 渲染。
 > 接口见 [docs/web-console-api.md](docs/web-console-api.md#L237)。
 
+### 需要浏览器会话的平台（如 希沃品课）
+
+有的平台业务接口要求**浏览器会话 cookie**（csrf 与浏览器上下文绑定，纯 HTTP
+造不出来）。这类平台用 `capture` 从你自己的浏览器登录态里抓：
+
+```bash
+# 1) 用 Chrome 打开该平台并登录一次（过掉验证码/扫码）
+# 2) 完全退出 Chrome
+# 3) 用它的用户目录抓取（headless，不需要显示器）
+PYTHONPATH=src python3 -m kedaibiao capture pinco --profile ~/.config/google-chrome
+
+# 也可以手贴（浏览器 DevTools → Network → 任一 api 请求 → Cookie 头）
+PYTHONPATH=src python3 -m kedaibiao capture pinco --cookie "csrfToken=…; x-token=…"
+```
+
+**抓完会真打一次只读接口验证** —— 因为未登录的登录页也会下发匿名 `csrfToken`，
+只看「有没有这个 cookie」会把匿名会话当成登录成功。验证不过会删掉并报错。
+
+> 抓取不接触密码、不碰验证码：用的是你已经登录过的浏览器用户目录。
+
 ### 可选依赖
 
 ```bash

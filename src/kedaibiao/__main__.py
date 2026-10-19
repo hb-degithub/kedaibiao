@@ -76,6 +76,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="额外允许的 Host 头（绑非回环地址、且打算用主机名访问时用）",
     )
 
+    cap_p = sub.add_parser(
+        "capture", parents=[root_parent],
+        help="从浏览器用户目录抓取平台 cookie（用于需要 csrf 会话的平台）",
+    )
+    cap_p.add_argument("platform", help="平台机器名")
+    cap_p.add_argument("--account", type=int, default=0, help="账号 id（默认用该平台的当前号）")
+    cap_p.add_argument(
+        "--profile", default="",
+        help="已登录该站点的 Chrome 用户目录（不给则无法抓到登录态）",
+    )
+    cap_p.add_argument("--url", default="", help="要打开的页面（默认按平台推断）")
+    cap_p.add_argument(
+        "--cookie", default="",
+        help="手动粘贴整串 cookie（形如 'csrfToken=…; x-token=…'），跳过浏览器抓取",
+    )
+    cap_p.add_argument("--require", default="", help="逗号分隔的必需 cookie 名，例如 csrfToken")
+    cap_p.add_argument("--wait", type=float, default=4.0, help="打开页面后等待秒数")
+    cap_p.add_argument("--browser", default="", help="浏览器可执行文件路径")
+    cap_p.add_argument("--show", action="store_true", help="列出抓到的 cookie 名（值不显示）")
+    cap_p.add_argument(
+        "--no-verify", action="store_true",
+        help="不验证会话是否真的能用（默认会真打一次只读接口确认）",
+    )
+
     actions_p = sub.add_parser(
         "actions", parents=[root_parent], help="列出某个平台的只读动作"
     )
@@ -396,6 +420,188 @@ def _service(root: str):
     return ConsoleService(root=root)
 
 
+#: 各平台的抓取入口页面（抓 cookie 用）
+CAPTURE_URLS = {
+    "pinco": "https://pinco.seewo.com/student/workbench",
+    "pigai": "https://www.pigai.org/",
+    "unipus": "https://ucontent.unipus.cn/",
+}
+#: 各平台的关键 cookie 名（缺了就等于没登录到应用层）
+CAPTURE_REQUIRED = {
+    "pinco": ("csrfToken",),
+}
+
+
+def _verify_captured_session(platform: str, root: str, session_file: str) -> tuple[bool, str]:
+    """用抓到的 cookie 真打一次只读接口，确认会话确实可用。
+
+    为什么必须验证：**未登录的登录页也会下发一个匿名 csrfToken** ——
+    只看「有没有关键 cookie」会把匿名会话当成有效登录，用户以为抓成功了，
+    实际一读数据就 403。只有真调通一个受保护接口才算数。
+    """
+    import asyncio
+
+    from kedaibiao.config.settings import load_settings
+    from kedaibiao.runtime import build_runtime, restore_adapter_session
+    from kedaibiao.security.accounts import AccountStore
+
+    settings = load_settings(root=root)
+    store = AccountStore(settings.db_path)
+    try:
+        account = store.active_any(platform)
+        if account is None:
+            return False, "找不到账号"
+    finally:
+        store.close()
+
+    runtime = build_runtime(root=root, cookie_file=session_file)
+    adapter = None
+    try:
+        adapter = runtime.make_adapter(platform)
+        restore_adapter_session(adapter, session_file)
+        if not asyncio.run(adapter.is_logged_in()):
+            return False, "会话未被识别为已登录"
+        asyncio.run(adapter.list_courses())
+        return True, ""
+    except Exception as exc:  # noqa: BLE001 - 验证失败就是要报告给用户
+        # 解析类的异常（TypeError/KeyError/AttributeError）通常意味着「拿到的是
+        # 登录页而不是业务响应」—— 直接丢给用户看堆栈没有意义，翻成人话。
+        if isinstance(exc, (TypeError, KeyError, AttributeError, ValueError)):
+            return False, "接口返回了非预期内容（很可能未登录，拿到的是登录页）"
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        if adapter is not None:
+            try:
+                asyncio.run(adapter.close())
+            except Exception:  # noqa: BLE001
+                pass
+        runtime.close()
+
+
+def _domain_hint(url: str) -> str:
+    """从 URL 取「主域 + 顶级域」当过滤条件（``pinco.seewo.com`` → ``seewo.com``）。"""
+    from urllib.parse import urlparse
+
+    host = urlparse(url).hostname or ""
+    parts = host.split(".")
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
+def cmd_capture(args: argparse.Namespace) -> int:
+    from kedaibiao.browser.capture import (
+        CaptureError,
+        capture_cookies,
+        describe_cookies,
+        parse_cookie_header,
+        save_session_cookie,
+    )
+    from kedaibiao.config.settings import load_settings
+    from kedaibiao.runtime import session_path
+    from kedaibiao.security.accounts import AccountError, AccountStore
+
+    settings = load_settings(root=args.root)
+    store = AccountStore(settings.db_path)
+    try:
+        if args.account:
+            account = store.get(args.account)
+            if account is None:
+                print(f"✗ 账号 #{args.account} 不存在")
+                return 2
+        else:
+            account = store.active_any(args.platform)
+            if account is None:
+                print(f"✗ {args.platform} 还没有绑定账号，请先在控制台「账号」页添加")
+                return 2
+        if account.platform != args.platform:
+            print(f"✗ 账号 #{account.id} 属于 {account.platform}，不是 {args.platform}")
+            return 2
+
+        cookie_file = account.cookie_path(settings.session_dir)
+        target = session_path(cookie_file)
+        required = tuple(
+            x.strip() for x in (args.require or ",".join(CAPTURE_REQUIRED.get(args.platform, ()))).split(",")
+            if x.strip()
+        )
+        url = args.url or CAPTURE_URLS.get(args.platform, "")
+        if not url:
+            print(f"✗ 不知道 {args.platform} 该打开哪个页面，请用 --url 指定")
+            return 2
+
+        if args.cookie:
+            header = args.cookie.strip()
+            parsed = parse_cookie_header(header)
+            missing = [n for n in required if n not in parsed]
+            if missing:
+                print(f"✗ 手贴的 cookie 里缺少关键项: {', '.join(missing)}")
+                return 2
+            path = save_session_cookie(target, header)
+            if not args.no_verify:
+                ok, why = _verify_captured_session(args.platform, args.root, str(path))
+                if not ok:
+                    path.unlink(missing_ok=True)
+                    print(f"✗ cookie 已抓到但会话不可用：{why}")
+                    print("  常见的两种原因：① 这批 cookie 已过期；② 它只是登录页的匿名会话。")
+                    return 2
+                print("  ✓ 已验证：会话可访问受保护接口")
+            print(f"✓ 已保存手贴的 cookie（{len(parsed)} 项）→ {path}")
+            store.record_login(account.id, ok=True, note="手动导入 cookie")
+            return 0
+
+        if not args.profile:
+            print("✗ 需要 --profile <已登录该站点的 Chrome 用户目录>，或用 --cookie 手贴")
+            print()
+            print("  说明：本机没有显示器，无法开窗口让你点。所以复用你自己的浏览器登录态：")
+            print("  1) 用 Chrome 打开该平台并**登录一次**（过掉验证码/扫码）；")
+            print("  2) 完全退出 Chrome；")
+            print("  3) 找到它的用户目录（Linux: ~/.config/google-chrome，Windows:")
+            print("     %LOCALAPPDATA%\\Google\\Chrome\\User Data），用 --profile 指过来。")
+            return 2
+
+        print(f"正在用 {args.profile} 打开 {url} 抓 cookie…")
+        try:
+            result = capture_cookies(
+                url=url,
+                profile=args.profile,
+                domain_hint=_domain_hint(url),
+                wait_seconds=args.wait,
+                required=required,
+                browser_path=args.browser or None,
+            )
+        except CaptureError as exc:
+            print(f"✗ {exc}")
+            if exc.kind == "profile_locked":
+                print("  提示：Chrome 正在运行时用户目录会被锁。先完全退出它再试。")
+            return 2
+
+        if args.show:
+            for item in describe_cookies(result.cookies):
+                print(f"   {item['name']:<24} domain={item['domain']:<22} "
+                      f"httpOnly={item['http_only']} 长度={item['length']}")
+        path = save_session_cookie(target, result.cookie_header)
+        if not args.no_verify:
+            ok, why = _verify_captured_session(args.platform, args.root, str(path))
+            if not ok:
+                path.unlink(missing_ok=True)
+                print(f"✗ {result.summary(required=required)}，但会话不可用：{why}")
+                print(
+                    "  最可能的原因：这个用户目录**没有真正登录**该站点"
+                    "（登录页也会下发一个匿名 csrfToken，所以只看 cookie 名会被骗）。"
+                )
+                print("  请用该 profile 打开站点、完成登录（过掉验证码），完全退出 Chrome 后重试。")
+                return 2
+            print(f"  ✓ 已验证：会话可访问受保护接口")
+        print(f"✓ {result.summary(required=required)} → {path}")
+        store.record_login(account.id, ok=True, note="浏览器抓取 cookie")
+        print()
+        print("接下来可以直接读数据：kedaibiao action " + args.platform + " courses")
+        return 0
+    except AccountError as exc:
+        print(f"✗ {exc}")
+        return 2
+    finally:
+        store.close()
+
+
 def cmd_actions(args: argparse.Namespace) -> int:
     from kedaibiao.api.service import ConsoleError
 
@@ -451,6 +657,7 @@ HANDLERS = {
     "bank-import": cmd_bank_import,
     "run": cmd_run,
     "web": cmd_web,
+    "capture": cmd_capture,
     "actions": cmd_actions,
     "action": cmd_action,
 }
