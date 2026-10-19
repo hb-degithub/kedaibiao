@@ -1548,6 +1548,87 @@ class TestAdapterOffline(unittest.IsolatedAsyncioTestCase):
         plan = await adapter.plan(max_assignments=1)
         self.assertEqual(len(plan.assignments), 1)
 
+    async def test_plan_survives_broken_course_and_shows_it_as_failed(self) -> None:
+        """实测：坏课程（``6569 课程不存在``）不许让整份计划崩，且必须可见。
+
+        修复前：一门坏课直接把 ``plan()`` 抛掉，用户看不到任何别的课程作业。
+        修复后：坏课以 ``FAILED`` 出现在计划里（不是静默跳过 —— 跳过会让用户
+        以为「那门课没有作业」），其余课程照常抓。
+        """
+        bad = dict(COURSE_ITEMS[0], courseId="c-bad", courseName="qtq")
+        good = dict(COURSE_ITEMS[0], courseId="c-good", courseName="示例课程 A")
+        adapter, transport, _, _ = make_adapter(
+            {
+                ep.ACTION_COURSE_WORKBENCH: {"content": [bad, good]},
+                ep.ACTION_HOMEWORK_LIST: Replies(
+                    [
+                        # 真实形态：HTTP 200 + 业务 statusCode=6569（不是 HTTP 错误）
+                        FakeReply(body={"statusCode": 6569, "message": "课程不存在"}),
+                        fixture_data("homework_list.json"),
+                    ]
+                ),
+            }
+        )
+        plan = await adapter.plan()
+
+        failed = plan.find("c-bad")
+        self.assertIsNotNone(failed, "坏课程不能从计划里消失")
+        assert failed is not None
+        self.assertIs(failed.state, PlanState.FAILED)
+        self.assertEqual(failed.course_name, "qtq")
+        self.assertIn("6569", failed.reason)
+        self.assertIn("课程不存在", failed.reason)
+        self.assertEqual(plan.failed, [failed])
+        self.assertIn("失败 1", plan.summary())
+        self.assertIn("状态=failed", plan.render_text(), "失败要出现在给用户复核的文本里")
+
+        # 其余课程照常产出：3 份作业 + 学习任务，顺序不变
+        self.assertEqual(
+            [a.assignment_id for a in plan.assignments if a.assignment_id != "c-bad"],
+            [SUBMITTED_HW, OPEN_HW, EXPIRED_HW, *(m["materialId"] for m in MATERIAL_ITEMS)],
+        )
+        self.assertFalse(transport.wrote_anything())
+        # 失败项永远不进可提交集合（没有内容哈希 = 守卫不会放行）
+        reviewed = adapter.confirm_plan(plan)
+        self.assertIsNone(reviewed.digest_for("c-bad"))
+
+    async def test_plan_reports_course_failed_when_material_list_breaks(self) -> None:
+        """学习任务那条链路坏了也算这门课没抓全 —— 两条抓取一起兜，不许只报一半。"""
+        only = dict(COURSE_ITEMS[0], courseId="c-only", courseName="坏在材料上的课")
+        adapter, transport, _, _ = make_adapter(
+            {
+                ep.ACTION_COURSE_WORKBENCH: {"content": [only]},
+                ep.ACTION_HOMEWORK_LIST: {"content": []},
+                ep.ACTION_MATERIAL_LIST: FakeReply(
+                    body={"statusCode": 6569, "message": "课程不存在"}
+                ),
+            }
+        )
+        plan = await adapter.plan()
+
+        self.assertEqual([a.assignment_id for a in plan.assignments], ["c-only"])
+        item = plan.find("c-only")
+        assert item is not None
+        self.assertIs(item.state, PlanState.FAILED)
+        self.assertIn("课程不存在", item.reason)
+        self.assertIn(ep.ACTION_MATERIAL_LIST, transport.action_names())
+
+    async def test_plan_does_not_swallow_dead_session(self) -> None:
+        """登录态失效不是「某门课坏了」：必须上抛，不能记成一条 FAILED。
+
+        记成 FAILED 会把用户引向「查这门课」，而真正该做的是重新登录；
+        另外网络类 OSError 也不兜 —— 它是可重试的，交给调度层退避。
+        """
+        adapter, _, _, _ = make_adapter(
+            {
+                ep.ACTION_HOMEWORK_LIST: FakeReply(
+                    body={"statusCode": 401, "message": "unauthorized"}
+                )
+            }
+        )
+        with self.assertRaises(PincoNotLoggedIn):
+            await adapter.plan()
+
     async def test_confirm_plan_returns_reviewed_token(self) -> None:
         adapter, _, _, _ = make_adapter()
         plan = await adapter.plan()
