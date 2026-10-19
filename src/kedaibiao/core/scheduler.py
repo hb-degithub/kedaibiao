@@ -55,6 +55,19 @@ class RateLimiter:
             self._last[key] = time.monotonic()
 
 
+def _retry_after(exc: BaseException) -> float | None:
+    """读取异常上附带的 ``retry_after`` 提示（秒），没有则返回 ``None``。
+
+    用鸭子类型而不是 import：``core`` 不该认识任何具体平台的异常类。
+    平台限流时（HTTP 429 或平台自定义限流码）服务端给的等待时间比本地
+    指数退避更权威，所以取两者较大值。
+    """
+    raw = getattr(exc, "retry_after", None)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return max(0.0, float(raw))
+
+
 class Scheduler:
     """全局并发闸门 + 限速器。"""
 
@@ -87,6 +100,13 @@ class Scheduler:
                 if attempt >= policy.attempts:
                     break
                 delay = policy.delay_for(attempt)
+                hint = _retry_after(exc)
+                if hint is not None and hint > delay:
+                    log.warning(
+                        "服务端要求 %.1fs 后再试，退避从 %.1fs 上调到 %.1fs",
+                        hint, delay, hint,
+                    )
+                    delay = hint
                 log.warning(
                     "第 %d/%d 次失败(%s: %s)，%.1fs 后重试",
                     attempt, policy.attempts, type(exc).__name__, exc, delay,

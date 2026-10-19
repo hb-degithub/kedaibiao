@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -29,6 +30,8 @@ from kedaibiao.core.scheduler import Scheduler
 from kedaibiao.notify.base import Notifier, NullNotifier
 from kedaibiao.platforms.base import NotSupportedError, PlatformAdapter
 from kedaibiao.tasks.answerer import Answerer
+
+log = logging.getLogger(__name__)
 
 # 事件名常量，避免各处硬编码字符串
 EVENT_RUN_START = "run.start"
@@ -292,11 +295,20 @@ class Pipeline:
         """
         assert self.bank is not None
         verdicts = _extract_verdicts(result)
+        skipped = 0
         for q, a in zip(questions, answers, strict=True):
             if a.is_empty():
                 continue
+            if not q.is_identifiable:
+                # 无题干又无平台 ID 的题入库会互相覆盖，宁可丢掉这一条
+                skipped += 1
+                continue
             correct = verdicts.get(q.remote_id) if q.remote_id else None
             self.bank.upsert(q, a, correct=correct)
+        if skipped:
+            log.warning(
+                "题库回写跳过 %d 道无法唯一标识的题目（无题干且无平台 ID）", skipped
+            )
 
 
 def _count_sources(answers: list[Answer]) -> dict[str, int]:

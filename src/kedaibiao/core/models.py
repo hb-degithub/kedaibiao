@@ -64,6 +64,10 @@ class AnswerSource(str, Enum):
 _WS_RE = re.compile(r"\s+")
 _PUNCT_RE = re.compile(r"[，。！？；：、（）【】《》“”‘’·,.!?;:()\[\]<>\"']")
 
+#: 指纹退化时使用的前缀。用不可打印的哨兵字符，避免与真实题面撞车。
+_ID_SENTINEL = "\x00id\x00"
+_UNIDENTIFIED_SENTINEL = "\x00unidentified\x00"
+
 
 def normalize_question(text: str) -> str:
     """题干归一化：全角转半角、去空白、去标点、统一小写。
@@ -84,7 +88,12 @@ def question_fingerprint(stem: str, options: list[str] | None = None) -> str:
     parts = [normalize_question(stem)]
     if options:
         parts.extend(sorted(normalize_question(o) for o in options))
-    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:32]
+    return _raw_hash("\x1f".join(parts))
+
+
+def _raw_hash(text: str) -> str:
+    """不做归一化的直接哈希，用于平台 ID 这类必须逐字精确的输入。"""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
 # --------------------------------------------------------------------------
@@ -106,7 +115,12 @@ class Credentials:
 
 @dataclass(slots=True)
 class Question:
-    """一道题。``options`` 只对选择题有意义。"""
+    """一道题。``options`` 只对选择题有意义。
+
+    注意：有些平台（例如只回传加密内容壳的协议型平台）**不提供题面**。
+    此时 ``stem`` 为空、``options`` 为空，题面保存在 ``raw`` 里。
+    这类题目的 ``fingerprint`` 会退化为平台题目 ID，见 ``fingerprint``。
+    """
 
     stem: str
     type: QuestionType = QuestionType.UNKNOWN
@@ -118,8 +132,29 @@ class Question:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def is_identifiable(self) -> bool:
+        """能否稳定地唯一标识这道题。
+
+        题干与平台 ID 二者皆无时，无法与任何其它题目区分 ——
+        这种题目**不允许入库**，否则会互相覆盖。
+        """
+        return bool(normalize_question(self.stem) or self.remote_id)
+
+    @property
     def fingerprint(self) -> str:
-        return question_fingerprint(self.stem, self.options)
+        """题目指纹。
+
+        - 有题干：题干 + 选项（选项排序后再哈希，抗顺序抖动）；
+        - 无题干但有平台 ID：退化为基于 ID 的指纹，避免所有「无题干题」
+          退化成同一个空指纹而互相覆盖；
+        - 两者皆无：返回一个显式的哨兵指纹；调用方应先看 ``is_identifiable``。
+        """
+        if normalize_question(self.stem):
+            return question_fingerprint(self.stem, self.options)
+        if self.remote_id:
+            # 平台 ID 不做归一化：归一化会去掉标点，可能把两个不同的 ID 并成一个。
+            return _raw_hash(f"{_ID_SENTINEL}{self.remote_id}")
+        return _raw_hash(_UNIDENTIFIED_SENTINEL)
 
 
 @dataclass(slots=True)
@@ -130,9 +165,15 @@ class Answer:
     text: str = ""
     source: AnswerSource = AnswerSource.UNKNOWN
     confidence: float = 0.0
+    #: 平台原始答案载荷。
+    #:
+    #: 有些平台的答案不是「选项序号 + 文本」能表达的（例如服务端直接给一个
+    #: 语义未明的答案串，只能原样回传）。适配器把它存在这里，``submit`` 再取回，
+    #: 这样契约不必为单个平台变形。
+    raw: dict[str, Any] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
-        return not self.choices and not self.text.strip()
+        return not self.choices and not self.text.strip() and not self.raw
 
 
 @dataclass(slots=True)

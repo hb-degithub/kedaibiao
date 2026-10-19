@@ -14,6 +14,8 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from kedaibiao.config.dotenv import parse_dotenv
+
 ENV_PREFIX = "KEDAIBIAO_"
 
 _BOOL_TRUE = {"1", "true", "yes", "on"}
@@ -101,9 +103,20 @@ def load_settings(
     *,
     root: str | Path = ".",
     environ: dict[str, str] | None = None,
+    use_dotenv: bool = True,
 ) -> Settings:
-    """按优先级装配配置。缺失的 TOML 文件静默跳过。"""
+    """按优先级装配配置。缺失的 TOML / .env 文件静默跳过。
+
+    ``environ`` 为 ``None`` 时，会额外读取 ``<root>/.env``，但**真实环境变量
+    优先** —— 这样 CI/容器里临时导出的值永远压过仓库里的文件。
+
+    显式传入 ``environ`` 时完全不读 ``.env``，便于测试。
+    """
     root = Path(root)
+    if environ is None:
+        file_env = parse_dotenv(root / ".env") if use_dotenv else {}
+        environ = {**file_env, **os.environ}
+
     settings = Settings()
     for rel in ("config/default.toml", "config/local.toml"):
         path = root / rel

@@ -79,6 +79,10 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+class UnidentifiableQuestionError(ValueError):
+    """题目既无题干也无平台 ID —— 无法唯一标识，入库会导致互相覆盖。"""
+
+
 class _SqliteBase:
     def __init__(self, path: str | Path = ":memory:") -> None:
         self.path = str(path)
@@ -116,7 +120,15 @@ class QuestionBank(_SqliteBase):
 
         已存在时做合并而非覆盖：旧答案有平台判分背书（``correct`` 非空）
         而新答案没有时，保留旧答案。
+
+        题目无法唯一标识时抛 ``UnidentifiableQuestionError`` —— 这类题目
+        （无题干且无平台 ID）的指纹会退化成同一个哨兵值，入库即互相覆盖。
         """
+        if not question.is_identifiable:
+            raise UnidentifiableQuestionError(
+                "题目既无题干也无平台 ID，无法唯一标识。请先补上 remote_id，"
+                "或在调用前用 Question.is_identifiable 过滤。"
+            )
         fp = question.fingerprint
         now = _now()
         with self._cursor() as cur:
@@ -177,7 +189,9 @@ class QuestionBank(_SqliteBase):
     # -- 读取 -------------------------------------------------------------
 
     def lookup(self, question: Question) -> Answer | None:
-        """精确命中，命中即累加 hits。"""
+        """精确命中，命中即累加 hits。无法标识的题目直接返回 None。"""
+        if not question.is_identifiable:
+            return None
         with self._cursor() as cur:
             row = cur.execute(
                 "SELECT * FROM questions WHERE fingerprint=?", (question.fingerprint,)

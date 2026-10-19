@@ -6,7 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kedaibiao.bank.store import ProgressStore, QuestionBank
+from kedaibiao.bank.store import (
+    ProgressStore,
+    QuestionBank,
+    UnidentifiableQuestionError,
+)
 from kedaibiao.core.models import (
     Answer,
     AnswerSource,
@@ -141,6 +145,37 @@ class TestQuestionBank(unittest.TestCase):
         self.bank.upsert(q, _a(q, [2]))
         row = self.bank._conn.execute("SELECT options FROM questions").fetchone()  # noqa: SLF001
         self.assertIn("选项三", row["options"])
+
+
+class TestUnidentifiableQuestions(unittest.TestCase):
+    """无题干且无平台 ID 的题目必须被拒，否则会互相覆盖。"""
+
+    def setUp(self) -> None:
+        self.bank = QuestionBank(":memory:")
+        self.addCleanup(self.bank.close)
+
+    def test_upsert_rejected(self) -> None:
+        q = Question(stem="", options=["甲", "乙"])
+        with self.assertRaises(UnidentifiableQuestionError) as cm:
+            self.bank.upsert(q, Answer(question=q, choices=[0]))
+        self.assertIn("remote_id", str(cm.exception))
+
+    def test_lookup_returns_none(self) -> None:
+        self.assertIsNone(self.bank.lookup(Question(stem="")))
+        self.assertIsNone(self.bank.resolve(Question(stem="")))
+
+    def test_remote_id_only_question_is_storable_and_distinct(self) -> None:
+        q1 = Question(stem="", remote_id="q-1")
+        q2 = Question(stem="", remote_id="q-2")
+        self.bank.upsert(q1, Answer(question=q1, choices=[0]))
+        self.bank.upsert(q2, Answer(question=q2, choices=[1]))
+
+        self.assertEqual(self.bank.stats()["total"], 2, "两道无题面的题不能互相覆盖")
+        hit1 = self.bank.lookup(q1)
+        hit2 = self.bank.lookup(q2)
+        assert hit1 is not None and hit2 is not None
+        self.assertEqual(hit1.choices, [0])
+        self.assertEqual(hit2.choices, [1])
 
 
 class TestProgressStore(unittest.TestCase):
