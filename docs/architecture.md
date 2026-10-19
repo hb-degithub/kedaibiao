@@ -18,20 +18,22 @@
 ## 2. 分层与依赖方向
 
 ```
-core  ←  bank  ←  tasks  ←  api / __main__
-  ↑                 ↑
-platforms ──────────┘
-  ↑
-browser
+config / security ──┐
+                    ├──→ core  ←── net / browser
+                    │      ↑
+                    │    bank
+                    │      ↑
+                    └→ platforms ──→ tasks ──→ runtime ──→ api / __main__
 ```
 
-依赖只能单向向上。`core` 不知道任何平台的存在；`platforms` 不知道流水线的存在。
+依赖只能单向向上。`core` 不知道任何平台的存在；`platforms` 不知道流水线的存在；
+`runtime` 是唯一的装配点，控制面（CLI / Web）都从这里拿现成的对象。
 
 ### 为什么 `core` 必须零依赖
 
 `core` 是被所有层 import 的地基。如果它依赖 pydantic / httpx / playwright，
 那么"跑一遍单测"就变成"装一堆东西"，骨架的迭代速度会直接塌掉。
-现在 `make test` 在裸 Python 3.11+ 上 0.3 秒跑完 115 项测试。
+现在 `make test` 在裸 Python 3.11+ 上 不到 2 秒跑完全量测试。
 
 ### 为什么 `Registry` 写成泛型
 
@@ -138,6 +140,24 @@ Pipeline.run(adapter, credentials)
 `Settings.with_env()` 必须是**实例方法**：早期写成 `from_env` classmethod 直接
 `cls(**kwargs)`，会把调用方从 TOML 合并来的值整个丢掉 —— 这个 bug 由
 `tests/test_settings.py::test_toml_then_env_priority` 抓出来。
+
+---
+
+### 4.5 运行时装配（`runtime.py`）
+
+CLI 与将来的 Web 控制面必须共用**同一套**装配逻辑。各拼各的会让两边行为悄悄
+分叉 —— 最典型的后果是 Web 面板显示的成功率与 CLI 跑出来的对不上。
+
+`build_runtime()` 把配置、题库、留痕、传输、通知、调度器和流水线拼成一个
+`Runtime`；`Runtime.make_adapter()` 为每个适配器创建**独立**的 `AdapterContext`
+与 `HttpClient`（cookie 绝不能跨平台串）；`Runtime.run()` 负责收尾落盘 cookie。
+
+装配层的两条纪律：
+
+- **先校验平台是否注册，再要凭据** —— 反过来的话，没注册的平台会先报「缺凭据」，
+  把排查方向带偏；
+- **写操作只能由显式开关打开** —— `PipelineConfig.dry_run` 默认 `True`，
+  CLI 里只有显式传 `--live` 才关掉，且关掉之前会把将要发生的事打印出来。
 
 ---
 

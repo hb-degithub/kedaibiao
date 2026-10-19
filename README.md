@@ -5,7 +5,7 @@
 课代表负责「收作业」：统一登录态、统一任务模型、统一作答与提交链路、统一执行留痕。
 平台差异全部关在适配器里，核心调度一行都不用改。
 
-**当前状态：框架骨架（v0.1.0）。** 核心层与题库层已完成并通过 115 项单测；
+**当前状态：框架骨架（v0.1.0）。** 核心层与题库层已完成并通过全量单测（零第三方依赖）；
 尚无任何真实平台适配器接入。
 
 ---
@@ -33,6 +33,11 @@
                     └───────────────────┬───────────────────────┘
                                         │
                     ┌───────────────────▼───────────────────────┐
+                    │  runtime.py   运行时装配                   │
+                    │  配置·凭据·题库·传输·通知·调度 → 流水线     │
+                    └───────────────────┬───────────────────────┘
+                                        │
+                    ┌───────────────────▼───────────────────────┐
                     │  tasks/pipeline.py   任务流水线            │
                     │  登录 → 拉课 → 拉作业 → 作答 → 提交 → 回填 │
                     └───┬───────────┬───────────┬───────────────┘
@@ -47,12 +52,13 @@
                     │  platforms/base.PlatformAdapter  (契约)    │
                     └───┬───────────┬───────────┬───────────────┘
                         │           │           │
-                   neusoft/      超星/       智慧树/   …           适配层
+                    unipus/       超星/       智慧树/   …         适配层
                         │           │           │
-                    ┌───▼───────────▼───────────▼───────────────┐
-                    │  browser/session.py  Playwright 会话池     │
-                    │  登录态持久化 · context 隔离 · 验证码钩子   │
-                    └───────────────────────────────────────────┘
+            ┌───────────┴───────────┴───────────┴───────────────┐
+            │ 两种传输方式，按平台二选一                          │
+            │  browser/session.py  Playwright 会话池             │
+            │  net/http.py         协议型 HTTP 客户端            │
+            └───────────────────────────────────────────────────┘
 ```
 
 ### 分层规则（硬约束）
@@ -60,10 +66,12 @@
 | 层 | 目录 | 可以依赖 | 禁止 |
 | --- | --- | --- | --- |
 | 核心 | `core/` | 仅标准库 | 依赖 `platforms` / `browser` / `api` |
+| 配置 / 凭据 | `config/`、`security/` | `core` | 依赖平台或流水线 |
+| 传输 | `net/`、`browser/` | 仅标准库 | 依赖 `platforms` / `tasks` |
 | 题库 | `bank/` | `core` | 依赖 `platforms` |
-| 适配 | `platforms/` | `core`、`browser` | 依赖 `tasks`（不能反向调用流水线） |
+| 适配 | `platforms/` | `core`、`net`、`browser` | 依赖 `tasks`（不能反向调用流水线） |
 | 编排 | `tasks/` | 以上全部 | — |
-| 控制面 | `api/`、`__main__` | 全部 | — |
+| 装配 / 控制面 | `runtime.py`、`api/`、`__main__` | 全部 | — |
 
 违反这条规则意味着平台私有概念泄漏进了核心，新增平台的成本会立刻反弹。
 
@@ -78,8 +86,8 @@
 ```bash
 git clone <repo> && cd 刷题刷课
 
-make test          # 115 项单测，纯标准库
-make doctor        # 环境自检
+make test          # 全量单测，纯标准库即可跑
+make doctor        # 环境自检（Python 版本、可选依赖、存储可写、凭据状态）
 make platforms     # 列出已注册的平台适配器
 ```
 
@@ -90,10 +98,27 @@ PYTHONPATH=src python3 -m unittest discover -s tests -t .
 PYTHONPATH=src python3 -m kedaibiao doctor
 ```
 
-要真正驱动浏览器，再装可选依赖：
+### 跑一次任务
 
 ```bash
-make install-browser   # playwright + chromium
+# 1. 配凭据（.env 已被 .gitignore 排除，不会入库）
+cp .env.example .env && $EDITOR .env
+
+# 2. 先干跑 —— 只规划、不产生任何写操作，看清楚它打算交什么
+PYTHONPATH=src python3 -m kedaibiao run <平台名>
+
+# 3. 确认无误后，才真正提交
+PYTHONPATH=src python3 -m kedaibiao run <平台名> --live
+```
+
+常用限定参数：`--limit 3`（本次最多 3 个作业）、`--kinds homework,exam`（只处理指定类型）。
+
+跑完可以用 `make bank-stats` 看题库命中率与执行记录。
+
+### 可选依赖
+
+```bash
+make install-browser   # playwright + chromium，浏览器型平台需要
 ```
 
 ---
@@ -110,10 +135,10 @@ make install-browser   # playwright + chromium
 | `headless` | `true` | 无头运行；撞验证码时截图并放弃，不硬闯 |
 | `max_concurrency` | `3` | 全局并发上限，避免把对方站点打崩 |
 
-要真提交必须**显式**关掉干跑：`KEDAIBIAO_DRY_RUN=0`。
+要真提交必须**显式**关掉干跑：`kedaibiao run <平台> --live`（或 `KEDAIBIAO_DRY_RUN=0`）。
 
-`Credentials.__repr__` 被重写为屏蔽密码，`.env`、`data/`、`*.storage_state.json`
-全在 `.gitignore` 里 —— 凭据和登录态永远不进版本库。
+`Credentials.__repr__` 被重写为屏蔽密码，`.env`、`data/`、`*.storage_state.json`、
+`*.cookies.json` 全在 `.gitignore` 里 —— 凭据和登录态永远不进版本库。
 
 ---
 
@@ -131,14 +156,18 @@ make install-browser   # playwright + chromium
 │   ├── naming.md           命名与标识符规范
 │   └── research/           平台与依赖的调研报告（含证据来源）
 ├── src/kedaibiao/
+│   ├── runtime.py          运行时装配：配置·凭据·存储·传输 → 流水线
+│   ├── __main__.py         CLI
 │   ├── core/               模型 · 注册表 · 事件总线 · 调度器
 │   ├── platforms/          平台适配器（base.py 是契约）
-│   ├── browser/            Playwright 会话池
+│   ├── browser/            Playwright 会话池（浏览器型平台）
+│   ├── net/                协议型 HTTP 客户端（协议型平台）
 │   ├── tasks/              流水线 · 答题器
 │   ├── bank/               题库与执行留痕（SQLite）
+│   ├── security/           凭据装载与脱敏
 │   ├── notify/             通知渠道
-│   └── config/             配置加载
-└── tests/                  115 项单测，零外部依赖
+│   └── config/             配置加载（TOML + .env + 环境变量）
+└── tests/                  单测：零外部依赖，可离线全量跑
 ```
 
 ---
@@ -187,7 +216,7 @@ make install-browser   # playwright + chromium
 
 ## 8. 路线图
 
-- [x] **M0 骨架**：分层、模型、调度、题库、流水线、CLI、115 项单测
+- [x] **M0 骨架**：分层、模型、调度、题库、流水线、CLI、单测
 - [ ] **M1 首个真实平台**：完成一个东软系平台的登录 + 待办拉取（只读，先不提交）
 - [ ] **M2 作答闭环**：题型解析、题库回填、提交与判分校验
 - [ ] **M3 调度与观测**：Web 控制台、定时跑批、通知渠道、失败重试面板
