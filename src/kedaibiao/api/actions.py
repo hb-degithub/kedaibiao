@@ -68,6 +68,9 @@ class ActionSpec:
     #: True = 这个动作会改平台侧状态（交卷、填答案、开考计时）。控制台据此把
     #: 「只读」徽标换成「写操作」，避免用户把它当查询点。
     mutates: bool = False
+    #: True = 这个动作**不需要连平台**（只读本地缓存 / 调外部模型）。
+    #: 动作层据此跳过登录：否则会话一过期，「AI 答题」这种纯本地动作也会报登录失败。
+    local: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -77,6 +80,7 @@ class ActionSpec:
             "params": [p.to_dict() for p in self.params],
             "builtin": self.builtin,
             "mutates": self.mutates,
+            "local": self.local,
         }
 
 
@@ -560,6 +564,7 @@ def _register_itest() -> None:
             label="AI 答题",
             description="用大模型按缓存的试卷生成答案单（填空+翻译；听力不代答）",
             params=(ActionParam("exam_id", "考试号", required=True),),
+            local=True,
         ),
         _itest_answers,
     )
@@ -689,6 +694,18 @@ def _itest_parse_answers(raw: Any) -> dict[str, str]:
     return out
 
 
+def _itest_paper_name(paper: Any) -> str:
+    """给控制台看的卷名。
+
+    页面 ``<title>`` 是「试题作答 - iTEST…」这类壳标题，真正的作业名在第一个大题的
+    ``part1`` 里（实测 B2U5/B2U6 都是「26-27-1大学英语I（三）单元作业-新标准B2U5」）。
+    """
+    for section in getattr(paper, "sections", []) or []:
+        if section.part1:
+            return str(section.part1)
+    return str(getattr(paper, "title", "") or "")
+
+
 def _itest_ks_id(entry: Any) -> str:
     """考试卡片上印的是 ksId（不是 ksdId）—— 点卡片进考场要用它。"""
     return str(((getattr(entry, "raw", None) or {}).get("ksId")) or "")
@@ -779,7 +796,7 @@ async def _itest_paper(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
         platform=name,
         action="paper",
         label="试卷",
-        title=f"取卷 · {paper.title[:40] or exam_id}",
+        title=f"取卷 · {_itest_paper_name(paper)[:40] or exam_id}",
         note=(
             f"已进入作答页（★ 计时已开始/继续）。{len(paper.sections)} 大题 / "
             f"{paper.question_count} 题 / {paper.blank_count} 槽位；"
@@ -866,7 +883,7 @@ async def _itest_answers(adapter: Any, params: dict[str, Any]) -> dict[str, Any]
         platform=name,
         action="answers",
         label="AI 答案单",
-        title=f"AI 答题 · {paper.title[:32] or exam_id}",
+        title=f"AI 答题 · {_itest_paper_name(paper)[:32] or exam_id}",
         note=note,
         columns=[
             column("qid", "qid", mono=True),

@@ -121,3 +121,78 @@ class TestPaperRoundTrip(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAnswersAction(unittest.IsolatedAsyncioTestCase):
+    """动作层：读缓存试卷 → 调模型 → 落答案单（全程离线）。"""
+
+    def _adapter(self, root):
+        from types import SimpleNamespace
+
+        class A:
+            name = "itest"
+
+            def __init__(self):
+                self.ctx = SimpleNamespace(
+                    settings=SimpleNamespace(session_dir=str(root / "sessions")),
+                    environ={
+                        "KEDAIBIAO_LLM_BASE_URL": "https://g.example/v1",
+                        "KEDAIBIAO_LLM_MODEL": "m",
+                        "KEDAIBIAO_LLM_API_KEY": "sk-test",
+                    },
+                )
+
+        return A()
+
+    async def test_answers_action_writes_sheet_and_reports_skips(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from kedaibiao.api import actions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "itest" / "paper-1099.json"
+            cache.parent.mkdir(parents=True)
+            cache.write_text(
+                json.dumps(make_paper().to_dict(), ensure_ascii=False), encoding="utf-8"
+            )
+
+            def cache_for(_adapter, kind, exam_id):
+                return cache.parent / f"{kind}-{exam_id}.json"
+
+            with mock.patch.object(actions, "_itest_cache", cache_for), \
+                 mock.patch.object(actions, "_itest_shot_dir",
+                                   lambda *a: cache.parent), \
+                 mock.patch("kedaibiao.tasks.llm.LLMAnswerer.complete",
+                            FakeLLM().complete):
+                out = await actions._itest_answers(self._adapter(root), {"exam_id": "1099"})
+
+            self.assertEqual(out["kind"], "table")
+            self.assertTrue(any("跳过" in r["answer"] for r in out["rows"]))
+            sheet = json.loads((cache.parent / "answers-1099.json").read_text(encoding="utf-8"))
+            self.assertTrue(sheet["answers"])
+            self.assertTrue(sheet["skipped"])
+
+    async def test_answers_action_needs_paper_cache(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from kedaibiao.api import actions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing = root / "itest" / "paper-none.json"
+            missing.parent.mkdir(parents=True)
+            def cache_for(_adapter, kind, exam_id):
+                return missing
+
+            with (
+                mock.patch.object(actions, "_itest_cache", cache_for),
+                self.assertRaises(actions.ActionInputError) as ctx,
+            ):
+                await actions._itest_answers(self._adapter(root), {"exam_id": "none"})
+            self.assertIn("取卷", str(ctx.exception))

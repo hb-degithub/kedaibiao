@@ -381,7 +381,17 @@ class TestPaperEnvelope(BaseCase):
             "paper": paper, "current": {paper.sections[0].questions[0].qid: "F I"},
             "shot": "data/itest/paper-1.png",
         }
-        with mock.patch.object(actions, "_itest_paper_blocking", lambda *a, **k: fake):
+        import tempfile
+        from pathlib import Path
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        # 单测不许往真实 data/ 里写缓存
+        with (
+            mock.patch.object(actions, "_itest_paper_blocking", lambda *a, **k: fake),
+            mock.patch.object(actions, "_itest_cache",
+                              lambda *a: Path(tmp.name) / "paper.json"),
+        ):
             out = asyncio.run(actions._itest_paper(FakeAdapter(), {"exam_id": "1"}))
         self.assertEqual(out["kind"], "table")
         self.assertEqual(len(out["rows"]), paper.question_count)

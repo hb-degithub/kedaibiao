@@ -695,11 +695,14 @@ class ConsoleService:
         self, platform: str, action: str, params: dict[str, Any],
         viewer: Viewer | None = None,
     ) -> dict[str, Any]:
-        """跑一个只读动作。每次都新建 Runtime —— 它们各自持有 sqlite 连接。
+        """跑一个动作。每次都新建 Runtime —— 它们各自持有 sqlite 连接。
 
-        登录用「当前账号」的 cookie 文件；没有绑定账号时回退到 ``.env``。
+        ``local`` 动作（只读本地缓存 / 调外部模型）不连平台，跳过登录；
+        其余动作登录用「当前账号」的 cookie 文件。
         """
-        creds, cookie_file = self._resolve_login(platform, viewer)
+        spec = next((s for s in register_platform(platform) if s.name == action), None)
+        local = bool(getattr(spec, "local", False))
+        creds, cookie_file = (None, None) if local else self._resolve_login(platform, viewer)
 
         runtime = build_runtime(
             # 大模型这类「控制台可改」的配置要叠进来，动作层才能看到界面上的值
@@ -710,20 +713,21 @@ class ConsoleService:
         try:
             adapter = runtime.make_adapter(platform)
 
-            # 有落盘的会话就先恢复：账号库不存密码，没有会话就只能要求重新登录
-            restore_adapter_session(adapter, cookie_file)
-            try:
-                logged_in = await adapter.refresh_session(creds)
-            except Exception as exc:  # noqa: BLE001 - 平台异常一律翻成 502
-                raise ConsoleError(
-                    f"{platform} 登录失败：{_friendly_platform_error(platform, exc)}",
-                    kind=PLATFORM_ERROR, status=502,
-                ) from exc
-            if not logged_in:
-                raise ConsoleError(
-                    f"{platform} 登录失败（凭据可能不对，或会话已失效）",
-                    kind=PLATFORM_ERROR, status=502,
-                )
+            if not local:
+                # 有落盘的会话就先恢复：账号库不存密码，没有会话就只能要求重新登录
+                restore_adapter_session(adapter, cookie_file)
+                try:
+                    logged_in = await adapter.refresh_session(creds)
+                except Exception as exc:  # noqa: BLE001 - 平台异常一律翻成 502
+                    raise ConsoleError(
+                        f"{platform} 登录失败：{_friendly_platform_error(platform, exc)}",
+                        kind=PLATFORM_ERROR, status=502,
+                    ) from exc
+                if not logged_in:
+                    raise ConsoleError(
+                        f"{platform} 登录失败（凭据可能不对，或会话已失效）",
+                        kind=PLATFORM_ERROR, status=502,
+                    )
 
             try:
                 return await get_handler(platform, action)(adapter, params)
@@ -739,7 +743,7 @@ class ConsoleService:
                     kind=PLATFORM_ERROR, status=502,
                 ) from exc
         finally:
-            if adapter is not None:
+            if adapter is not None and not local:
                 # 落盘 cookie：下次点「课程/作业」时 refresh_session 能直接跳过登录，
                 # 不必每次都重新登录（对平台礼貌，也快得多）
                 try:
