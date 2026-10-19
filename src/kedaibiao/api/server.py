@@ -44,9 +44,11 @@ STATIC_TYPES = {
 MAX_BODY = 64 * 1024
 
 SESSION_COOKIE = "kdb_session"
-#: 不需要登录就能访问的路径
-PUBLIC_PATHS = {"/api/auth/login"}
-#: 登录页也要能拿到静态资源
+#: 不需要登录就能访问的路径。
+#:
+#: **登录页本身必须公开** —— 它就在 index.html 里，被登录门拦住的话
+#: 浏览器只会看到一个 401，用户连输入账号密码的地方都没有。
+PUBLIC_PATHS = {"/", "/index.html", "/api/auth/login", "/api/auth/me"}
 PUBLIC_PREFIXES = ("/static/",)
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
@@ -230,6 +232,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
         # -- 认证与用户 --
         if path == "/api/auth/me":
+            if not viewer.authenticated:
+                # 明确返回 null，别给一个 id=None 的假用户 —— 前端会误判成已登录
+                return self._json(200, {"user": None, "is_superadmin": False})
             return self._json(200, {
                 "user": {
                     "id": viewer.user_id,

@@ -117,10 +117,18 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 
 #### `GET /api/auth/me`
 
+已登录：
+
 ```json
-{ "user": { "id": 1, "username": "admin", "role": "superadmin", "disabled": false },
+{ "user": { "id": 1, "username": "admin", "role": "superadmin" },
   "is_superadmin": true }
 ```
+
+未登录：**`200` + `{"user": null, "is_superadmin": false}`**（不是 401）。
+这个接口是给前端判断「要不要显示登录页」用的，必须公开可访问。
+
+> ⚠️ `GET /`（index.html）**也是公开的** —— 登录页就在里面。
+> 如果连它都要鉴权，用户会看到浏览器直接弹 401，连输入账号密码的地方都没有。
 
 #### 用户管理（**仅超管**，否则 403）
 

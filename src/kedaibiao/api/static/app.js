@@ -2810,10 +2810,13 @@
     if (state.acct.list === null) {
       groups.hidden = true;
       clear(groups);
-      empty.hidden = state.acct.busy;
+      /* 空状态也要有人话：加载中 / 加载失败 / 还没进过这一页，分三种说法。 */
+      empty.hidden = false;
       empty.textContent = state.acct.busy
-        ? '正在读取账号列表…'
-        : '账号列表还没取到（服务未连接或加载失败），点「刷新」重试。';
+        ? '正在读取账号列表 GET /api/accounts …'
+        : (state.acct.error
+            ? '账号列表没取到，点「刷新」重试。'
+            : '还没取账号数据：进入本页会自动加载，或点上面的「刷新」。');
       return;
     }
     var list = state.acct.list;
