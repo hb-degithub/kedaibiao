@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<!-- 本地工具：禁止一切外部资源与外发请求（无 CDN、无埋点、无远程字体） -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'none'; base-uri 'none'">
+<title>课代表 kedaibiao · 控制台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-name">课代表</span>
+    <span class="brand-slug mono">kedaibiao</span>
+  </div>
+  <div class="topbar-meta">
+    <span class="kv">版本 <span id="meta-version" class="mono">—</span></span>
+    <span class="kv">环境 <span id="meta-env" class="mono">—</span></span>
+    <span class="kv">Python <span id="meta-python" class="mono">—</span></span>
+    <span id="meta-mode" class="badge badge-dry">干跑</span>
+  </div>
+  <div class="topbar-actions">
+    <span id="conn-state" class="conn conn-idle">未连接</span>
+    <button id="refresh-btn" class="btn btn-ghost" type="button">刷新</button>
+  </div>
+</header>
+
+<div id="boot-note" class="banner banner-boot" role="alert" hidden></div>
+<div id="banner" class="banner" role="alert" hidden></div>
+<div id="toast" class="toast" role="status" hidden></div>
+
+<main id="main">
+
+  <!-- 概览 -->
+  <section class="panel" aria-labelledby="h-overview">
+    <h2 id="h-overview">概览</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="card-label">平台</div>
+        <div id="ov-platforms" class="card-value mono">—</div>
+        <div id="ov-platforms-sub" class="card-sub">—</div>
+      </div>
+      <div class="card">
+        <div class="card-label">题库</div>
+        <div id="ov-bank" class="card-value mono">—</div>
+        <div id="ov-bank-sub" class="card-sub">—</div>
+      </div>
+      <div class="card">
+        <div class="card-label">跑批记录</div>
+        <div id="ov-runs" class="card-value mono">—</div>
+        <div id="ov-runs-sub" class="card-sub">—</div>
+      </div>
+      <div class="card">
+        <div class="card-label">运行参数</div>
+        <div id="ov-runtime" class="card-value mono">—</div>
+        <div id="ov-runtime-sub" class="card-sub">—</div>
+      </div>
+    </div>
+    <dl id="env-list" class="env-list" hidden></dl>
+  </section>
+
+  <!-- 平台 -->
+  <section class="panel" aria-labelledby="h-platforms">
+    <div class="panel-head">
+      <h2 id="h-platforms">平台</h2>
+      <span class="hint">能力矩阵按适配器声明；「跑一次」为干跑（live=false，全部类型，不限量）</span>
+    </div>
+    <p id="platforms-empty" class="empty" hidden></p>
+    <div class="table-wrap">
+      <table id="platforms-table" hidden>
+        <thead>
+          <tr>
+            <th>平台</th>
+            <th>显示名</th>
+            <th class="ctr" title="login">登录</th>
+            <th class="ctr" title="list_courses">课程</th>
+            <th class="ctr" title="list_assignments">作业</th>
+            <th class="ctr" title="fetch_questions">取题</th>
+            <th class="ctr" title="submit">提交</th>
+            <th class="ctr" title="course_playback">回放</th>
+            <th>凭据</th>
+            <th class="ctr">操作</th>
+          </tr>
+        </thead>
+        <tbody id="platforms-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 触发跑批 -->
+  <section class="panel" aria-labelledby="h-run">
+    <div class="panel-head">
+      <h2 id="h-run">触发跑批</h2>
+      <span class="hint">同一时刻只允许一个任务；默认干跑，只规划不提交</span>
+    </div>
+    <form id="run-form" class="run-form" autocomplete="off">
+      <div class="field">
+        <label for="run-platform">平台</label>
+        <select id="run-platform" required></select>
+      </div>
+
+      <div class="field">
+        <label for="run-limit">limit</label>
+        <input id="run-limit" class="mono" type="number" min="0" step="1" value="0" inputmode="numeric">
+        <span class="field-hint">0 = 不限；首次试跑建议设小值</span>
+      </div>
+
+      <fieldset class="field field-wide">
+        <legend>kinds（不勾选 = 全部）</legend>
+        <div class="checks">
+          <label class="check"><input type="checkbox" name="kind" value="course"> 课程 course</label>
+          <label class="check"><input type="checkbox" name="kind" value="homework"> 作业 homework</label>
+          <label class="check"><input type="checkbox" name="kind" value="exam"> 考试 exam</label>
+          <label class="check"><input type="checkbox" name="kind" value="practice"> 练习 practice</label>
+        </div>
+      </fieldset>
+
+      <div class="field field-wide live-field">
+        <label class="switch" for="run-live">
+          <input id="run-live" type="checkbox">
+          <span class="switch-text">真提交（live）</span>
+        </label>
+        <span id="live-badge" class="badge badge-dry">当前：干跑</span>
+        <span id="run-live-hint" class="field-hint" hidden></span>
+      </div>
+
+      <div class="field field-wide">
+        <button id="run-submit" class="btn btn-run" type="submit">开始跑批（干跑）</button>
+        <span id="run-state" class="field-hint"></span>
+      </div>
+    </form>
+    <p class="note">
+      干跑（live=false）只读取与规划，不向平台提交任何内容。打开「真提交」需要二次确认，
+      <strong>这会真的提交作业，不可撤销</strong>。
+    </p>
+  </section>
+
+  <!-- 当前任务 -->
+  <section class="panel" aria-labelledby="h-job">
+    <div class="panel-head">
+      <h2 id="h-job">当前任务</h2>
+      <span id="job-poll" class="hint"></span>
+    </div>
+    <p id="job-empty" class="empty">暂无进行中的任务。用上面的触发区跑一次。</p>
+    <div id="job-body" hidden>
+      <dl class="kv-grid">
+        <div><dt>job_id</dt><dd id="job-id" class="mono">—</dd></div>
+        <div><dt>平台</dt><dd id="job-platform" class="mono">—</dd></div>
+        <div><dt>模式</dt><dd id="job-live">—</dd></div>
+        <div><dt>状态</dt><dd id="job-status">—</dd></div>
+        <div><dt>开始</dt><dd id="job-started" class="mono">—</dd></div>
+        <div><dt>结束</dt><dd id="job-finished" class="mono">—</dd></div>
+        <div><dt>已耗时</dt><dd id="job-elapsed" class="mono">—</dd></div>
+      </dl>
+      <p id="job-summary" class="job-summary" hidden></p>
+      <p id="job-error" class="job-error" hidden></p>
+      <div id="job-counts" class="counts"></div>
+      <div class="panel-head sub-head">
+        <h3>任务记录</h3>
+        <span id="job-records-count" class="hint"></span>
+      </div>
+      <p id="job-records-empty" class="empty" hidden>该任务还没有产生记录。</p>
+      <div class="table-wrap">
+        <table id="job-records-table" hidden>
+          <thead>
+            <tr><th>assignment_id</th><th>状态</th><th>备注</th></tr>
+          </thead>
+          <tbody id="job-records-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 历史任务 -->
+  <section class="panel" aria-labelledby="h-jobs">
+    <details open>
+      <summary><h2 id="h-jobs" class="inline-h2">任务历史</h2><span id="jobs-count" class="hint"></span></summary>
+      <p id="jobs-empty" class="empty" hidden>还没有任务记录。</p>
+      <div class="table-wrap">
+        <table id="jobs-table" hidden>
+          <thead>
+            <tr>
+              <th>job_id</th><th>平台</th><th>模式</th><th>状态</th>
+              <th>开始</th><th>结束</th><th>摘要</th><th>错误</th><th class="ctr">操作</th>
+            </tr>
+          </thead>
+          <tbody id="jobs-body"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <!-- 跑批历史 -->
+  <section class="panel" aria-labelledby="h-runs">
+    <details>
+      <summary><h2 id="h-runs" class="inline-h2">跑批历史</h2><span id="runs-count" class="hint"></span></summary>
+      <p id="runs-empty" class="empty" hidden>还没有跑批记录。用上面的触发区跑一次干跑试试。</p>
+      <div class="table-wrap">
+        <table id="runs-table" hidden>
+          <thead>
+            <tr>
+              <th>id</th><th>平台</th><th>assignment_id</th><th>状态</th>
+              <th class="num">尝试</th><th>开始</th><th>结束</th><th>错误</th><th>detail</th>
+            </tr>
+          </thead>
+          <tbody id="runs-body"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <!-- 题库 -->
+  <section class="panel" aria-labelledby="h-bank">
+    <details>
+      <summary><h2 id="h-bank" class="inline-h2">题库</h2><span id="bank-hint" class="hint"></span></summary>
+      <p id="bank-empty" class="empty" hidden>题库为空。跑批命中题目后会自动入库。</p>
+      <div id="bank-body" hidden>
+        <div class="stat-row">
+          <span class="stat"><span class="stat-label">总量</span><span id="bank-total" class="stat-value mono">—</span></span>
+          <span class="stat"><span class="stat-label">已判分</span><span id="bank-graded" class="stat-value mono">—</span></span>
+          <span class="stat"><span class="stat-label">正确</span><span id="bank-correct" class="stat-value mono">—</span></span>
+          <span class="stat"><span class="stat-label">准确率</span><span id="bank-accuracy" class="stat-value mono">—</span></span>
+          <span class="stat"><span class="stat-label">未判分</span><span id="bank-ungraded" class="stat-value mono">—</span></span>
+        </div>
+        <div class="panel-head sub-head"><h3>按来源</h3></div>
+        <p id="bank-source-empty" class="empty" hidden>没有来源统计。</p>
+        <div class="table-wrap">
+          <table id="bank-source-table" hidden>
+            <thead><tr><th>来源</th><th class="num">数量</th></tr></thead>
+            <tbody id="bank-source-body"></tbody>
+          </table>
+        </div>
+        <p class="note">数据库：<span id="bank-dbpath" class="mono">—</span></p>
+      </div>
+    </details>
+  </section>
+
+  <!-- 提交记录 -->
+  <section class="panel" aria-labelledby="h-subs">
+    <details>
+      <summary><h2 id="h-subs" class="inline-h2">提交记录</h2><span id="subs-count" class="hint"></span></summary>
+      <p id="subs-empty" class="empty" hidden>还没有提交记录。干跑不会产生提交。</p>
+      <div class="table-wrap">
+        <table id="subs-table" hidden>
+          <thead>
+            <tr>
+              <th>id</th><th>平台</th><th>assignment_id</th><th>结果</th>
+              <th class="num">得分</th><th>说明</th><th>时间</th>
+            </tr>
+          </thead>
+          <tbody id="subs-body"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <!-- 事件流 -->
+  <section class="panel" aria-labelledby="h-events">
+    <details>
+      <summary><h2 id="h-events" class="inline-h2">事件流</h2><span id="events-hint" class="hint">每 1 秒轮询</span></summary>
+      <p id="events-empty" class="empty" hidden>暂无事件。</p>
+      <ul id="events-list" class="events"></ul>
+    </details>
+  </section>
+
+  <footer class="footer">
+    <span>本地控制台 · 仅绑定回环地址 · 页面不外发任何数据</span>
+    <span class="footer-sep">|</span>
+    <span>接口契约：<span class="mono">docs/web-console-api.md</span></span>
+  </footer>
+
+</main>
+
+<!-- 仅用于 file:// 直开 / 脚本未加载时给人话提示；业务逻辑在 /static/app.js -->
+<script>
+(function () {
+  function note(msg) {
+    var n = document.getElementById('boot-note');
+    if (!n) return;
+    n.hidden = false;
+    n.textContent = msg;
+  }
+  window.__kedaibiaoNote = note;
+  if (location.protocol === 'file:') {
+    note('当前以 file:// 直接打开，浏览器不允许读取本地接口数据，页面无法加载任何状态。' +
+         '请先启动控制台服务，再通过 http://127.0.0.1:<端口> 访问本页。');
+  }
+  window.addEventListener('load', function () {
+    setTimeout(function () {
+      if (!window.__kedaibiao) {
+        note('前端脚本 /static/app.js 未加载成功：页面为静态骨架，所有数据均为占位符。' +
+             '请确认通过控制台服务访问，且 /static/app.js 可访问。');
+      }
+    }, 400);
+  });
+})();
+</script>
+<script src="/static/app.js"></script>
+</body>
+</html>
