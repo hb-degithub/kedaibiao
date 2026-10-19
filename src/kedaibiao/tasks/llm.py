@@ -209,6 +209,33 @@ class LLMAnswerer(Answerer):
                 result[offset + index] = item
         return result
 
+    async def complete(self, system: str, user: str, *, max_tokens: int = 1200) -> str:
+        """通用补全（改写作文这类自由文本任务用）。没配置就抛，由调用方降级。"""
+        if not self.config.enabled:
+            raise LLMError("大模型未配置")
+        payload = {
+            "model": self.config.model,
+            "temperature": self.config.temperature,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        response = await self._http().post_json(
+            f"{self.config.base_url}/chat/completions", payload, headers=headers
+        )
+        if not response.ok:
+            raise LLMError(f"HTTP {response.status}: {response.text()[:200]}")
+        data = response.json()
+        choices = data.get("choices") or []
+        if not choices:
+            raise LLMError("模型没有返回 choices")
+        return ((choices[0].get("message") or {}).get("content") or "").strip()
+
     # -- 答题 -------------------------------------------------------------
 
     async def answer(self, questions: list[Question]) -> list[Answer]:

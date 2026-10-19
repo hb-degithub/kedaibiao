@@ -288,6 +288,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return self._json(200, svc.events(self._int_param("limit", 100)))
         if path == "/api/jobs":
             return self._json(200, svc.jobs(scope, viewer=viewer))
+        if path.startswith("/api/essays/jobs/"):
+            return self._json(200, svc.grade_job(path[len("/api/essays/jobs/") :]))
         if path.startswith("/api/jobs/"):
             return self._json(200, svc.job(path[len("/api/jobs/") :]))
         self._error(404, f"没有这个路由: {path}", "not_found")
@@ -386,6 +388,31 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 ))
             return self._error(404, f"没有这个路由: {path}", "not_found")
 
+        if path == "/api/essays/grade-loop":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(202, self.service.start_grade_loop(
+                str(payload.get("platform") or ""),
+                str(payload.get("assignment_id") or payload.get("rid") or ""),
+                target_score=float(payload.get("target_score") or 90),
+                max_attempts=int(payload.get("max_attempts") or 3),
+                initial_essay=str(payload.get("initial_essay") or ""),
+                viewer=viewer,
+            ))
+
+        if path == "/api/essays/fetch":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.fetch_essay_grade(
+                str(payload.get("platform") or "pigai"),
+                str(payload.get("assignment_id") or payload.get("rid") or ""),
+                str(payload.get("eid") or ""),
+                viewer=viewer,
+                trigger_analysis=bool(payload.get("trigger_analysis", True)),
+            ))
+
         if path == "/api/assignments/detail":
             payload = self._body_json()
             if not isinstance(payload, dict):
@@ -393,6 +420,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return self._json(200, self.service.assignment_detail(
                 str(payload.get("platform") or ""),
                 str(payload.get("assignment_id") or ""),
+                viewer=viewer,
+            ))
+
+        if path == "/api/essays/history":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.essay_history(
+                str(payload.get("assignment_id") or payload.get("rid") or ""),
+                platform=str(payload.get("platform") or "pigai"),
                 viewer=viewer,
             ))
 

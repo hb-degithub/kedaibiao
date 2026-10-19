@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
@@ -152,6 +153,17 @@ def _friendly_platform_error(platform: str, exc: BaseException) -> str:
             "密码登录只解决身份层）。需要用浏览器导出 cookie 的方式接入。"
         )
     return message
+
+
+def _clean_essay(text: str) -> str:
+    """去掉模型爱加的围栏/引号/标题行，只留正文。"""
+    body = (text or "").strip()
+    fence = re.search(r"```(?:[a-zA-Z]*)\s*(.+?)\s*```", body, re.S)
+    if fence:
+        body = fence.group(1).strip()
+    lines = [ln for ln in body.splitlines() if not ln.strip().startswith("#")]
+    body = "\n".join(lines).strip().strip('"').strip("“”").strip()
+    return body
 
 
 def _now() -> str:
@@ -908,6 +920,239 @@ class ConsoleService:
             )
         except AccountError as exc:
             raise ConsoleError(str(exc), kind=exc.kind, status=exc.status) from exc
+
+    # -- 作文：评分循环 / 手动取分 / 历史 ---------------------------------
+
+    def _essay_http(self, platform: str, viewer: Viewer | None) -> tuple[Any, Any, Any]:
+        """返回 (adapter, http, cookie_file)，并已恢复会话。"""
+        creds, cookie_file = self._resolve_login(platform, viewer)
+        settings = load_settings(root=self.root, environ=self.environ)
+        runtime = build_runtime(root=self.root, environ=self.environ,
+                                cookie_file=cookie_file)
+        adapter = runtime.make_adapter(platform)
+        restore_adapter_session(adapter, cookie_file)
+        return adapter, runtime, cookie_file
+
+    def start_grade_loop(
+        self,
+        platform: str,
+        rid: str,
+        *,
+        target_score: float,
+        max_attempts: int = 3,
+        initial_essay: str = "",
+        viewer: Viewer | None = None,
+    ) -> dict[str, Any]:
+        """启动「写→交→看批注→改写→再交」的后台任务。"""
+        scope = self._check_platform(platform)
+        assert scope is not None
+        if scope != "pigai":
+            raise ConsoleError(
+                "评分循环目前只实现了 pigai（其他平台的提交还没落地）",
+                kind="not_supported", status=501,
+            )
+        if not rid.strip():
+            raise ConsoleError("缺少作业号 rid", kind="bad_request", status=400)
+        if not (0 < float(target_score) <= 100):
+            raise ConsoleError("目标分数要在 0~100 之间", kind="bad_request", status=400)
+        if int(max_attempts) < 1:
+            raise ConsoleError("轮次至少 1 轮", kind="bad_request", status=400)
+
+        with self._lock:
+            self._seq += 1
+            job_id = f"g-{self._seq}"
+            job: dict[str, Any] = {
+                "job_id": job_id, "platform": scope, "rid": rid.strip(),
+                "target_score": float(target_score), "max_attempts": int(max_attempts),
+                "status": "running", "started_at": _now(), "finished_at": None,
+                "events": [], "attempts": [], "stop_reason": "", "message": "",
+                "best_score": None, "initial_essay": initial_essay,
+                "owner_id": viewer.user_id if (viewer and viewer.authenticated) else 0,
+            }
+            self._jobs.append(job)
+            self._jobs_by_id[job_id] = job
+            del self._jobs[:-JOB_HISTORY]
+            for stale in list(self._jobs_by_id):
+                if stale not in {j["job_id"] for j in self._jobs}:
+                    del self._jobs_by_id[stale]
+
+        threading.Thread(
+            target=self._run_grade_loop, args=(job_id, scope, rid.strip(),
+                                               float(target_score), int(max_attempts),
+                                               initial_essay, viewer),
+            name=f"kedaibiao-grade-{job_id}", daemon=True,
+        ).start()
+        return _jsonable(job)
+
+    def grade_job(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            found = self._jobs_by_id.get(job_id)
+        if found is None:
+            raise ConsoleError(f"没有这个任务: {job_id}", kind="not_found", status=404)
+        return _jsonable(found)
+
+    def _run_grade_loop(self, job_id: str, platform: str, rid: str,
+                        target: float, attempts: int, initial_essay: str,
+                        viewer: Viewer | None) -> None:
+        from kedaibiao.platforms.pigai.grade_loop import GradeLoop
+        from kedaibiao.tasks.llm import LLMConfig, LLMAnswerer
+
+        runtime = None
+        adapter = None
+        try:
+            adapter, runtime, cookie_file = self._essay_http(platform, viewer)
+            settings = runtime.settings
+
+            page = None
+            try:
+                page = asyncio.run(adapter.fetch_assignment_by_rid(rid))
+            except Exception:  # noqa: BLE001 - 拿不到题目信息也能继续
+                page = None
+            topic = (page.title if page else "") or ""
+            word_range = (page.word_range if page else "") or ""
+
+            essay = initial_essay.strip()
+            if not essay:
+                essay = self._write_initial_essay(settings, topic, word_range, page)
+            if not essay.strip():
+                raise ConsoleError(
+                    "没有初始正文，且大模型未配置无法起草。"
+                    "请配置 KEDAIBIAO_LLM_* 或在请求里带上 initial_essay。",
+                    kind="bad_request", status=400,
+                )
+
+            rewrite = None
+            cfg = LLMConfig.from_env(runtime.environ)
+            if cfg.enabled:
+                llm = LLMAnswerer(cfg)
+                from kedaibiao.platforms.pigai.grade_loop import REWRITE_SYSTEM, build_rewrite_prompt
+
+                async def rewrite(snapshot, current, next_attempt):  # noqa: ANN001
+                    prompt = build_rewrite_prompt(
+                        topic=topic, word_range=word_range, essay=current,
+                        snapshot=snapshot, attempt=next_attempt,
+                    )
+                    text = await llm.complete(REWRITE_SYSTEM, prompt)
+                    return _clean_essay(text)
+
+            def on_event(event: dict[str, Any]) -> None:
+                with self._lock:
+                    job = self._jobs_by_id.get(job_id)
+                    if job is None:
+                        return
+                    job["events"].append({"at": _now(), **_jsonable(event)})
+                    del job["events"][:-400]
+                    if event.get("kind") == "attempt.graded":
+                        score = event.get("score")
+                        if isinstance(score, (int, float)):
+                            current = job.get("best_score")
+                            job["best_score"] = (
+                                score if not isinstance(current, (int, float))
+                                else max(current, score)
+                            )
+
+            loop = GradeLoop(
+                adapter=adapter,
+                http=adapter.ctx.client(),
+                base="https://www.pigai.org",
+                target_score=target, max_attempts=attempts,
+                on_event=on_event, rewrite=rewrite,
+                word_range=word_range,
+            )
+            result = asyncio.run(loop.run(rid=rid, topic=topic, initial_essay=essay))
+
+            # 落库每一轮
+            if runtime.store is not None:
+                owner = viewer.user_id if (viewer and viewer.authenticated) else 0
+                for rec in result.attempts:
+                    try:
+                        runtime.store.record_attempt(
+                            owner_id=owner, platform=platform, rid=rid,
+                            eid=rec.eid, attempt=rec.attempt, snapshot=rec,
+                        )
+                    except Exception:  # noqa: BLE001
+                        log.debug("记录尝试失败", exc_info=True)
+
+            with self._lock:
+                job = self._jobs_by_id[job_id]
+                job["status"] = "succeeded" if result.stop_reason == "reached" else "failed"
+                job["stop_reason"] = result.stop_reason
+                job["message"] = result.message
+                job["attempts"] = [a.to_dict() for a in result.attempts]
+                job["best_score"] = result.best_score
+        except Exception as exc:  # noqa: BLE001
+            log.exception("评分循环异常")
+            with self._lock:
+                job = self._jobs_by_id.get(job_id)
+                if job is not None:
+                    job["status"] = "failed"
+                    job["message"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            if adapter is not None:
+                try:
+                    asyncio.run(adapter.close())
+                except Exception:  # noqa: BLE001
+                    pass
+            if runtime is not None:
+                runtime.close()
+            with self._lock:
+                job = self._jobs_by_id.get(job_id)
+                if job is not None:
+                    job["finished_at"] = _now()
+
+    def _write_initial_essay(self, settings: Any, topic: str, word_range: str,
+                             page: Any) -> str:
+        """没给初始正文时，用大模型按题目要求起草。"""
+        from kedaibiao.tasks.llm import LLMAnswerer, LLMConfig
+
+        cfg = LLMConfig.from_env(self.environ)
+        if not cfg.enabled:
+            return ""
+        requirement = getattr(page, "requirement", "") or topic
+        prompt = (
+            f"题目/要求：{requirement}\n"
+            f"字数要求：{word_range or '120~150'}\n"
+            "请写一篇符合要求的英语作文，只输出正文。"
+        )
+        try:
+            return _clean_essay(asyncio.run(LLMAnswerer(cfg).complete(
+                "你是英语写作助手，只输出英文正文，不要标题与解释。", prompt)))
+        except Exception:  # noqa: BLE001
+            log.warning("起草失败", exc_info=True)
+            return ""
+
+    def fetch_essay_grade(self, platform: str, rid: str, eid: str, *,
+                          viewer: Viewer | None = None,
+                          trigger_analysis: bool = True) -> dict[str, Any]:
+        """手动取一次分数与评价（不提交任何东西）。"""
+        scope = self._check_platform(platform)
+        assert scope is not None
+        if scope != "pigai":
+            raise ConsoleError("取分目前只实现了 pigai", kind="not_supported", status=501)
+        adapter, runtime, _ = self._essay_http(scope, viewer)
+        try:
+            from kedaibiao.platforms.pigai import grading
+
+            http = adapter.ctx.client()
+            if trigger_analysis:
+                snap = asyncio.run(grading.wait_for_grade(
+                    adapter, http, base="https://www.pigai.org", rid=rid, eid=eid))
+            else:
+                snap = asyncio.run(grading.fetch_snapshot(adapter, rid=rid, eid=eid))
+            return snap.to_dict()
+        finally:
+            asyncio.run(adapter.close())
+            runtime.close()
+
+    def essay_history(self, rid: str, *, platform: str = "pigai",
+                      viewer: Viewer | None = None) -> dict[str, Any]:
+        """某作业的历史提交记录（每一轮的分数与批注）。"""
+        owner = (viewer or Viewer()).owner_filter(None)
+        if not self._db_path().is_file():
+            return {"rid": rid, "attempts": []}
+        rows = self._read(lambda h: h.store.attempts_for(
+            rid, owner_id=owner, platform=platform))
+        return {"rid": rid, "platform": platform, "attempts": rows}
 
     # -- 单个作业：详情与提交 ---------------------------------------------
 

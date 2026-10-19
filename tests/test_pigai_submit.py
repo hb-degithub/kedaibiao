@@ -208,3 +208,129 @@ class TestAdapterSubmit(unittest.IsolatedAsyncioTestCase):
                 [Answer(question=None, text="x")],  # type: ignore[arg-type]
             )
         self.assertEqual(calls, [], "闸门关闭时一个请求都不该发")
+
+
+class TestGradeLoop(unittest.IsolatedAsyncioTestCase):
+    """评分循环的判停逻辑。
+
+    最关键的是把「达到目标」「轮次用尽」「平台不给分」三种情况分开 ——
+    尤其**未截止时不能重试**，否则会平白多交几篇作文。
+    """
+
+    class _Snap:
+        def __init__(self, score=None, graded=True, state="graded"):
+            self.score, self.graded, self.state = score, graded, state
+
+        def to_dict(self):
+            return {
+                "score": self.score, "full_marks": 100.0, "graded": self.graded,
+                "score_pct": (self.score or 0) / 100, "raw_state": self.state,
+                "dimensions": [{"name": "词汇", "ratio": 0.9}],
+                "weak_dimensions": ["词汇"], "overall_comment": "ok",
+                "feedback_lines": ["[w] 连词"], "essay_text": "x",
+            }
+
+    def _loop(self, scores, *, target=90, max_attempts=3):
+        from kedaibiao.platforms.pigai.grade_loop import GradeLoop
+
+        class Submit:
+            ok = True
+            message = "ok"
+            raw = {"eid": "E"}
+
+        class Adapter:
+            def __init__(self):
+                self.submits = 0
+
+            async def submit(self, a, ans):
+                self.submits += 1
+                return Submit()
+
+            async def list_pending_assignments(self):
+                from kedaibiao.core.models import Assignment
+                return [Assignment(remote_id="R", title="T")]
+
+            async def list_finished_essays(self):
+                return []
+
+        adapter = Adapter()
+        rewrites: list[int] = []
+
+        async def rewrite(snap, essay, n):
+            rewrites.append(n)
+            return f"v{n}"
+
+        loop = GradeLoop(adapter=adapter, http=object(), base="", target_score=target,
+                         max_attempts=max_attempts, rewrite=rewrite)
+        return loop, adapter, rewrites
+
+    async def _run(self, loop, scores):
+        import kedaibiao.platforms.pigai.grading as grading
+
+        seq = iter(scores)
+
+        async def fake_wait(*a, **k):
+            return self._Snap(*next(seq))
+
+        original = grading.wait_for_grade
+        grading.wait_for_grade = fake_wait
+        try:
+            return await loop.run(rid="R", topic="T", initial_essay="v1")
+        finally:
+            grading.wait_for_grade = original
+
+    async def test_reaches_target(self) -> None:
+        loop, adapter, rewrites = self._loop(None)
+        result = await self._run(loop, [(80, True), (92, True)])
+        self.assertEqual(result.stop_reason, "reached")
+        self.assertEqual(result.best_score, 92)
+        self.assertEqual(adapter.submits, 2)
+        self.assertEqual(rewrites, [2], "只在未达标时改写一次")
+
+    async def test_already_above_target_stops_immediately(self) -> None:
+        loop, adapter, rewrites = self._loop(None)
+        result = await self._run(loop, [(95, True)])
+        self.assertEqual(result.stop_reason, "reached")
+        self.assertEqual(adapter.submits, 1)
+        self.assertEqual(rewrites, [], "第一轮就达标，不该改写")
+
+    async def test_exhausted(self) -> None:
+        loop, adapter, _ = self._loop(None, max_attempts=3)
+        result = await self._run(loop, [(70, True), (75, True), (80, True)])
+        self.assertEqual(result.stop_reason, "exhausted")
+        self.assertEqual(adapter.submits, 3)
+        self.assertEqual(result.best_score, 80)
+
+    async def test_unavailable_does_not_retry(self) -> None:
+        """未截止 = 平台不给分 —— 必须停，绝不能继续交。"""
+        loop, adapter, rewrites = self._loop(None)
+        result = await self._run(loop, [(None, False, "未截止")])
+        self.assertEqual(result.stop_reason, "unavailable")
+        self.assertEqual(adapter.submits, 1, "只交一次，不重试")
+        self.assertEqual(rewrites, [])
+        self.assertIn("未截止", result.message)
+
+    async def test_submit_failure_stops(self) -> None:
+        from kedaibiao.platforms.pigai.grade_loop import GradeLoop
+
+        class BadSubmit:
+            ok = False
+            message = "提交被拒"
+            raw = {}
+
+        class Adapter:
+            async def submit(self, a, ans):
+                return BadSubmit()
+
+            async def list_pending_assignments(self):
+                from kedaibiao.core.models import Assignment
+                return [Assignment(remote_id="R", title="T")]
+
+            async def list_finished_essays(self):
+                return []
+
+        loop = GradeLoop(adapter=Adapter(), http=object(), base="", target_score=90,
+                         max_attempts=3)
+        result = await loop.run(rid="R", topic="T", initial_essay="v1")
+        self.assertEqual(result.stop_reason, "error")
+        self.assertIn("提交被拒", result.message)

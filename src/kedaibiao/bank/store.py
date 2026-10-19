@@ -77,6 +77,24 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at   TEXT
 );
 
+CREATE TABLE IF NOT EXISTS essay_attempts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id      INTEGER NOT NULL DEFAULT 0,
+    platform      TEXT NOT NULL DEFAULT '',
+    rid           TEXT NOT NULL,
+    eid           TEXT NOT NULL DEFAULT '',
+    attempt       INTEGER NOT NULL DEFAULT 1,
+    score         REAL,
+    full_marks    REAL,
+    graded        INTEGER NOT NULL DEFAULT 0,
+    raw_state     TEXT NOT NULL DEFAULT '',
+    essay_text    TEXT NOT NULL DEFAULT '',
+    feedback      TEXT NOT NULL DEFAULT '[]',
+    dimensions    TEXT NOT NULL DEFAULT '[]',
+    overall       TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS submissions (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_id      INTEGER NOT NULL DEFAULT 0,
@@ -136,6 +154,8 @@ class QuestionBank(SqliteStore):
             self.index("idx_questions_platform", "questions", ["owner_id", "platform"])
 
         # 2) runs / submissions：补列即可（主键没变）
+        if self.table_exists("essay_attempts"):
+            self.index("idx_attempts_rid", "essay_attempts", ["owner_id", "platform", "rid"])
         self.add_column_if_missing("runs", "owner_id", "INTEGER NOT NULL DEFAULT 0")
         self.add_column_if_missing("submissions", "owner_id", "INTEGER NOT NULL DEFAULT 0")
         if self.table_exists("runs"):
@@ -485,6 +505,8 @@ class ProgressStore(SqliteStore):
         if self.columns("questions"):
             self.index("idx_questions_norm", "questions", ["owner_id", "norm_stem"])
             self.index("idx_questions_platform", "questions", ["owner_id", "platform"])
+        if self.table_exists("essay_attempts"):
+            self.index("idx_attempts_rid", "essay_attempts", ["owner_id", "platform", "rid"])
         self.add_column_if_missing("runs", "owner_id", "INTEGER NOT NULL DEFAULT 0")
         self.add_column_if_missing("submissions", "owner_id", "INTEGER NOT NULL DEFAULT 0")
         if self.table_exists("runs"):
@@ -533,6 +555,45 @@ class ProgressStore(SqliteStore):
                 run_id,
             ),
         )
+
+    # -- 作文尝试记录 -----------------------------------------------------
+
+    def record_attempt(self, *, owner_id: int, platform: str, rid: str, eid: str,
+                       attempt: int, snapshot: Any) -> int:
+        """落一条「这次提交得了多少分、批注是什么」。"""
+        data = snapshot.to_dict() if hasattr(snapshot, "to_dict") else dict(snapshot)
+        return self.execute(
+            """INSERT INTO essay_attempts
+               (owner_id, platform, rid, eid, attempt, score, full_marks, graded,
+                raw_state, essay_text, feedback, dimensions, overall, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                owner_id, platform, rid, eid, attempt,
+                data.get("score"), data.get("full_marks"),
+                int(bool(data.get("graded"))), str(data.get("raw_state") or ""),
+                str(data.get("essay_text") or "")[:20000],
+                json.dumps(data.get("feedback_lines") or [], ensure_ascii=False),
+                json.dumps(data.get("dimensions") or [], ensure_ascii=False),
+                str(data.get("overall_comment") or "")[:4000],
+                _now(),
+            ),
+        )
+
+    def attempts_for(self, rid: str, *, owner_id: int | None = ANY_OWNER,
+                     platform: str = "pigai") -> list[dict[str, Any]]:
+        where, args = _filters(owner_id)
+        where += " AND platform=? AND rid=?"
+        rows = self.fetchall(
+            f"SELECT * FROM essay_attempts{where} ORDER BY attempt ASC, id ASC",
+            (*args, platform, rid),
+        )
+        out = []
+        for r in rows:
+            item = dict(r)
+            item["feedback"] = json.loads(item["feedback"] or "[]")
+            item["dimensions"] = json.loads(item["dimensions"] or "[]")
+            out.append(item)
+        return out
 
     def record_submission(
         self, platform: str, result: SubmissionResult, *, owner_id: int = 0
