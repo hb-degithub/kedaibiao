@@ -28,7 +28,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from kedaibiao.core.models import Assignment, TaskKind
+from kedaibiao.core.models import Assignment, QuestionType, TaskKind
+from kedaibiao.platforms.base import NotSupportedError
 
 log = logging.getLogger(__name__)
 
@@ -1023,10 +1024,463 @@ async def _itest_submit(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
 
 
 
+# --------------------------------------------------------------------------
+# 希沃品课（pinco）
+# --------------------------------------------------------------------------
+#
+# 四个动作全部只读：学习任务（课程材料）进度、材料详情、作业题目/作答槽、
+# 连接自检。品课的写接口（提交）有自己独立的守卫，这一层**不碰**任何写接口。
+#
+# 材料详情里的 ``downloadUrl`` 带签名/时效：只在本次响应里展示，不进日志、
+# 不落库；「原始字段摘要」里也会把签名地址与凭据的值替换掉。
+
+#: 品课材料列表/详情里的字段名（实测确认，见 platforms/pinco/endpoints.py）。
+_PINCO_MATERIAL_SIZE = "materialSize"
+_PINCO_MATERIAL_SOURCE = "materialSource"
+_PINCO_MEDIA = "media"
+_PINCO_MEDIA_FILE_SIZE = "fileSize"
+_PINCO_MEDIA_TYPE = "type"
+
+#: 原始字段摘要里要隐藏「值」的键：签名下载地址 / 令牌 / cookie 等。
+#: 键名保留、值替换 —— 既看得见平台确实给了这个字段，又不会把敏感值带出去。
+_PINCO_SECRET_HINTS = (
+    "download", "token", "cookie", "authorization", "csrf", "sign", "secret", "password",
+)
+_PINCO_SECRET_KEYS = frozenset({"url", "thumbnailurl"})
+
+_QUESTION_TYPE_LABEL = {
+    QuestionType.SINGLE: "单选",
+    QuestionType.MULTIPLE: "多选",
+    QuestionType.JUDGE: "判断",
+    QuestionType.FILL: "填空",
+    QuestionType.ESSAY: "简答",
+    QuestionType.UNKNOWN: "未知",
+}
+
+
+def _pinco_platform(adapter: Any) -> str:
+    return getattr(adapter, "name", "pinco")
+
+
+def _pinco_require(params: dict[str, Any], key: str, label: str) -> str:
+    """取必填参数；缺了抛 ``ActionInputError``（服务层翻成 400）。
+
+    服务层在调 handler 前已经校验过一遍，这里再校验一次是为了让 handler
+    被单独调用时也给出同样的错误，而不是一个 KeyError 堆栈。
+    """
+    value = str(params.get(key) or "").strip()
+    if not value:
+        raise ActionInputError(f"缺少{label}（{key}）")
+    return value
+
+
+def _pinco_size_mb(raw: Any) -> str:
+    """材料大小（MB）。列表里是 ``materialSize``，详情里在 ``media.fileSize``。"""
+    data = raw if isinstance(raw, dict) else {}
+    size = data.get(_PINCO_MATERIAL_SIZE)
+    if size is None:
+        media = data.get(_PINCO_MEDIA)
+        if isinstance(media, dict):
+            size = media.get(_PINCO_MEDIA_FILE_SIZE)
+    if size is None:
+        return "—"
+    try:
+        number = float(size)
+    except (TypeError, ValueError):
+        return "—"
+    if number <= 0:
+        return "—"
+    return f"{number / (1024 * 1024):.1f}"
+
+
+def _pinco_percent(progress: Any) -> str:
+    try:
+        value = float(progress)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{value * 100:.0f}%"
+
+
+def _pinco_material_source(raw: Any) -> str:
+    """材料来源列：平台原始码，语义未确认，所以不编中文映射，只如实展示。"""
+    data = raw if isinstance(raw, dict) else {}
+    source = data.get(_PINCO_MATERIAL_SOURCE)
+    if source is not None:
+        return f"materialSource={source}"
+    media = data.get(_PINCO_MEDIA)
+    if isinstance(media, dict) and media.get(_PINCO_MEDIA_TYPE) is not None:
+        return f"media.type={media[_PINCO_MEDIA_TYPE]}"
+    return "—"
+
+
+def _pinco_redact(value: Any, depth: int = 0) -> Any:
+    """递归隐藏原始载荷里的签名地址与凭据值（键名保留）。"""
+    if depth > 6:
+        return "…"
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            name = str(key)
+            lower = name.lower()
+            if lower in _PINCO_SECRET_KEYS or any(
+                hint in lower for hint in _PINCO_SECRET_HINTS
+            ):
+                out[name] = "（已隐藏：含签名或凭据）"
+            else:
+                out[name] = _pinco_redact(item, depth + 1)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_pinco_redact(item, depth + 1) for item in list(value)[:50]]
+    if isinstance(value, str) and len(value) > 300:
+        return value[:300] + "…"
+    return value
+
+
+def _pinco_raw_summary(raw: Any) -> str:
+    try:
+        text = json.dumps(
+            _pinco_redact(raw or {}), ensure_ascii=False, indent=2, default=str
+        )
+    except (TypeError, ValueError):
+        return "（原始字段无法序列化）"
+    return text[:4000]
+
+
+def _pinco_brief(exc: BaseException) -> str:
+    return (str(exc).strip() or type(exc).__name__)[:200]
+
+
+async def _pinco_find_course(adapter: Any, course_id: str) -> Any:
+    name = _pinco_platform(adapter)
+    for course in await adapter.list_courses():
+        if course.remote_id == course_id:
+            return course
+    raise ActionInputError(f"在 {name} 里找不到课程号 {course_id!r}")
+
+
+async def _pinco_locate_assignment(
+    adapter: Any, assignment_id: str
+) -> tuple[Assignment, Any]:
+    """在课程/作业列表里找到目标作业（返回作业与所属课程）。
+
+    品课没有「按作业号取作业」的只读方法，所以只能扫一遍列表。控制台的
+    「作业列表」也是按这个口径列的，从那里复制的作业号一定能找到。
+    """
+    name = _pinco_platform(adapter)
+    for course in await adapter.list_courses():
+        for item in await adapter.list_assignments(course):
+            if item.remote_id == assignment_id:
+                return item, course
+    raise ActionInputError(
+        f"在 {name} 的作业列表里找不到作业 {assignment_id!r} —— "
+        "请从「作业列表」复制作业号"
+    )
+
+
+async def _pinco_learning(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """学习任务 = 课程材料：列材料、大小、学习进度（只读）。"""
+    name = _pinco_platform(adapter)
+    only = str(params.get("course") or "").strip()
+    courses = list(await adapter.list_courses())
+    if only:
+        courses = [course for course in courses if course.remote_id == only]
+        if not courses:
+            raise ActionInputError(f"没有找到课程号 {only!r}")
+
+    rows: list[dict[str, Any]] = []
+    for course in courses:
+        for item in await adapter.list_learning_tasks(course):
+            rows.append(
+                {
+                    "course": course.name or course.remote_id,
+                    "material_id": item.remote_id,
+                    "name": item.title,
+                    "size_mb": _pinco_size_mb(item.raw),
+                    "progress": _pinco_percent(item.progress),
+                    "source": _pinco_material_source(item.raw),
+                }
+            )
+
+    scope = f"（课程 {only}）" if only else "（全部课程）"
+    return table(
+        platform=name,
+        action="learning",
+        label="学习任务 / 材料进度",
+        title=f"学习任务 / 材料{scope} —— {len(rows)} 项",
+        note=(
+            "只读。品课的「学习任务」就是课程材料（PPT/PDF/视频）：没有题目，"
+            "也不会提交任何内容。「来源」列是平台原始 materialSource/media.type 码，"
+            "语义未确认，只如实展示。"
+        ),
+        columns=[
+            column("course", "课程"),
+            column("material_id", "材料号", mono=True),
+            column("name", "名称"),
+            column("size_mb", "大小(MB)"),
+            column("progress", "学习进度(%)"),
+            column("source", "来源"),
+        ],
+        rows=rows,
+        empty_hint="这些课程下没有课程材料（或平台没有返回）。",
+    )
+
+
+async def _pinco_material(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """材料详情：大小、进度、下载地址与原始字段摘要（只读）。"""
+    name = _pinco_platform(adapter)
+    course_id = _pinco_require(params, "course", "课程号")
+    material_id = _pinco_require(params, "material_id", "材料号")
+    course = await _pinco_find_course(adapter, course_id)
+    item = await adapter.fetch_material_detail(course, material_id)
+
+    if item.downloadable is None:
+        downloadable = "—"
+    else:
+        downloadable = "可下载" if item.downloadable else "不可下载"
+
+    return detail(
+        platform=name,
+        action="material",
+        label="材料详情",
+        title=f"材料详情 · {item.name or material_id}",
+        note=(
+            "只读。下载地址带签名/时效，只在本次响应里展示 —— 不要保存、转发"
+            "或写进文档；下面的原始字段摘要已把签名地址与凭据的值替换掉。"
+        ),
+        fields=[
+            _field("材料号", item.material_id or material_id),
+            _field("材料名", item.name or "—"),
+            _field("课程", course.name or course.remote_id),
+            _field("大小(MB)", _pinco_size_mb(item.raw)),
+            _field("学习进度", _pinco_percent(item.progress)),
+            _field("可下载", downloadable),
+            _field("下载地址", item.download_url or "（平台未提供下载地址）"),
+        ],
+        sections=[
+            _text_section(
+                "原始字段摘要（签名地址与凭据已隐藏）", _pinco_raw_summary(item.raw)
+            ),
+        ],
+    )
+
+
+def _pinco_answer_slot(raw: Any) -> tuple[Any, Any, Any]:
+    """从题目原始载荷里取已有作答槽的 (score, review, submitted)。
+
+    实测形态：题目项里带 ``answer: {score, review, submitted, …}``；
+    没有这个对象时按「平台没给」处理（返回 None / 空串），不猜。
+    """
+    data = raw if isinstance(raw, dict) else {}
+    block = data.get("answer")
+    if not isinstance(block, dict):
+        block = {}
+    score = block.get("score", data.get("score"))
+    review = block.get("review", data.get("review", ""))
+    submitted = block.get("submitted", data.get("submitted"))
+    return score, review, submitted
+
+
+def _pinco_score_text(score: Any) -> str:
+    if score is None:
+        return "—"
+    try:
+        number = float(score)
+    except (TypeError, ValueError):
+        return str(score)
+    if number < 0:  # 实测：未评分为 -1
+        return "未评分"
+    return f"{number:g}"
+
+
+def _pinco_options_text(question: Any) -> str:
+    options = list(getattr(question, "options", None) or [])
+    if not options:
+        return "—"
+    text = " / ".join(
+        f"{chr(ord('A') + index)}. {option}" for index, option in enumerate(options)
+    )
+    return text[:200]
+
+
+async def _pinco_answers(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """作业题目与作答槽：逐题列题型/题干/选项 + 已有作答状态（只读）。"""
+    name = _pinco_platform(adapter)
+    assignment_id = _pinco_require(params, "assignment_id", "作业号")
+    target, course = await _pinco_locate_assignment(adapter, assignment_id)
+
+    try:
+        questions = list(await adapter.fetch_questions(target))
+    except NotSupportedError as exc:
+        # 材料（学习任务）没有题目 —— 这是「选错了」，不是平台故障。
+        raise ActionInputError(str(exc)) from exc
+
+    rows: list[dict[str, Any]] = []
+    for index, question in enumerate(questions):
+        score, review, submitted = _pinco_answer_slot(question.raw)
+        rows.append(
+            {
+                "index": index + 1,
+                "qid": question.remote_id or "",
+                "type": _QUESTION_TYPE_LABEL.get(question.type, question.type.value),
+                "stem": question.stem or "（平台未提供文字题干，题面可能在图片里）",
+                "options": _pinco_options_text(question),
+                "score": _pinco_score_text(score),
+                "review": str(review or "").strip()[:80] or "—",
+                "submitted": (
+                    "—" if submitted is None else ("已提交" if submitted else "未提交")
+                ),
+            }
+        )
+
+    return detail(
+        platform=name,
+        action="answers",
+        label="作业题目与作答槽",
+        title=f"{target.title or assignment_id} · 作答槽",
+        note=(
+            "只读：这里只列出题目与平台已有的作答槽状态，不拼提交报文，"
+            "也不调用任何写接口。score 为 -1 表示平台尚未评分。"
+        ),
+        fields=[
+            _field("作业号", target.remote_id),
+            _field("名称", target.title or "—"),
+            _field("课程", target.course_name or course.name or "—"),
+            _field("类型", _KIND_LABEL.get(target.kind, target.kind.value)),
+            _field("截止", _fmt_deadline(target.deadline) or "—"),
+            _field("状态", "已完成" if target.finished else "未完成"),
+            _field("题目数", len(questions)),
+        ],
+        sections=[
+            _table_section(
+                "题目与作答槽",
+                [
+                    column("index", "#"),
+                    column("qid", "题目号", mono=True),
+                    column("type", "题型"),
+                    column("stem", "题干"),
+                    column("options", "选项"),
+                    column("score", "score"),
+                    column("review", "review"),
+                    column("submitted", "submitted"),
+                ],
+                rows,
+            )
+        ],
+    )
+
+
+async def _pinco_connection(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """连接自检：会话 / is_logged_in / health_check / 课程数量。
+
+    与别的动作不同，这里把「健康检查失败」「课程数量读不出来」当成**结果**展示，
+    而不是往上抛异常 —— 自检的价值就在于把失败点说清楚，而不是变成一条 502。
+    """
+    name = _pinco_platform(adapter)
+    display = getattr(adapter, "display_name", "") or name
+    session = getattr(adapter, "session", None)
+    logged_in = bool(await adapter.is_logged_in())
+
+    try:
+        healthy = await adapter.health_check()
+        health_text = "通过" if healthy else "失败"
+    except Exception as exc:  # noqa: BLE001 - 自检要把失败原因显示出来
+        log.debug("品课连接自检：health_check 抛异常", exc_info=True)
+        health_text = f"失败（{type(exc).__name__}: {_pinco_brief(exc)}）"
+
+    if not logged_in:
+        course_text = "未读取（未登录）"
+    else:
+        try:
+            course_text = str(len(await adapter.list_courses()))
+        except Exception as exc:  # noqa: BLE001 - 同上，失败原因比异常栈有用
+            log.debug("品课连接自检：课程列表读取失败", exc_info=True)
+            course_text = f"读取失败（{type(exc).__name__}: {_pinco_brief(exc)}）"
+
+    fields = [
+        _field("平台", f"{display}（{name}）"),
+        _field("会话", "已接管" if session is not None else "没有会话"),
+        _field("账号", getattr(session, "username", "") or "—"),
+        _field("is_logged_in", "有效" if logged_in else "无效或未登录"),
+        _field("health_check", health_text),
+        _field("课程数量", course_text),
+    ]
+    expires_at = getattr(session, "expires_at", None)
+    if expires_at:
+        fields.append(_field("会话到期", _fmt_deadline(expires_at)))
+
+    return detail(
+        platform=name,
+        action="connection",
+        label="连接自检",
+        title=f"连接自检 · {display}",
+        note="这是一次真实访问平台的只读自检，不会提交任何内容。",
+        fields=fields,
+        sections=[
+            _text_section(
+                "自检项说明",
+                "is_logged_in：本地会话状态（不访问平台）；"
+                "health_check：匿名 GET /system/currentTime，只说明网络/协议通；"
+                "课程数量：GetV1CourseStudentworkbench，能读出来才说明登录态与业务"
+                "接口都可用。健康检查通过但课程数量读取失败时，问题多半在会话/csrf，"
+                "而不是网络。",
+            )
+        ],
+    )
+
+
+def _register_pinco() -> None:
+    register(
+        ActionSpec(
+            platform="pinco",
+            name="learning",
+            label="学习任务 / 材料进度",
+            description="课程材料与学习进度（只读；课程号留空 = 全部课程）",
+            params=(ActionParam("course", "课程号", hint="留空 = 全部课程"),),
+        ),
+        _pinco_learning,
+    )
+    register(
+        ActionSpec(
+            platform="pinco",
+            name="material",
+            label="材料详情",
+            description=(
+                "按课程号 + 材料号取材料详情与下载地址"
+                "（只读；下载地址带签名，只展示不落库）"
+            ),
+            params=(
+                ActionParam("course", "课程号", required=True),
+                ActionParam("material_id", "材料号", required=True),
+            ),
+        ),
+        _pinco_material,
+    )
+    register(
+        ActionSpec(
+            platform="pinco",
+            name="answers",
+            label="作业题目与作答槽",
+            description="逐题列出题型/题干/选项与已有作答槽状态（只读，不提交）",
+            params=(ActionParam("assignment_id", "作业号", required=True),),
+        ),
+        _pinco_answers,
+    )
+    register(
+        ActionSpec(
+            platform="pinco",
+            name="connection",
+            label="连接自检",
+            description="检查品课会话、健康检查与课程数量（只读，会真的访问平台）",
+        ),
+        _pinco_connection,
+    )
+
+
 def load_builtin_actions() -> int:
     """登记所有内置动作。新增平台在这里加一行注册函数即可。"""
     _register_pigai()
     _register_itest()
+    _register_pinco()
     return len(_HANDLERS)
 
 
