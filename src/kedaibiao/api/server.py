@@ -311,6 +311,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._clear_session_cookie()
             return self._json(200, {"ok": True})
 
+        # -- 大模型配置（控制台可改，只有超管能写）--
+        if path == "/api/settings/llm":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.update_llm_config(viewer, payload))
+        if path == "/api/settings/llm/test":
+            self._body_json()  # 统一要求 JSON Content-Type，body 可为空
+            return self._json(200, self.service.test_llm_connection(viewer))
+
         # -- 用户管理 --
         if path == "/api/users":
             return self._json(200, self._create_user(viewer))

@@ -711,11 +711,47 @@
             <div id="llm-status" class="stat-row"></div>
             <dl id="llm-grid" class="env-list"></dl>
           </div>
-          <p class="note">
-            本页<strong>只读</strong>：<span class="mono">api_key</span> 只写服务端环境变量，
-            界面不收集、不回显、也不外发（CSP 已禁止任何外部请求）。
-            未启用时答题会退回到题库命中 / 规则兜底，跑批仍可干跑。
-          </p>
+          <form id="llm-form" class="llm-form" hidden>
+            <div class="action-params">
+              <label class="field" for="llm-base-url">
+                <span class="field-label">接口地址</span>
+                <input id="llm-base-url" class="mono" autocomplete="off"
+                       placeholder="https://api.example.com/v1">
+                <span class="field-hint">OpenAI 兼容协议，通常以 /v1 结尾</span>
+              </label>
+              <label class="field" for="llm-model">
+                <span class="field-label">模型</span>
+                <input id="llm-model" class="mono" autocomplete="off"
+                       placeholder="deepseek-chat">
+                <span class="field-hint">网关里允许的模型名</span>
+              </label>
+              <label class="field" for="llm-api-key">
+                <span class="field-label">API Key</span>
+                <input id="llm-api-key" class="mono" type="password"
+                       autocomplete="new-password" placeholder="留空 = 不修改">
+                <span class="field-hint">只写不读：保存后界面再也拿不到明文</span>
+              </label>
+              <label class="field" for="llm-timeout">
+                <span class="field-label">超时（秒）</span>
+                <input id="llm-timeout" class="mono" type="number" step="1" min="1" max="600">
+              </label>
+              <label class="field" for="llm-temperature">
+                <span class="field-label">温度</span>
+                <input id="llm-temperature" class="mono" type="number" step="0.1" min="0" max="2">
+              </label>
+            </div>
+            <div class="action-submit">
+              <button id="llm-save" class="btn btn-run" type="button">保存</button>
+              <button id="llm-test" class="btn" type="button">测试连接</button>
+              <button id="llm-clear-key" class="btn" type="button">清除 Key</button>
+              <span id="llm-msg" class="field-hint"></span>
+            </div>
+            <p class="note">
+              保存后<strong>立即生效，不用重启</strong>；值存在本机数据库，优先级高于
+              <span class="mono">.env</span>，留空表示回落到 <span class="mono">.env</span>。
+              密钥只写不读，界面不会回显。
+            </p>
+          </form>
         </div>
 
         <!-- ==================================================================

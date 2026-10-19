@@ -403,6 +403,53 @@ run 是「一个作业的处理结果」，job 是「一次跑批的整体结果
 > `env_keys_seen` **只列键名，不列值** —— 让用户确认「我的 `.env` 到底被读到没有」，
 > 这是本项目踩过的坑（`.env` 里的凭据一度完全读不到）。
 
+响应里的 `llm` 是**可在控制台里改**的大模型配置（见下两节）：
+
+```json
+"llm": {
+  "enabled": true, "configured": true, "provider": "openai-compatible",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "api_base": "https://gateway.example.com/v1",
+  "api_key_set": true,
+  "timeout": 90.0, "temperature": 0.0,
+  "editable": true,
+  "override_fields": ["model", "timeout"],
+  "source": "console",
+  "configured_via": "控制台「大模型」面板"
+}
+```
+
+- `source` ∈ `console`（界面保存过）/ `env`（只有 `.env`）/ `none`；
+- `override_fields` 列出被界面覆盖的字段；
+- **`api_key` 的明文永远不出现**，只有 `api_key_set: true/false`。
+
+### `POST /api/settings/llm` —— 改大模型配置（超管）
+
+```json
+{ "base_url": "https://gateway.example.com/v1", "model": "deepseek-chat",
+  "api_key": "sk-...", "timeout": 90, "temperature": 0 }
+```
+
+- 字段都可选；**留空字符串 = 删掉覆盖项、回落到 `.env`**；
+- `api_key` 只写不读：传了就覆盖，`{"clear_api_key": true}` 清除；
+- 校验：`base_url` 必须 `http(s)://`，`timeout` 1~600，`temperature` 0~2；
+- 保存进本机 sqlite（`app_settings` 表），**不回写 `.env`，不用重启**，下一个请求即生效；
+- 非超管 → 403 `forbidden`。
+
+响应：同 `GET /api/settings` 里的 `llm` 对象。
+
+### `POST /api/settings/llm/test` —— 测连通性（超管）
+
+body 可为 `{}`（仍要求 `Content-Type: application/json`）。
+
+```json
+{ "ok": true, "model": "deepseek/deepseek-v4.1-flash",
+  "api_base": "https://gateway.example.com/v1",
+  "reply": "OK", "latency_ms": 1933 }
+```
+
+失败时返回 `kind=platform_error`、HTTP 502，`error` 是可直接展示的失败原因。
+
 ---
 
 ## 3. 平台只读动作（通用机制）

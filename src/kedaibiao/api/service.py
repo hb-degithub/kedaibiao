@@ -13,6 +13,7 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from enum import Enum
@@ -31,6 +32,7 @@ from kedaibiao.api.actions import (
     register_platform,
 )
 from kedaibiao.bank.store import ProgressStore, QuestionBank, record_to_dict
+from kedaibiao.config.overrides import OverrideStore
 from kedaibiao.config.settings import (
     ENV_PREFIX,
     Settings,
@@ -261,9 +263,38 @@ class ConsoleService:
 
     # -- 大模型状态 -------------------------------------------------------
 
+    #: 大模型字段 → 环境变量名（控制台覆盖值与 .env 走同一套键）
+    LLM_FIELDS: dict[str, str] = {
+        "base_url": "KEDAIBIAO_LLM_BASE_URL",
+        "api_key": "KEDAIBIAO_LLM_API_KEY",
+        "model": "KEDAIBIAO_LLM_MODEL",
+        "timeout": "KEDAIBIAO_LLM_TIMEOUT",
+        "temperature": "KEDAIBIAO_LLM_TEMPERATURE",
+        "user_agent": "KEDAIBIAO_LLM_USER_AGENT",
+    }
+
+    def _llm_overrides(self) -> dict[str, str]:
+        """控制台里保存的大模型覆盖值（键形如 ``llm.model``）。"""
+        try:
+            return OverrideStore(self._db_path()).all("llm.")
+        except Exception:  # noqa: BLE001 - 读不到就当没覆盖
+            log.debug("读取大模型覆盖配置失败", exc_info=True)
+            return {}
+
+    def _llm_environ(self) -> dict[str, str]:
+        """把控制台覆盖值叠到环境变量上，得到**本次实际生效**的那一份。"""
+        merged = dict(self.environ)
+        for name, env_name in self.LLM_FIELDS.items():
+            value = self._llm_overrides().get(f"llm.{name}")
+            if value is not None and value != "":
+                merged[env_name] = value
+        return merged
+
     def llm_status(self) -> dict[str, Any]:
         """大模型答题的配置状态。**绝不返回 api_key 的值**，只说有没有设。"""
-        cfg = LLMConfig.from_env(self.environ)
+        cfg = LLMConfig.from_env(self._llm_environ())
+        overrides = self._llm_overrides()
+        from_console = sorted(k.split(".", 1)[1] for k in overrides if k.startswith("llm."))
         return {
             "enabled": cfg.enabled,
             "configured": cfg.enabled,
@@ -272,10 +303,113 @@ class ConsoleService:
             "api_base": cfg.base_url,
             # 只报告「有没有设」，不返回内容
             "api_key_set": bool(cfg.api_key),
+            "timeout": cfg.timeout,
+            "temperature": cfg.temperature,
+            # 控制台可改：这些字段被界面覆盖了（其余取 .env）
+            "editable": True,
+            "override_fields": from_console,
+            "source": "console" if from_console else ("env" if cfg.enabled else "none"),
             "configured_via": (
-                "环境变量 KEDAIBIAO_LLM_BASE_URL / _API_KEY / _MODEL"
-                if cfg.enabled else ""
+                "控制台「大模型」面板" if from_console
+                else ("环境变量 KEDAIBIAO_LLM_*" if cfg.enabled else "")
             ),
+        }
+
+    def update_llm_config(self, viewer: Viewer | None, payload: dict[str, Any]) -> dict[str, Any]:
+        """保存控制台里改的大模型配置。只有超管能改。
+
+        只写 ``app_settings``，**不回写 .env**；字段留空 = 删掉覆盖项、回落到 .env。
+        ``api_key`` 只进不出：界面永远拿不到明文，只看到「已设置 / 未设置」。
+        """
+        if not (viewer and viewer.is_superadmin):
+            raise ConsoleError("只有超级管理员能改大模型配置", kind="forbidden", status=403)
+        if not isinstance(payload, dict):
+            raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+
+        store = OverrideStore(self._db_path())
+        updates: dict[str, str] = {}
+        removals: list[str] = []
+
+        base_url = str(payload.get("base_url") or "").strip()
+        if "base_url" in payload:
+            if base_url and not re.match(r"^https?://", base_url):
+                raise ConsoleError(
+                    "接口地址必须 http:// 或 https:// 开头",
+                    kind="bad_request", status=400,
+                )
+            if base_url:
+                updates["llm.base_url"] = base_url.rstrip("/")
+            else:
+                removals.append("llm.base_url")
+
+        model = str(payload.get("model") or "").strip()
+        if "model" in payload:
+            if model:
+                updates["llm.model"] = model
+            else:
+                removals.append("llm.model")
+
+        if "api_key" in payload:
+            key = str(payload.get("api_key") or "").strip()
+            if key:
+                updates["llm.api_key"] = key
+        if payload.get("clear_api_key"):
+            removals.append("llm.api_key")
+
+        for name, low, high in (("timeout", 1.0, 600.0), ("temperature", 0.0, 2.0)):
+            if name not in payload:
+                continue
+            raw = payload.get(name)
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                raise ConsoleError(f"{name} 必须是数字", kind="bad_request", status=400) from None
+            if not (low <= value <= high):
+                raise ConsoleError(
+                    f"{name} 要在 {low:g}~{high:g} 之间", kind="bad_request", status=400
+                )
+            updates[f"llm.{name}"] = f"{value:g}"
+
+        if "user_agent" in payload:
+            ua = str(payload.get("user_agent") or "").strip()
+            if ua:
+                updates["llm.user_agent"] = ua
+            else:
+                removals.append("llm.user_agent")
+
+        try:
+            store.put_many(updates)
+            store.delete([k for k in removals if k not in updates])
+        except Exception as exc:  # noqa: BLE001
+            raise ConsoleError(f"保存失败：{exc}", kind="internal", status=500) from exc
+        return self.llm_status()
+
+    def test_llm_connection(self, viewer: Viewer | None) -> dict[str, Any]:
+        """用当前生效的配置真发一次最小请求，验证 key / 地址 / 模型是否可用。"""
+        from kedaibiao.tasks.llm import LLMAnswerer, LLMError
+
+        cfg = LLMConfig.from_env(self._llm_environ())
+        if not cfg.enabled:
+            raise ConsoleError(
+                "大模型还没配好：至少要填接口地址和模型名", kind="bad_request", status=400
+            )
+        llm = LLMAnswerer(cfg)
+        started = time.monotonic()
+        try:
+            reply = asyncio.run(llm.complete(
+                "你是连通性测试助手。", "只回复两个字母：OK", max_tokens=64
+            ))
+        except LLMError as exc:
+            raise ConsoleError(f"调用失败：{exc}", kind="platform_error", status=502) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise ConsoleError(f"调用失败：{type(exc).__name__}: {exc}",
+                               kind="platform_error", status=502) from exc
+        return {
+            "ok": True,
+            "model": cfg.model,
+            "api_base": cfg.base_url,
+            "reply": (reply or "").strip()[:200],
+            "latency_ms": int((time.monotonic() - started) * 1000),
         }
 
     # -- 只读接口 ---------------------------------------------------------
@@ -568,7 +702,8 @@ class ConsoleService:
         creds, cookie_file = self._resolve_login(platform, viewer)
 
         runtime = build_runtime(
-            root=self.root, environ=self.environ, cookie_file=cookie_file,
+            # 大模型这类「控制台可改」的配置要叠进来，动作层才能看到界面上的值
+            root=self.root, environ=self._llm_environ(), cookie_file=cookie_file,
             owner_id=viewer.user_id if (viewer and viewer.authenticated) else 0,
         )
         adapter: Any = None
@@ -1117,7 +1252,7 @@ class ConsoleService:
         """没给初始正文时，用大模型按题目要求起草。"""
         from kedaibiao.tasks.llm import LLMAnswerer, LLMConfig
 
-        cfg = LLMConfig.from_env(self.environ)
+        cfg = LLMConfig.from_env(self._llm_environ())
         if not cfg.enabled:
             return ""
         requirement = getattr(page, "requirement", "") or topic
@@ -1222,7 +1357,8 @@ class ConsoleService:
         settings = load_settings(root=self.root, environ=self.environ)
         owner_id = viewer.user_id if (viewer and viewer.authenticated) else 0
         runtime = build_runtime(
-            root=self.root, environ=self.environ, cookie_file=cookie_file,
+            # 大模型这类「控制台可改」的配置要叠进来，动作层才能看到界面上的值
+            root=self.root, environ=self._llm_environ(), cookie_file=cookie_file,
             owner_id=owner_id,
         )
         adapter: Any = None

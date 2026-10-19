@@ -275,6 +275,11 @@ main { padding: 0 20px 40px; max-width: 1280px; width: 100%; }
 .badge-warn  { color: var(--yellow); border-color: #4a3c1c; background: var(--warn-bg); }
 /* 「只读」标记：会真的访问平台但不改动任何东西 */
 .badge-ro    { color: var(--fg-dim); border-color: #33404e; background: #161d25; letter-spacing: .08em; }
+
+/* 大模型配置表单的反馈文字：成功绿、失败红（复用「只读/写操作」的配色） */
+.llm-msg-ok  { color: var(--green); }
+.llm-msg-err { color: #f0a49c; }
+.llm-form { margin-top: 10px; }
 /* 「写操作」标记：会改平台侧状态（开考计时 / 填答案 / 交卷），不可逆 */
 .badge-rw    { color: #f0a49c; border-color: #5c2a24; background: var(--red-bg); letter-spacing: .08em; }
 

@@ -30,7 +30,7 @@
  *     界面写明「该平台尚未实现提交」并禁用该平台的行内「提交」（capabilities.submit === false
  *     时也禁用），绝不假装成功。干跑/真提交两条路径的硬门槛（一题没答、置信度低于阈值）
  *     由后端 400 拦下，前端只显示它的中文 error。
- *   - 大模型答题状态只读展示（有 /api/overview.llm（或 /api/settings.llm）就用，没有就
+ *   - 大模型配置可在本页面直接改（POST /api/settings/llm），状态来自 /api/settings.llm；
  *     显示「未配置」）；前端**不收集 api_key**。
  *   - 浏览器会话抓取：契约没有 cookie 写入接口，所以账号页给可复制的命令行
  *     （capture --profile / --cookie），并说明「未登录的登录页也会下发匿名 csrfToken，
@@ -4570,6 +4570,110 @@
     }
     fill(grid, kids);
     body.hidden = false;
+    fillLlmForm(llm);
+  }
+
+  /* ==================================================================
+     大模型配置表单（可写）
+     契约：POST /api/settings/llm {base_url, model, api_key?, timeout?, temperature?}
+           POST /api/settings/llm/test            → {ok, model, reply, latency_ms}
+     密钥只写不读：输入框永远留空，占位符只说「已设置 / 未设置」。
+     ================================================================== */
+
+  function fillLlmForm(llm) {
+    var form = $('llm-form');
+    if (!form) { return; }
+    form.hidden = !(isObj(llm) && llm.editable !== false);
+    if (form.hidden) { return; }
+    var base = $('llm-base-url'), model = $('llm-model');
+    var key = $('llm-api-key'), timeout = $('llm-timeout'), temp = $('llm-temperature');
+    if (base && document.activeElement !== base) {
+      base.value = String(llmField(llm, ['api_base', 'base_url', 'baseUrl', 'endpoint']) || '');
+    }
+    if (model && document.activeElement !== model) {
+      model.value = String(llmField(llm, ['model', 'model_name', 'modelName']) || '');
+    }
+    if (key) {
+      key.value = '';
+      key.placeholder = llm.api_key_set ? '已设置（留空 = 不修改）' : '未设置，粘贴 key 后保存';
+    }
+    if (timeout && document.activeElement !== timeout) {
+      timeout.value = llm.timeout === undefined || llm.timeout === null ? '60' : String(llm.timeout);
+    }
+    if (temp && document.activeElement !== temp) {
+      temp.value = llm.temperature === undefined || llm.temperature === null
+        ? '0' : String(llm.temperature);
+    }
+    var hint = $('llm-hint');
+    if (hint) {
+      hint.textContent = (llm.source === 'console')
+        ? ('可在本页修改 · 已覆盖字段：' + ((llm.override_fields || []).join('、') || '—'))
+        : (llm.enabled
+          ? '当前值来自 .env · 改完保存即覆盖'
+          : '未配置：填接口地址 + 模型 + key 后保存');
+    }
+  }
+
+  function setLlmMsg(text, ok) {
+    var node = $('llm-msg');
+    if (!node) { return; }
+    node.textContent = text || '';
+    node.className = 'field-hint' + (ok === true ? ' llm-msg-ok' : (ok === false ? ' llm-msg-err' : ''));
+  }
+
+  function applyLlmStatus(body) {
+    if (!isObj(body)) { return; }
+    state.settings = state.settings || {};
+    state.settings.llm = body;
+    renderLlm();
+  }
+
+  function saveLlmConfig() {
+    var form = $('llm-form');
+    if (!form) { return; }
+    var payload = {
+      base_url: String(($('llm-base-url') || {}).value || '').trim(),
+      model: String(($('llm-model') || {}).value || '').trim()
+    };
+    var key = String(($('llm-api-key') || {}).value || '').trim();
+    if (key) { payload.api_key = key; }
+    var timeout = String(($('llm-timeout') || {}).value || '').trim();
+    if (timeout) { payload.timeout = Number(timeout); }
+    var temp = String(($('llm-temperature') || {}).value || '').trim();
+    if (temp) { payload.temperature = Number(temp); }
+
+    setLlmMsg('保存中…');
+    postJson('/api/settings/llm', payload).then(function (body) {
+      var k = $('llm-api-key');
+      if (k) { k.value = ''; }
+      applyLlmStatus(body);
+      setLlmMsg('已保存，立即生效（新请求就用这套配置）', true);
+    }, function (err) {
+      setLlmMsg('保存失败：' + describeError(err), false);
+    });
+  }
+
+  function clearLlmKey() {
+    if (!window.confirm('清除已保存的 API Key？（之后回落到 .env，若 .env 也没有就无法调用）')) {
+      return;
+    }
+    setLlmMsg('清除中…');
+    postJson('/api/settings/llm', { clear_api_key: true }).then(function (body) {
+      applyLlmStatus(body);
+      setLlmMsg('API Key 已清除', true);
+    }, function (err) {
+      setLlmMsg('清除失败：' + describeError(err), false);
+    });
+  }
+
+  function testLlmConnection() {
+    setLlmMsg('测试中…（会真发一次最小请求）');
+    postJson('/api/settings/llm/test', {}).then(function (body) {
+      setLlmMsg('连接成功 · ' + (body.model || '') + ' · ' + (body.latency_ms || '?') +
+        'ms · 回复「' + (body.reply || '').slice(0, 20) + '」', true);
+    }, function (err) {
+      setLlmMsg('连接失败：' + describeError(err), false);
+    });
   }
 
   /* ==================================================================
@@ -5062,6 +5166,11 @@
     });
 
     window.addEventListener('hashchange', function () { applyRoute(); });
+
+    /* 大模型配置：保存 / 测试连接 / 清除 key（settings 页） */
+    if ($('llm-save')) { $('llm-save').addEventListener('click', saveLlmConfig); }
+    if ($('llm-test')) { $('llm-test').addEventListener('click', testLlmConnection); }
+    if ($('llm-clear-key')) { $('llm-clear-key').addEventListener('click', clearLlmKey); }
 
     $('run-form').addEventListener('submit', onRunSubmit);
     $('run-platform').addEventListener('change', function () { applyRunConstraints(); });
