@@ -388,26 +388,31 @@ class Browser:
         })
 
     def capture_response(
-        self, url_pattern: str, *, trigger: Any = None,
+        self, url_pattern: str, *, trigger_script: str = "",
         timeout: float = 30.0, settle: float = 3.0,
     ) -> dict[str, str]:
         """等一个 URL 含 ``url_pattern`` 的响应，返回 ``{"url","body"}``。
 
-        ``trigger`` 在开始等待后**只执行一次**（通常是「点登录」这类动作），
-        这样不会因为动作太早而错过请求。
+        ``trigger_script`` 是**在被监听期间执行的一次 JS**（例如「点开始考试」）。
+        它由本方法自己发送，**不经过** :meth:`call` —— 因为 ``call`` 会丢弃
+        事件，那样会漏掉触发瞬间到达的请求；而且多线程共用一条 socket 会
+        让消息错位、连接被对端关闭（实测踩过）。
 
-        找不到就返回空 dict —— 调用方决定是重试还是报错。
+        空闲 ``settle`` 秒没有新消息就认为「不会有响应了」，总时长不超过 ``timeout``。
+        找不到就返回空 dict —— 由调用方决定重试还是报错。
         """
         ws = self.connect()
         tracked: dict[str, str] = {}
-        # hard = 总超时上限；idle = 空闲超时（收到消息就往后推）
         hard = time.monotonic() + timeout
         idle = time.monotonic() + settle
-        if trigger is not None:
-            try:
-                trigger()
-            except Exception:  # noqa: BLE001 - 触发失败不影响继续等
-                log.debug("capture trigger 失败", exc_info=True)
+        if trigger_script:
+            self._seq += 1
+            # awaitPromise=False：点一下就走，不等页面，避免把事件读窗口挤掉
+            ws.send_text(json.dumps({
+                "id": self._seq, "method": "Runtime.evaluate",
+                "params": {"expression": trigger_script, "awaitPromise": False,
+                           "returnByValue": True},
+            }))
         while time.monotonic() < min(hard, idle):
             try:
                 raw = ws.recv_text()
