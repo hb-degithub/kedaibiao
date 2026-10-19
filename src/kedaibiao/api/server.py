@@ -439,6 +439,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 initial_essay=str(payload.get("initial_essay") or ""),
                 viewer=viewer,
                 analysis_timeout=float(payload.get("analysis_timeout") or 180),
+                resubmit_without_score=bool(payload.get("resubmit_without_score")),
             ))
 
         if path == "/api/essays/wait":

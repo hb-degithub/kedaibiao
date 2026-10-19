@@ -225,9 +225,9 @@ async def fetch_snapshot(
             state = row.score_raw
             break
 
-    if state in PENDING_STATES:
-        return EssaySnapshot(rid=rid, eid=eid, raw_state=state or "待分析")
-
+    # 注意：**列表里写「未截止」不代表没有分**。实测有些作业老师开了提前批改，
+    # 列表还显示「未截止」，但详情页已经有分数、四维和逐句批注，而且可以反复重交。
+    # 所以这里一律先读详情页，读不到才按列表状态当作「还没出分」。
     try:
         detail = await adapter.fetch_essay_detail(rid, eid)
     except (PigaiParseError, Exception) as exc:  # noqa: BLE001 - 页面形态未知就当没出分
@@ -267,8 +267,10 @@ async def wait_for_grade(
     若已经出分（列表里是数字）就直接读，不重复触发分析。
     """
     snapshot = await fetch_snapshot(adapter, rid=rid, eid=eid)
-    if snapshot.graded or snapshot.raw_state == "未截止":
+    if snapshot.graded:
         return snapshot
+    # 「未截止」也可能已经有分（提前批改），fetch_snapshot 已经读过详情页了；
+    # 真的没分才去触发/等分析。
 
     key = await start_analysis(http, base=base, rid=rid, eid=eid)
     await poll_analysis(http, base=base, rid=rid, key=key, timeout=timeout, on_tick=on_tick)

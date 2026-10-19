@@ -1137,6 +1137,7 @@ class ConsoleService:
         initial_essay: str = "",
         viewer: Viewer | None = None,
         analysis_timeout: float = 180.0,
+        resubmit_without_score: bool = False,
     ) -> dict[str, Any]:
         """启动「写→交→看批注→改写→再交」的后台任务。
 
@@ -1167,6 +1168,7 @@ class ConsoleService:
                 "job_id": job_id, "platform": scope, "rid": rid.strip(),
                 "target_score": float(target_score), "max_attempts": int(max_attempts),
                 "analysis_timeout": analysis_timeout,
+                "resubmit_without_score": bool(resubmit_without_score),
                 "status": "running", "started_at": _now(), "finished_at": None,
                 "events": [], "attempts": [], "stop_reason": "", "message": "",
                 "best_score": None, "initial_essay": initial_essay,
@@ -1182,7 +1184,8 @@ class ConsoleService:
         threading.Thread(
             target=self._run_grade_loop, args=(job_id, scope, rid.strip(),
                                                float(target_score), int(max_attempts),
-                                               initial_essay, viewer, analysis_timeout),
+                                               initial_essay, viewer, analysis_timeout,
+                                               bool(resubmit_without_score)),
             name=f"kedaibiao-grade-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
@@ -1556,7 +1559,8 @@ class ConsoleService:
 
     def _run_grade_loop(self, job_id: str, platform: str, rid: str,
                         target: float, attempts: int, initial_essay: str,
-                        viewer: Viewer | None, analysis_timeout: float = 180.0) -> None:
+                        viewer: Viewer | None, analysis_timeout: float = 180.0,
+                        resubmit_without_score: bool = False) -> None:
         from kedaibiao.platforms.pigai.grade_loop import GradeLoop
         from kedaibiao.tasks.llm import LLMConfig, LLMAnswerer
 
@@ -1636,6 +1640,7 @@ class ConsoleService:
                 on_event=on_event, rewrite=rewrite,
                 word_range=word_range,
                 analysis_timeout=analysis_timeout,
+                resubmit_without_score=resubmit_without_score,
             )
             result = asyncio.run(loop.run(rid=rid, topic=topic, initial_essay=essay))
 

@@ -2203,6 +2203,7 @@
     'attempt.analysis': '分析中… （{tick}）',
     'attempt.graded': '出分：{score}（批注 {feedback_count} 条）',
     'attempt.rewriting': '按批注改写中…',
+    'attempt.resubmit_without_score': '没有分数，按你的选择继续改写重交',
     'attempt.error': '出错：{error}',
     'attempt.timeout': '等分超时：{error}',
     'loop.finish': '循环结束'
@@ -2382,8 +2383,9 @@
     var box = el('div', 'grader-retry');
     box.appendChild(el('p', 'hint',
       job.stop_reason === 'timeout'
-        ? '批改还没出分（稿子已经提交，不用重交）。可以再等一段时间，或手动获取一次。'
-        : '这一轮没取到分数。可以先手动获取一次，或继续等待。'));
+        ? '批改还没出分（稿子已经提交，不用重交）。可以再等一段时间、手动获取一次，'
+          + '或者确定可以继续改就直接改写重交。'
+        : '这一轮没取到分数。可以先手动获取一次、继续等待，或直接改写重交。'));
 
     var row = el('div', 'grader-controls');
     var secs = 180;
@@ -2398,9 +2400,14 @@
     var fetchBtn = el('button', 'btn btn-sm', '手动获取一次');
     fetchBtn.type = 'button';
     fetchBtn.addEventListener('click', function () { graderFetch(); });
+    var forceBtn = el('button', 'btn btn-sm btn-danger', '直接改写重交');
+    forceBtn.type = 'button';
+    forceBtn.title = '不等分数，直接改写后重新提交（批改网有些作业允许提前批改/反复重交）';
+    forceBtn.addEventListener('click', function () { graderForceResubmit(); });
     var actions = el('div', 'grader-actions');
     actions.appendChild(waitBtn);
     actions.appendChild(fetchBtn);
+    actions.appendChild(forceBtn);
     box.appendChild(row);
     box.appendChild(actions);
 
@@ -2409,6 +2416,32 @@
     box.appendChild(out);
     if (eid) { box.appendChild(el('p', 'hint', '稿件号：' + eid)); }
     return box;
+  }
+
+  /* 不等分数，直接按目标改写并重交（用户明确授权的写操作） */
+  function graderForceResubmit() {
+    var out = $('grader-retry-out');
+    var say = function (text, ok) {
+      if (!out) { return; }
+      out.textContent = text;
+      out.className = 'grader-retry-out' + (ok === true ? ' llm-msg-ok' : (ok === false ? ' llm-msg-err' : ''));
+    };
+    if (!window.confirm('不等分数，直接改写并重新提交？\n\n这会真的向批改网再交一篇（不可撤销）。')) {
+      return;
+    }
+    say('已启动：不等分数，改写后重交…');
+    graderApi('/api/essays/grade-loop', {
+      platform: 'pigai', assignment_id: grader.rid,
+      target_score: grader.target, max_attempts: grader.maxAttempts,
+      analysis_timeout: grader.analysisTimeout, resubmit_without_score: true,
+    }).then(function (job) {
+      grader.busy = true; grader.error = ''; grader.job = job;
+      graderRender();
+      say('已开始重交流程，进度见下方。', true);
+      if (job && job.job_id) { graderPoll(job.job_id); }
+    }).catch(function (e) {
+      say('启动失败：' + describeError(e, { platform: 'pigai' }), false);
+    });
   }
 
   function graderWait(eid, seconds, btn) {

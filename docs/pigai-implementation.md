@@ -69,18 +69,37 @@ POST ?c=ajax&a=process              {key, i}     → 返回 {s:"start|ok", sleep
 实现见 `grading.py::start_analysis` / `poll_analysis`。
 **不要自己定轮询间隔** —— 服务端每次会给 `sleep`（毫秒），按它等就好。
 
-### 2.3 未截止：分数不可得，不是失败
+### 2.3 「未截止」≠ 没有分（2026-10-19 实测纠正）
 
-作业没到截止时间，列表里显示的是「未截止」而不是数字。
-这**不是错误、也不是 0 分**，继续提交也不会出分。
+原来以为：列表里写「未截止」= 平台不给分。**实测是错的。**
 
-`grade_loop` 里单独区分了三种停止原因：
+同一篇作文（rid `…112`，eid `…354`）：
+
+| 来源 | 看到的东西 |
+| --- | --- |
+| 已提交列表 `list_finished_essays()` | `score_raw = "未截止"`（提交次数 3） |
+| **详情页 `fetch_essay_detail()`** | **83 分 / 4 个维度 / 21 条逐句批注 / 总评** |
+
+也就是说老师开了「提前批改」时，列表还没放分，详情页早就有分有评价了；
+这类作业通常也**允许反复提交修改**。
+
+所以：
+
+- `fetch_snapshot()` **一律先读详情页**，读不到才按列表状态当「还没出分」；
+- `wait_for_grade()` 不再因为「未截止」直接返回，避免把已有分数漏掉；
+- `grade_loop` **先取分、展示分，再决定要不要重交**：分够了直接停，一次都不提交。
+
+`grade_loop` 的停止原因：
 
 | 原因 | 含义 | 该怎么做 |
 | --- | --- | --- |
-| `reached` | 达到目标分 | 成功 |
+| `reached` | 达到目标分 | 成功（旧稿已达标也不会再提交） |
 | `exhausted` | 轮次用完仍未达标 | 调大 `max_attempts` 或降低目标 |
-| `unavailable` | 平台不给分（未截止/分析超时） | **别重试**，等到期后再取分 |
+| `timeout` | 等批改出分超时（稿子已交） | 「继续等待 N 秒」或「手动获取」，**不用重交** |
+| `unavailable` | 详情页确实还没分 | 手动获取 / 继续等待 / 确认可改后「直接改写重交」 |
+
+`resubmit_without_score=true` 是给「确实没分但学生想继续改」的口子：
+只有界面上点「直接改写重交」（带二次确认）才会传，默认关闭。
 
 ---
 
@@ -93,7 +112,7 @@ POST ?c=ajax&a=process              {key, i}     → 返回 {s:"start|ok", sleep
 | `login(credentials)` | 写（登录） | cookie 落盘，后续跨进程复用 |
 | `is_logged_in()` | 只读 | |
 | `list_pending_assignments()` | 只读 | 待办作文 |
-| `list_finished_essays()` | 只读 | 已提交列表（**含分数**，未出分是「未截止」） |
+| `list_finished_essays()` | 只读 | 已提交列表（**含分数**；「未截止」不代表没分，见 §2.3） |
 | `fetch_essay_detail(rid, eid)` | 只读 | 分数 / 四维度 / 总评 / 逐条批注 / 正文 |
 | `fetch_assignment_by_rid(rid)` | 只读 | 写作页（题目要求、字数区间、满分） |
 | **`submit(assignment, answers)`** | **写（不可逆）** | 提交作文；正文取 `Answer.text` |

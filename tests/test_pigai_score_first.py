@@ -145,8 +145,34 @@ class TestScoreFirst(Base):
         result = await loop.run(rid="R", topic="T", initial_essay="v1")
 
         self.assertEqual(result.stop_reason, "unavailable")
-        self.assertEqual(adapter.submits, 0, "没分就绝不重交")
-        self.assertIn("先别重交", result.message)
+        self.assertEqual(adapter.submits, 0, "默认没分就不重交")
+        self.assertIn("直接改写重交", result.message, "要把「可以强制重交」的出口告诉用户")
+
+    async def test_existing_not_graded_but_forced_resubmit_submits(self) -> None:
+        """用户明确点「直接改写重交」时才允许没分也交。"""
+        adapter = Adapter([old_row("待分析")])
+
+        async def fetch(*a, **k):
+            return Snap(None, state="待分析")
+
+        async def wait(*a, **k):
+            return Snap(None, state="待分析")
+
+        self.patch_grading(fetch=fetch, wait=wait)
+        rewrites: list[int] = []
+
+        async def _rewrite(snap, essay, n):
+            rewrites.append(n)
+            return f"v{n}"
+
+        loop = GradeLoop(adapter=adapter, http=object(), base="", target_score=90,
+                         max_attempts=1, rewrite=_rewrite,
+                         resubmit_without_score=True)
+        result = await loop.run(rid="R", topic="T", initial_essay="v1")
+
+        self.assertEqual(adapter.submits, 1, "开了开关就该交")
+        self.assertEqual(rewrites, [1], "先改写再交")
+        self.assertEqual(result.stop_reason, "unavailable")
 
     async def test_no_existing_submits_initial_essay(self) -> None:
         adapter = Adapter([])

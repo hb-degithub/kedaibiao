@@ -175,6 +175,7 @@ class GradeLoop:
         rewrite: Callable[[Any, str, int], Any] | None = None,
         word_range: str = "",
         analysis_timeout: float = 180.0,
+        resubmit_without_score: bool = False,
     ) -> None:
         self.adapter = adapter
         self.http = http
@@ -185,6 +186,10 @@ class GradeLoop:
         self.rewrite = rewrite
         self.word_range = word_range
         self.analysis_timeout = analysis_timeout
+        #: 拿不到分数时也允许「改写后重交」。
+        #: 批改网有些作业老师开了提前批改：列表写「未截止」但详情页早就有分，
+        #: 而且允许反复提交修改 —— 也有真的还没出分、但学生想继续改的情况。
+        self.resubmit_without_score = bool(resubmit_without_score)
 
     def _emit(self, kind: str, **payload: Any) -> None:
         if self.on_event is None:
@@ -262,19 +267,24 @@ class GradeLoop:
                 # 低于目标：基于原稿改写（拿得到正文就用原稿）
                 if current.essay_text.strip():
                     essay = current.essay_text
-            elif current is not None:
+            elif current is not None and not self.resubmit_without_score:
                 result.stop_reason = STOP_UNAVAILABLE
                 result.message = (
-                    f"已有稿件（{eid}）平台还没给分（{current.raw_state or '待分析'}）。"
-                    "未到截止时间的作业不公布分数 —— 继续交也不会有分，先别重交。"
+                    f"已有稿件（{eid}）平台还没给出分数（{current.raw_state or '待分析'}）。"
+                    "可以先「手动获取一次」或「继续等待 N 秒」；"
+                    "如果你确定这篇可以继续改，点「直接改写重交」。"
                 )
                 self._emit("loop.finish", stop_reason=result.stop_reason,
                            best_score=None, message=result.message)
                 return result
+            elif current is not None:
+                # 用户明确要求：没分也继续改 → 用现有正文/批注往下走
+                self._emit("attempt.resubmit_without_score", eid=eid,
+                           raw_state=current.raw_state)
 
         for attempt in range(1, self.max_attempts + 1):
             # ② 分已经看到了：够了就停，不够才改写重交
-            if current is not None and current.graded:
+            if current is not None and (current.graded or self.resubmit_without_score):
                 if self.rewrite is None:
                     result.stop_reason = STOP_EXHAUSTED
                     result.message = (
@@ -283,7 +293,8 @@ class GradeLoop:
                     )
                     break
                 self._emit("attempt.rewriting", attempt=attempt,
-                           score=current.score)
+                           score=current.score if current.graded else None,
+                           raw_state=getattr(current, "raw_state", ""))
                 try:
                     essay = await self.rewrite(current, essay, attempt)
                 except Exception as exc:  # noqa: BLE001
@@ -373,10 +384,16 @@ class GradeLoop:
                 )
                 break
             if not record.graded:
+                if self.resubmit_without_score and attempt < self.max_attempts \
+                        and self.rewrite is not None:
+                    self._emit("attempt.resubmit_without_score", attempt=attempt,
+                               raw_state=record.raw_state)
+                    continue
                 result.stop_reason = STOP_UNAVAILABLE
                 result.message = (
-                    f"平台未给出分数（{record.raw_state or '待分析'}）。"
-                    "未到截止时间的作业不公布分数 —— 这不是失败，继续交也不会有分。"
+                    f"平台还没给出分数（{record.raw_state or '待分析'}）。"
+                    "可以先「手动获取一次」或「继续等待 N 秒」；"
+                    "要接着改就点「直接改写重交」。"
                 )
                 break
             if attempt >= self.max_attempts:
