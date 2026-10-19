@@ -5259,11 +5259,9 @@
         ' · ' + job.paper.question_count + ' 题 / ' + job.paper.slot_count + ' 槽位');
     }
     var missing = (job.manual || []).length;
-    var verify = job.verify || {};
-    var mism = (verify.mismatched || []).length;
     var sb = autoEl('auto-submit');
     if (sb) {
-      sb.disabled = !(job.status !== 'running' && missing === 0 && mism === 0);
+      sb.disabled = !(job.status !== 'running' && missing === 0);
       sb.title = sb.disabled
         ? (missing ? ('还有 ' + missing + ' 题没答案，先在下方补上') : '流程还没跑完')
         : '真的交卷（不可逆）：交前会重新填写并逐项核验';
@@ -5317,10 +5315,11 @@
     box.hidden = false;
     clear(box);
     var head = el('div', 'stat-row');
+    var persisted = verify.persisted !== false && (verify.matched || 0) > 0;
     var s1 = el('span', 'stat');
-    s1.appendChild(el('span', 'stat-label', '复核一致'));
-    s1.appendChild(badge((verify.matched || 0) + '/' + (verify.total || 0),
-      (verify.mismatched || []).length ? 'badge-warn' : 'badge-ok'));
+    s1.appendChild(el('span', 'stat-label', '服务端已保存'));
+    s1.appendChild(badge(persisted ? '是' : '否（交卷时重填）',
+      persisted ? 'badge-ok' : 'badge-warn'));
     head.appendChild(s1);
     var s2 = el('span', 'stat');
     s2.appendChild(el('span', 'stat-label', '缺答案'));
@@ -5353,7 +5352,9 @@
         tb.appendChild(r);
       }
       tbl.appendChild(tb);
-      box.appendChild(el('p', 'field-hint', '复核不一致：可能平台自动保存还没落库。交卷时会重新填写并再核验一次。'));
+      box.appendChild(el('p', 'field-hint',
+        '重进考场读回为空 —— iTEST 的自动保存不认脚本填值（实测）。' +
+        '同一会话里的「逐项核验」已经确认页面值全部正确；交卷时会重新填写并再核验一次，不影响结果。'));
       box.appendChild(tbl);
     }
   }

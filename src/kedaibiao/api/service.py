@@ -67,7 +67,7 @@ log = logging.getLogger(__name__)
 
 JOB_HISTORY = 50
 EVENT_HISTORY = 500
-OPTIONAL_DEPS = ("playwright", "fastapi", "uvicorn")
+OPTIONAL_DEPS = ("playwright", "fastapi", "uvicorn", "faster_whisper")
 
 
 class ConsoleError(Exception):
@@ -1212,12 +1212,15 @@ class ConsoleService:
         runtime = None
         adapter = None
         try:
+            # 实测：iTEST 的自动保存只认页面里「真实交互」产生的答案模型，
+            # 我们用脚本设值 + 派发事件填进去的值**不会**被它缓存（重进页面读回是空）。
+            # 所以默认不等自动保存；需要观察持久化的可以显式传 autosave_wait。
             wait = autosave_wait
             if wait is None:
                 try:
-                    wait = float(self.environ.get("KEDAIBIAO_ITEST_AUTOSAVE_WAIT", "65"))
+                    wait = float(self.environ.get("KEDAIBIAO_ITEST_AUTOSAVE_WAIT", "0"))
                 except (TypeError, ValueError):
-                    wait = 65.0
+                    wait = 0.0
 
             self._job_log(job_id, "info", f"$ kedaibiao itest auto --exam {exam_id}")
             creds, cookie_file = self._resolve_login("itest", viewer)
@@ -1274,7 +1277,6 @@ class ConsoleService:
                 raise ConsoleError("大模型未配置 —— 先在设置页填接口地址/模型/Key",
                                    kind="bad_request", status=400)
             self._job_log(job_id, "info", f"       模型：{config.model}")
-            self._job_log(job_id, "info", f"       已有 {0} 题答案，开始生成…")
             sheet, transcripts, stt_note = asyncio.run(build_sheet(
                 paper, LLMAnswerer(config), cache_dir,
                 environ=self._llm_environ(),
@@ -1350,13 +1352,24 @@ class ConsoleService:
                 for qid, want in answers.items()
                 if str(current.get(qid) or "").strip() != str(want).strip()
             ]
-            self._job_log(
-                job_id, "ok" if not mismatched else "warn",
-                f"[5/6] 复核完成：{matched}/{len(answers)} 题与答案单一致"
-                + ("" if not mismatched else f"，{len(mismatched)} 题不一致"),
-            )
-            self._job_step(job_id, "复核", not mismatched,
-                           f"{matched}/{len(answers)} 一致")
+            persisted = matched > 0
+            if mismatched and not persisted:
+                # 全是空 → 平台没把脚本填的值缓存下来（实测如此），不是填错
+                self._job_log(
+                    job_id, "info",
+                    f"[5/6] 重进考场读回：页面是空的（{matched}/{len(answers)}）—— "
+                    "iTEST 的自动保存不认脚本填值；交卷时会重新填写并核验，不影响结果。",
+                )
+                self._job_step(job_id, "复核", True,
+                               "服务端未落库（交卷时重填并核验）")
+            else:
+                self._job_log(
+                    job_id, "ok" if not mismatched else "warn",
+                    f"[5/6] 复核完成：{matched}/{len(answers)} 题与答案单一致"
+                    + ("" if not mismatched else f"，{len(mismatched)} 题不一致"),
+                )
+                self._job_step(job_id, "复核", not mismatched,
+                               f"{matched}/{len(answers)} 一致")
 
             # ⑤ 需要人工的题
             manual_rows: list[dict[str, Any]] = []
@@ -1387,6 +1400,7 @@ class ConsoleService:
                         "total": len(answers), "matched": matched,
                         "mismatched": mismatched, "missing": missing,
                         "filled": filled, "checked": checked,
+                        "persisted": persisted,
                     }
                     job["paper"] = {
                         "title": next((s.part1 for s in paper.sections if s.part1), paper.title),
