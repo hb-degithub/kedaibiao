@@ -34,6 +34,7 @@ from kedaibiao.platforms.base import Capabilities, PlatformAdapter
 GOOD = "apifake"
 NOSUBMIT = "apinosubmit"
 SLOW = "apislow"
+NOCAPS = "apinocaps"
 
 
 class FakeAdapter(PlatformAdapter):
@@ -81,6 +82,14 @@ def _creds(platform: str) -> dict[str, str]:
     return {f"KEDAIBIAO_{up}_USER": "stu", f"KEDAIBIAO_{up}_PASS": "pw"}
 
 
+class NoCapsAdapter(FakeAdapter):
+    """连课程都读不了的平台 —— 验证「能力缺失 -> 400 而不是 502」。"""
+
+    name = NOCAPS
+    display_name = "啥都不支持的平台"
+    capabilities = Capabilities(list_courses=False, list_assignments=False)
+
+
 class ServiceTestBase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -94,7 +103,7 @@ class ServiceTestBase(unittest.TestCase):
             'notify = "null"\n',
             encoding="utf-8",
         )
-        for cls in (FakeAdapter, NoSubmitAdapter, SlowAdapter):
+        for cls in (FakeAdapter, NoSubmitAdapter, SlowAdapter, NoCapsAdapter):
             adapters.register(cls.name, cls, override=True)
             self.addCleanup(adapters.unregister, cls.name)
         self.service = ConsoleService(root=self.root)
@@ -511,11 +520,45 @@ class TestActions(ServiceTestBase):
     def test_list_actions(self) -> None:
         data = self.service.actions(GOOD)
         self.assertEqual(data["platform"], GOOD)
-        self.assertEqual([a["name"] for a in data["actions"]], ["ping"])
-        self.assertTrue(data["actions"][0]["params"][0]["required"])
+        names = [a["name"] for a in data["actions"]]
+        self.assertIn("ping", names)
+        ping = next(a for a in data["actions"] if a["name"] == "ping")
+        self.assertTrue(ping["params"][0]["required"])
 
-    def test_actions_for_platform_without_any(self) -> None:
-        self.assertEqual(self.service.actions(NOSUBMIT)["actions"], [])
+    def test_every_platform_gets_generic_actions(self) -> None:
+        """课程/作业是框架契约里就有的能力，所有平台都该有。"""
+        for name in (GOOD, NOSUBMIT):
+            names = {a["name"] for a in self.service.actions(name)["actions"]}
+            self.assertLessEqual({"courses", "assignments"}, names, name)
+
+    def test_courses_action_returns_table(self) -> None:
+        with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
+            out = self.service.run_action(GOOD, "courses", {})
+        self.assertEqual(out["kind"], "table")
+        self.assertEqual(out["rows"][0]["name"], "课程")
+        self.assertEqual(out["platform"], GOOD)
+
+    def test_assignments_action_returns_table(self) -> None:
+        with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
+            out = self.service.run_action(GOOD, "assignments", {})
+        self.assertEqual(out["kind"], "table")
+        self.assertEqual(out["rows"][0]["id"], "a1")
+        self.assertEqual(out["rows"][0]["state"], "未完成")
+
+    def test_assignments_unknown_course_is_bad_request(self) -> None:
+        with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
+            with self.assertRaises(ConsoleError) as cm:
+                self.service.run_action(GOOD, "assignments", {"course": "nope"})
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertIn("nope", str(cm.exception))
+
+    def test_unsupported_capability_is_bad_request_not_502(self) -> None:
+        """平台不支持某项读能力 -> 400（用户选错了），不是 502（平台故障）。"""
+        with mock.patch.dict(os.environ, _creds(NOCAPS), clear=True):
+            with self.assertRaises(ConsoleError) as cm:
+                self.service.run_action(NOCAPS, "courses", {})
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertEqual(cm.exception.status, 400)
 
     def test_actions_unknown_platform(self) -> None:
         with self.assertRaises(ConsoleError) as cm:

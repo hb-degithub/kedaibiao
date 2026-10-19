@@ -390,7 +390,9 @@ class TestActionRoutes(ServerTestBase):
     def test_list_actions(self) -> None:
         data = self.as_json(self.call(f"/api/platforms/{PLATFORM}/actions"))
         self.assertEqual(data["platform"], PLATFORM)
-        self.assertEqual([a["name"] for a in data["actions"]], ["echo"])
+        names = [a["name"] for a in data["actions"]]
+        self.assertIn("echo", names)
+        self.assertIn("courses", names)
 
     def test_list_actions_unknown_platform(self) -> None:
         status, body, _ = self.call("/api/platforms/ghost/actions")

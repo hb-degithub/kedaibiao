@@ -22,6 +22,8 @@ from typing import Any
 from kedaibiao import __version__, adapters
 from kedaibiao.api.actions import (
     PLATFORM_ERROR,
+    ActionInputError,
+    ensure_generic_actions,
     get_handler,
     has_action,
     load_builtin_actions,
@@ -35,7 +37,7 @@ from kedaibiao.config.settings import (
     resolve_environ,
 )
 from kedaibiao.core.models import TaskKind
-from kedaibiao.runtime import build_runtime
+from kedaibiao.runtime import build_runtime, persist_http_cookies
 from kedaibiao.security.credentials import CredentialError, env_key, load_credentials
 from kedaibiao.tasks.pipeline import PipelineConfig
 
@@ -358,6 +360,7 @@ class ConsoleService:
     def actions(self, platform: str) -> dict[str, Any]:
         scope = self._check_platform(platform)
         assert scope is not None
+        ensure_generic_actions(scope)  # 课程/作业是所有平台都有的通用动作
         return {
             "platform": scope,
             "actions": [spec.to_dict() for spec in register_platform(scope)],
@@ -368,6 +371,7 @@ class ConsoleService:
     ) -> dict[str, Any]:
         scope = self._check_platform(platform)
         assert scope is not None
+        ensure_generic_actions(scope)
         if not has_action(scope, action):
             available = ", ".join(s.name for s in register_platform(scope)) or "<无>"
             raise ConsoleError(
@@ -434,6 +438,9 @@ class ConsoleService:
                 return await get_handler(platform, action)(adapter, params)
             except ConsoleError:
                 raise
+            except ActionInputError as exc:
+                # 参数不合法是 400，不是 502 —— 别把用户的输入错误说成平台故障
+                raise ConsoleError(str(exc), kind="bad_request", status=400) from exc
             except Exception as exc:  # noqa: BLE001
                 log.exception("平台动作失败: %s/%s", platform, action)
                 raise ConsoleError(
@@ -441,6 +448,12 @@ class ConsoleService:
                 ) from exc
         finally:
             if adapter is not None:
+                # 落盘 cookie：下次点「课程/作业」时 refresh_session 能直接跳过登录，
+                # 不必每次都重新登录（对平台礼貌，也快得多）
+                try:
+                    persist_http_cookies(adapter, runtime.settings)
+                except Exception:  # noqa: BLE001 - 落盘失败不该影响已拿到的结果
+                    log.debug("cookie 落盘失败", exc_info=True)
                 await adapter.close()
             runtime.close()
 

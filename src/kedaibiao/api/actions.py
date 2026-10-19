@@ -69,6 +69,13 @@ class ActionSpec:
         }
 
 
+class ActionInputError(ValueError):
+    """动作参数不合法 —— 由服务层翻成 400 ``bad_request``。
+
+    和 ``platform_error`` 区分开：那是「平台那边出问题」，这是「你给的东西不对」。
+    """
+
+
 #: 处理器签名：(适配器实例, 参数 dict) -> 展示信封
 Handler = Callable[[Any, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -234,7 +241,7 @@ async def _pigai_pending(adapter: Any, params: dict[str, Any]) -> dict[str, Any]
         for a in rows
     ]
     return table(
-        platform="pigai",
+        platform=getattr(adapter, "name", "pigai"),
         action="pending",
         label="待办作业",
         title=f"待办作业（{len(data)} 项）",
@@ -264,7 +271,7 @@ async def _pigai_finished(adapter: Any, params: dict[str, Any]) -> dict[str, Any
         for r in rows
     ]
     return table(
-        platform="pigai",
+        platform=getattr(adapter, "name", "pigai"),
         action="finished",
         label="历史作文",
         title=f"历史作文（{len(data)} 篇）",
@@ -340,7 +347,7 @@ async def _pigai_essay(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
         )
 
     return detail(
-        platform="pigai",
+        platform=getattr(adapter, "name", "pigai"),
         action="essay",
         label="作文详情",
         title=f"作文详情 · {rid} / {eid}",
@@ -375,7 +382,7 @@ async def _pigai_lookup(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
         sections.append(_text_section("已有正文", page.essay_text))
 
     return detail(
-        platform="pigai",
+        platform=getattr(adapter, "name", "pigai"),
         action="lookup",
         label="按作业号查询",
         title=f"写作页 · {page.rid or rid}",
@@ -433,3 +440,124 @@ def load_builtin_actions() -> int:
     """登记所有内置动作。新增平台在这里加一行注册函数即可。"""
     _register_pigai()
     return len(_HANDLERS)
+
+
+# --------------------------------------------------------------------------
+# 通用动作：框架契约里本来就有的读能力，所有平台都有
+# --------------------------------------------------------------------------
+
+
+def _caps(adapter: Any) -> Any:
+    return getattr(adapter, "capabilities", None)
+
+
+async def _generic_courses(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    name = getattr(adapter, "name", "?")
+    caps = _caps(adapter)
+    if caps is not None and not getattr(caps, "list_courses", False):
+        raise ActionInputError(f"{name} 不支持读取课程列表")
+
+    courses = await adapter.list_courses()
+    rows = [
+        {
+            "id": c.remote_id,
+            "name": c.name,
+            "teacher": c.teacher or "—",
+            "term": c.term or "—",
+        }
+        for c in courses
+    ]
+    return table(
+        platform=name,
+        action="courses",
+        label="课程",
+        title=f"课程列表（{len(rows)} 门）",
+        columns=[
+            column("id", "课程号", mono=True),
+            column("name", "名称"),
+            column("teacher", "教师"),
+            column("term", "学期"),
+        ],
+        rows=rows,
+        empty_hint="该平台没有返回任何课程。",
+    )
+
+
+async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    name = getattr(adapter, "name", "?")
+    caps = _caps(adapter)
+    for capability in ("list_courses", "list_assignments"):
+        if caps is not None and not getattr(caps, capability, False):
+            raise ActionInputError(f"{name} 不支持读取作业列表")
+
+    courses = list(await adapter.list_courses())
+    only = str(params.get("course") or "").strip()
+    if only:
+        courses = [c for c in courses if c.remote_id == only]
+        if not courses:
+            raise ActionInputError(f"没有找到课程号 {only!r}")
+
+    rows: list[dict[str, Any]] = []
+    for course in courses:
+        for item in await adapter.list_assignments(course):
+            rows.append(
+                {
+                    "course": course.name or course.remote_id,
+                    "id": item.remote_id,
+                    "title": item.title,
+                    "kind": _KIND_LABEL.get(item.kind, item.kind.value),
+                    "deadline": _fmt_deadline(item.deadline) or "—",
+                    "state": "已完成" if item.finished else "未完成",
+                }
+            )
+
+    scope = f"（课程 {only}）" if only else "（全部课程）"
+    return table(
+        platform=name,
+        action="assignments",
+        label="作业",
+        title=f"作业 / 任务{scope} —— {len(rows)} 项",
+        note="只读数据，不会提交任何内容。",
+        columns=[
+            column("course", "课程"),
+            column("id", "任务号", mono=True),
+            column("title", "名称"),
+            column("kind", "类型"),
+            column("deadline", "截止"),
+            column("state", "状态"),
+        ],
+        rows=rows,
+        empty_hint="这些课程下没有作业 / 任务。",
+    )
+
+
+def ensure_generic_actions(platform: str) -> None:
+    """给某个平台补上通用动作。
+
+    在 ``actions()`` / ``run_action()`` 里按需调用，而不是在
+    ``load_builtin_actions()`` 里一次性遍历 —— 平台是自动发现的，
+    注册时机可能晚于本模块的加载。
+    """
+    if not has_action(platform, "courses"):
+        register(
+            ActionSpec(
+                platform=platform,
+                name="courses",
+                label="课程列表",
+                description="该平台的课程 / 班级列表（只读，会真的访问平台）",
+            ),
+            _generic_courses,
+        )
+    if not has_action(platform, "assignments"):
+        register(
+            ActionSpec(
+                platform=platform,
+                name="assignments",
+                label="作业列表",
+                description="各课程下的作业 / 任务（只读，会真的访问平台）",
+                params=(
+                    ActionParam("course", "课程号", hint="留空 = 全部课程"),
+                ),
+            ),
+            _generic_assignments,
+        )

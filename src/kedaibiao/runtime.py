@@ -73,6 +73,22 @@ def build_context(
     )
 
 
+def persist_http_cookies(adapter: PlatformAdapter, settings: Settings) -> bool:
+    """把协议型适配器的 cookie 落盘，返回是否真的写了。
+
+    为什么重要：控制台的「课程 / 作业 / 工具」每次调用都会新建适配器。
+    如果不把 cookie 存下来，每次点一下就是一次完整登录 —— 对平台不礼貌
+    （可能触发风控），对用户也慢。存下来之后 ``refresh_session`` 会先探
+    ``is_logged_in()``，会话还有效就直接跳过登录。
+    """
+    transport = getattr(getattr(adapter.ctx, "http", None), "transport", None)
+    if not isinstance(transport, UrllibTransport):
+        return False
+    path = Path(settings.session_dir) / "http_cookies.json"
+    transport.save_cookies(path)
+    return True
+
+
 @dataclass(slots=True)
 class Runtime:
     """一次性装配好的运行环境。用完记得 ``close()``。"""
@@ -118,10 +134,7 @@ class Runtime:
             self._persist_cookies(adapter)
 
     def _persist_cookies(self, adapter: PlatformAdapter) -> None:
-        transport = getattr(getattr(adapter.ctx, "http", None), "transport", None)
-        if isinstance(transport, UrllibTransport):
-            path = Path(self.settings.session_dir) / "http_cookies.json"
-            transport.save_cookies(path)
+        persist_http_cookies(adapter, self.settings)
 
     def close(self) -> None:
         self.bank.close()
