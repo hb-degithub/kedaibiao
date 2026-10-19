@@ -497,5 +497,92 @@ class TestAccountLoginPath(unittest.TestCase):
         self.assertFalse(Path(cookie_file).exists(), "删账号要连带删掉它的会话文件")
 
 
+class TestAccountDedupe(unittest.TestCase):
+    """同平台同用户名不能重复创建。
+
+    真实场景：用户反复点「新增」失败，库里堆了三条一模一样的号；
+    再点一次又会多一条。所以 add 要按 (归属, 平台, 用户名) 去重，
+    并用唯一索引兜底。
+    """
+
+    def setUp(self) -> None:
+        self.store = AccountStore(":memory:")
+        self.addCleanup(self.store.close)
+
+    def test_same_username_not_duplicated(self) -> None:
+        first = self.store.add(1, "pigai", username="13800138000")
+        again = self.store.add(1, "pigai", username="13800138000")
+        self.assertEqual(first.id, again.id, "重复添加应返回同一个账号")
+        self.assertEqual(len(self.store.list_for(1, "pigai")), 1)
+
+    def test_whitespace_and_case_insensitive(self) -> None:
+        first = self.store.add(1, "pigai", username="13800138000")
+        again = self.store.add(1, "pigai", username="  13800138000  ")
+        self.assertEqual(first.id, again.id)
+
+    def test_different_username_is_separate(self) -> None:
+        a = self.store.add(1, "pigai", username="111")
+        b = self.store.add(1, "pigai", username="222")
+        self.assertNotEqual(a.id, b.id)
+        self.assertEqual(len(self.store.list_for(1, "pigai")), 2)
+
+    def test_same_username_different_owner_is_separate(self) -> None:
+        a = self.store.add(1, "pigai", username="111")
+        b = self.store.add(2, "pigai", username="111")
+        self.assertNotEqual(a.id, b.id, "不同用户的同名账号互不影响")
+
+    def test_same_username_different_platform_is_separate(self) -> None:
+        a = self.store.add(1, "pigai", username="111")
+        b = self.store.add(1, "pinco", username="111")
+        self.assertNotEqual(a.id, b.id)
+
+    def test_repeat_add_updates_label_without_duplicating(self) -> None:
+        first = self.store.add(1, "pigai", label="旧标签", username="111")
+        again = self.store.add(1, "pigai", label="新标签", username="111")
+        self.assertEqual(first.id, again.id)
+        self.assertEqual(again.label, "新标签")
+        self.assertEqual(len(self.store.list_for(1, "pigai")), 1)
+
+    def test_empty_username_rejected(self) -> None:
+        with self.assertRaises(AccountError):
+            self.store.add(1, "pigai", username="   ")
+
+    def test_legacy_duplicates_are_cleaned_on_open(self) -> None:
+        """旧库里的重复记录在开库时被清掉，且当前号指向保留的那条。"""
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dup.db"
+            conn = sqlite3.connect(path)
+            conn.executescript(AccountStore.SCHEMA)
+            # 手工塞三条重复（绕过 add 的去重），并让「当前号」指向要被删的那条
+            for _ in range(3):
+                conn.execute(
+                    "INSERT INTO platform_accounts "
+                    "(owner_id, platform, label, username, is_active, created_at, "
+                    "last_login_note) VALUES (1,'pigai','','111',0,'2026-01-01','')"
+                )
+            ids = [r[0] for r in conn.execute("SELECT id FROM platform_accounts")]
+            conn.execute(
+                "INSERT INTO active_accounts (owner_id, platform, account_id) VALUES (1,'pigai',?)",
+                (ids[-1],),
+            )
+            conn.commit()
+            conn.close()
+
+            store = AccountStore(path)
+            try:
+                rows = store.list_for(1, "pigai")
+                self.assertEqual(len(rows), 1, "重复记录应被清理到一条")
+                self.assertEqual(rows[0].id, ids[0], "保留最早那条")
+                active = store.active_for(1, "pigai")
+                assert active is not None
+                self.assertEqual(active.id, ids[0], "当前号要改指到保留下来的那条")
+            finally:
+                store.close()
+
+
 if __name__ == "__main__":
     unittest.main()

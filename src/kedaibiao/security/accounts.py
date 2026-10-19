@@ -112,6 +112,61 @@ class AccountStore(SqliteStore):
     def schema(self) -> str:
         return self.SCHEMA
 
+    def migrate(self) -> None:
+        """同一 (归属, 平台, 用户名) 只能有一个账号。
+
+        旧库里可能已经有重复（用户反复点「新增」失败留下的），所以顺序是
+        **先去重，再建唯一索引** —— 反过来会直接建索引失败。
+        """
+        self._dedupe()
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_unique "
+            "ON platform_accounts(owner_id, platform, username) WHERE username != ''"
+        )
+
+    def _dedupe(self) -> int:
+        """保留每个 (归属, 平台, 用户名) 最早的一条，删掉其余；返回删除数。
+
+        注意要先把「当前号」指向保留下来的那条，否则 active_accounts 会指向
+        一个已经不存在的行。
+        """
+        rows = self.fetchall(
+            """SELECT owner_id, platform, username, MIN(id) AS keep_id, COUNT(*) AS n
+               FROM platform_accounts WHERE username != ''
+               GROUP BY owner_id, platform, username HAVING n > 1"""
+        )
+        removed = 0
+        for row in rows:
+            keep_id = int(row["keep_id"])
+            dupes = self.fetchall(
+                """SELECT id FROM platform_accounts
+                   WHERE owner_id=? AND platform=? AND username=? AND id != ?""",
+                (row["owner_id"], row["platform"], row["username"], keep_id),
+            )
+            for dupe in dupes:
+                with self.cursor() as cur:
+                    cur.execute(
+                        "UPDATE active_accounts SET account_id=? "
+                        "WHERE owner_id=? AND platform=? AND account_id=?",
+                        (keep_id, row["owner_id"], row["platform"], dupe["id"]),
+                    )
+                    cur.execute(
+                        "DELETE FROM platform_accounts WHERE id=?", (dupe["id"],)
+                    )
+                removed += 1
+        if removed:
+            log.info("账号去重：删除 %d 条重复记录", removed)
+        return removed
+
+    def find(self, owner_id: int, platform: str, username: str) -> PlatformAccount | None:
+        """按 (归属, 平台, 用户名) 找已存在的账号。用户名大小写与空白不敏感。"""
+        row = self.fetchone(
+            "SELECT * FROM platform_accounts "
+            "WHERE owner_id=? AND platform=? AND lower(trim(username))=lower(trim(?))",
+            (owner_id, platform, username),
+        )
+        return self._row(row) if row else None
+
     # -- 查询 -------------------------------------------------------------
 
     def list_for(
@@ -177,6 +232,14 @@ class AccountStore(SqliteStore):
         if not platform:
             raise AccountError("缺少平台名")
         username = (username or "").strip()
+        if not username:
+            raise AccountError("请填写平台用户名")
+        existing = self.find(owner_id, platform, username)
+        if existing is not None:
+            # 同一个平台的同一个号只保留一条：不重复创建，顺手更新标签
+            if label and label.strip() and label.strip() != existing.label:
+                return self.update(existing.id, label=label)
+            return existing
         account_id = self.execute(
             """INSERT INTO platform_accounts
                (owner_id, platform, label, username, is_active, created_at, last_login_note)
