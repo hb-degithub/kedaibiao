@@ -113,21 +113,21 @@ class TestEssayRows(unittest.TestCase):
         self.assertEqual(
             [(r.rid, r.eid) for r in self.rows],
             [
-                ("1000006", "200000004"),
-                ("1000003", "234022144"),
+                ("1000002", "200000001"),
+                ("1000003", "200000002"),
                 ("1000004", "200000003"),
             ],
         )
 
     def test_other_columns(self) -> None:
         first = self.rows[0]
-        self.assertEqual(first.title, "第1000006号 作文")
+        self.assertEqual(first.title, "第1000002号 作文")
         self.assertEqual(first.genre, "作文")
         self.assertEqual(first.submitted_at, "2026-10-16")
         self.assertEqual(first.deadline, "2026-10-19")
         self.assertEqual(first.submit_count, 2)
         self.assertEqual(
-            first.url, "/index.php?c=v2&a=view&eid=200000004&rid=1000006"
+            first.url, "/index.php?c=v2&a=view&eid=200000001&rid=1000002"
         )
 
     def test_unpublished_score_is_none(self) -> None:
@@ -163,7 +163,7 @@ class TestAssignmentRows(unittest.TestCase):
         rows = parse.parse_assignment_rows(fixture("assignments_pending_row.html"))
         self.assertEqual(len(rows), 1)
         row = rows[0]
-        self.assertEqual(row.rid, "1000005")
+        self.assertEqual(row.rid, "1000001")
         self.assertEqual(row.title, "示例课程（三）- Unit 6")
         self.assertEqual(row.kind, "作文")
         self.assertEqual(row.author, "张老师")
@@ -171,9 +171,9 @@ class TestAssignmentRows(unittest.TestCase):
         self.assertEqual(row.deadline, "2026-11-16 23:59")
 
     def test_url_is_raw_write_page_relative(self) -> None:
-        # 实测：href="?c=v2&a=write&rid=1000005" —— 无前导 /、不含 eid、指向写作页
+        # 实测：href="?c=v2&a=write&rid=1000001" —— 无前导 /、不含 eid、指向写作页
         row = parse.parse_assignment_rows(fixture("assignments_pending_row.html"))[0]
-        self.assertEqual(row.url, "?c=v2&a=write&rid=1000005")
+        self.assertEqual(row.url, "?c=v2&a=write&rid=1000001")
         self.assertNotIn("eid", row.url)
 
     def test_raw_cells_always_filled(self) -> None:
@@ -182,7 +182,7 @@ class TestAssignmentRows(unittest.TestCase):
         self.assertEqual(
             row.raw_cells,
             (
-                "1000005",
+                "1000001",
                 "示例课程（三）- Unit 6",
                 "作文",
                 "张老师",
@@ -278,8 +278,8 @@ class TestEssayDetail(unittest.TestCase):
         self.assertNotIn("更多", self.detail.requirements)  # #yq_more 要排除
 
     def test_rid_eid_fall_back_to_embedded_js(self) -> None:
-        self.assertEqual(self.detail.rid, "1000006")
-        self.assertEqual(self.detail.eid, "200000004")
+        self.assertEqual(self.detail.rid, "1000002")
+        self.assertEqual(self.detail.eid, "200000001")
 
     def test_rid_eid_explicit_arguments_win(self) -> None:
         detail = parse.parse_essay_detail(self.html, rid="r1", eid="e1")
@@ -417,9 +417,9 @@ class TestClassRows(unittest.TestCase):
         self.assertEqual(
             [(r.rid, r.submit_count, r.deadline, r.status) for r in self.rows],
             [
-                ("1000005", 0, "2026-11-16 23:59", "交作业"),
-                ("1000006", 1367, "2026-10-19 23:59", "交作业"),
-                ("3431453", 43, "2026-09-19 23:59", "已截止"),
+                ("1000001", 0, "2026-11-16 23:59", "交作业"),
+                ("1000002", 1367, "2026-10-19 23:59", "交作业"),
+                ("1000003", 43, "2026-09-19 23:59", "已截止"),
             ],
         )
 
@@ -537,7 +537,7 @@ class TestWritePage(unittest.TestCase):
 
     def test_fresh_page_all_fields(self) -> None:
         w = self.fresh
-        self.assertEqual(w.rid, "1000005")
+        self.assertEqual(w.rid, "1000001")
         self.assertEqual(w.eid, "")  # _eid 存在但为空 = 未写过
         self.assertFalse(w.has_draft)
         self.assertEqual(w.title, "示例课程（三）- Unit 6")
@@ -551,8 +551,8 @@ class TestWritePage(unittest.TestCase):
 
     def test_draft_page_all_fields(self) -> None:
         w = self.draft
-        self.assertEqual(w.rid, "1000006")
-        self.assertEqual(w.eid, "200000004")
+        self.assertEqual(w.rid, "1000002")
+        self.assertEqual(w.eid, "200000001")
         self.assertTrue(w.has_draft)
         self.assertEqual(w.title, "示例课程（三）- Unit 5")
         self.assertEqual(w.requirement, "示例题目要求文本（占位）。")
@@ -575,7 +575,7 @@ class TestWritePage(unittest.TestCase):
     def test_page_vars_win_over_arguments(self) -> None:
         # ⚠ 语义要点：_eid 存在但为空是「这个作业没写过」的事实，不能被参数覆盖
         w = parse.parse_write_page(fixture("write_fresh.html"), rid="R", eid="E")
-        self.assertEqual((w.rid, w.eid), ("1000005", ""))
+        self.assertEqual((w.rid, w.eid), ("1000001", ""))
         self.assertFalse(w.has_draft)
 
     def test_arguments_used_when_page_has_no_vars(self) -> None:
@@ -662,7 +662,7 @@ class TestColumnIsolation(unittest.TestCase):
         # 真实样本两格 href 相同 → 行为不变（回归保护）
         row = parse.parse_assignment_rows(fixture("assignments_pending_row.html"))[0]
         self.assertEqual(row.title, "示例课程（三）- Unit 6")
-        self.assertEqual(row.url, "?c=v2&a=write&rid=1000005")
+        self.assertEqual(row.url, "?c=v2&a=write&rid=1000001")
 
 
 class TestDimensionGuards(unittest.TestCase):

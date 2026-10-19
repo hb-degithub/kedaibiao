@@ -63,3 +63,6 @@ Thumbs.db
 
 # ---- 本地截图（含真实平台数据，绝不入库）----
 docs/screenshots/
+
+# ---- 敏感字面量登记表（真实 ID / 姓名 / 课程名），绝不入库 ----
+.secret-denylist

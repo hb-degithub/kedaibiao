@@ -43,9 +43,9 @@ _CLIENT_PATH = (
 )
 
 #: 测试用口令：任何日志/异常里出现它就说明脱敏失败
-_PASSWORD = "Hu7!Secret-P@ssw0rd-2026"
+_PASSWORD = "Hu7!Secret-P@ssw0rd-2026"  # noqa: secret-check - 故意的脱敏哨兵
 #: 测试用 cookie 值：同上，只允许出现 cookie 名字
-_COOKIE_SECRET = "juku-cookie-secret-value"
+_COOKIE_SECRET = "juku-cookie-secret-value"  # noqa: secret-check - 故意的脱敏哨兵
 
 _USER = "student@example.com"
 
@@ -88,7 +88,7 @@ _LOGGED_IN_WRITE = (
     "<style>#essayList .select{background:#fff}</style></head><body>"
     '<div id="essayList" class="ydTable">'
     '<ul class="reItemM"><li style="width:80px;">作文ID</li></ul>'
-    '<ul class="reItemS"><li style="width:80px;">1000006</li></ul>'
+    '<ul class="reItemS"><li style="width:80px;">1000002</li></ul>'
     "</div></body></html>"
 )
 #: 空列表页：只有表头但**仍含**容器（对应 parser fixture 的空列表形态）

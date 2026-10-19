@@ -194,6 +194,7 @@ make install-browser   # playwright + chromium，浏览器型平台需要
 │   ├── architecture.md     分层、数据流、扩展点
 │   ├── integration-guide.md 多窗口并行开发与整合的边界纪律
 │   ├── license-policy.md   第三方代码引用政策与已评估清单
+│   ├── security.md         敏感信息与入库纪律（凭据/截图/db 绝不入库）
 │   ├── naming.md           命名与标识符规范
 │   └── research/           平台与依赖的调研报告（含证据来源）
 ├── src/kedaibiao/
@@ -324,4 +325,3 @@ AGPL-3.0 是**强传染**许可，且覆盖网络服务（第 13 条：通过网
 
 > 想改用 `AGPL-3.0-or-later`（允许未来升到 AGPL-4.0）：把 `pyproject.toml` 的
 > `license` 改成 `"AGPL-3.0-or-later"` 即可，其余不变。
-

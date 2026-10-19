@@ -288,7 +288,7 @@ def _raw_href(href: str | None) -> str:
     """行对象的 ``url`` 一律**原样保留** DOM 里的 href（不做绝对化、不发明新 URL）。
 
     两种形态都真实存在：已完成列表是 ``/index.php?c=v2&a=view&eid=..&rid=..``；
-    未完成列表是 ``?c=v2&a=write&rid=1000005``（无前导 ``/``、**不含 eid**，且指向
+    未完成列表是 ``?c=v2&a=write&rid=1000001``（无前导 ``/``、**不含 eid**，且指向
     **写作页**）。调用方需要绝对地址时自行 ``urljoin(protocol.BASE_URL, url)``。
     """
     return (href or "").strip()
@@ -348,7 +348,7 @@ if _NO_PASTE_VAR not in protocol.FRONTEND_SWITCH_VARS:  # pragma: no cover - 契
         "契约已漂移，必须同步 parse.py 后再启动"
     )
 
-#: ``题目：[1000005] 示例课程（三）- Unit 6`` → 抓 ``(rid, 标题)``；方括号可缺省。
+#: ``题目：[1000001] 示例课程（三）- Unit 6`` → 抓 ``(rid, 标题)``；方括号可缺省。
 _TIMU_RE: Final = re.compile(r"^\s*题目\s*[:：]\s*(?:\[\s*(\d+)\s*\]\s*)?(.*)$", re.S)
 #: ``字数:120~150`` —— 用「区间」形态自我区分：页内另一处 ``字数:123 词``（``#init_wc``）不会被匹配。
 _WORD_RANGE_RE: Final = re.compile(r"字数\s*[:：]\s*(\d+\s*[~～\-—]\s*\d+)")
@@ -562,7 +562,7 @@ def parse_assignment_rows(html: str) -> list[protocol.AssignmentRow]:
         与 ``protocol.PENDING_HEADERS`` 逐字一致。
       * **实测**：行级模板 ``#essayList > ul.reItemS``（7 个 ``li``）—— 2026-10-19
         重取的 ``data/recon/pigai/raw/b_index_php_c_write_a_waitComplete.html``
-        里**确有 1 条真实数据行**（作业号 1000005），列序已逐字核对。
+        里**确有 1 条真实数据行**（作业号 1000001），列序已逐字核对。
         **注意**：这与 ``pigai.md`` §6.1 / 8-U15「本轮只有表头、0 行」的旧结论
         不一致（样本是后来重取的），证据以上述样本为准。
       * **推断**：分页/多行时的行为；``操作`` 列的完整取值集合；第 6 列之外是否
@@ -575,7 +575,7 @@ def parse_assignment_rows(html: str) -> list[protocol.AssignmentRow]:
 
       * 标题单元格的 ``<a title="查看作文:">`` 是**空标题**，不可当作标题用 →
         标题取**锚文本**（实测为作业名），``title`` 属性忽略。
-      * ``url`` 存**原样** href：``?c=v2&a=write&rid=1000005``（无前导 ``/``、
+      * ``url`` 存**原样** href：``?c=v2&a=write&rid=1000001``（无前导 ``/``、
         **不含 eid**，且指向**写作页**而非只读详情页）。第 4 列（指定班级）的
         单元格文本与它的 ``title`` 属性内容相同，本实现取**文本**。
 
@@ -1075,7 +1075,7 @@ def parse_class_rows(html: str) -> list[protocol.ClassRow]:
 
     实测正文形如::
 
-        ID：3431453   提交人数： 43   截止日期：2026-09-19 23:59   已截止
+        ID：1000003   提交人数： 43   截止日期：2026-09-19 23:59   已截止
 
     条目容器 ``.baseinfo`` + ``ul.detail`` + 状态 ``.m-score`` 的选择器在
     ``protocol.py`` 里**没有常量**（§6.8 注明「未解剖完整 DOM」）→ 见文件上方
@@ -1112,7 +1112,7 @@ def parse_class_rows(html: str) -> list[protocol.ClassRow]:
                     submit_count = _to_int(value)
                 elif key == _CLASS_LABEL_DEADLINE:
                     deadline = value
-            if not rid:  # 回落：条目内形如 <div class="flex" id="1000006"> 的数字 id
+            if not rid:  # 回落：条目内形如 <div class="flex" id="1000002"> 的数字 id
                 for node in _iter_elements(block):
                     node_id = node.attrs.get("id") or ""
                     if node_id.isdigit():

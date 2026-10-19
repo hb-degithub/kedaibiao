@@ -55,6 +55,14 @@ git commit -m "feat(<平台名>): ..."
 
 不要用 `git add -A` / `git add .` —— 那会把别人未完成的产物一起提交。
 
+提交前跑一次敏感信息检查（**凭据、cookie、数据库、含真实数据的截图都不能入库**）：
+
+```bash
+make check-secrets
+```
+
+规则与已付过的代价见 [security.md](security.md)。
+
 ---
 
 ## 3. 适配器契约

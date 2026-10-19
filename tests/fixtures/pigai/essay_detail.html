@@ -2,7 +2,7 @@
 <!--
   脱敏 fixture —— 批改网「作文评分详情」GET /index.php?c=v2&a=view&eid=&rid=（pigai.md §6.3~§6.6）。
 
-  来源：基于 data/recon/pigai/raw/b_index_php_c_v2_a_view_eid_200000004_rid_1000006.html
+  来源：基于 data/recon/pigai/raw/b_index_php_c_v2_a_view_eid_200000001_rid_1000002.html
   的真实 DOM **重写**（该样本含该学生作文正文，绝不能进版本库）。
 
     * 保留（结构保真）：
@@ -21,7 +21,7 @@
           → 「Placeholder sentence …」占位；
         - 总评正文 → 占位；`fb_js` 的 txt → 占位；用户 id 变量一律不写入本文件；
         - 出题人/班级等个人信息本页没有。
-    * 保留：rid=1000006 / eid=200000004 与时长/分数（非个人信息，便于与 §6.4 逐字对照）。
+    * 保留：rid=1000002 / eid=200000001 与时长/分数（非个人信息，便于与 §6.4 逐字对照）。
     * task-6 增补：`#contents`（正文容器）。⚠ 实测它在**详情页是 `<div>`**，
       正文在其内的 `#parahtml` 中；写作页里同名 id 却是大写 `<TEXTAREA>`。
       这里的两段占位正文与 `write_with_draft.html` 的正文**逐字相同**
@@ -45,12 +45,12 @@
     <div class="sf_l">
       <b id="rescoreTxt" title="满分:100" content="100" style="font-size:60px;">85.5</b>
       <span class="sf_r score_xs" id="score_xs2">
-        <!--<a href="/?c=wx_t&a=img&scene=200000004,00000000" target="_blank">相似详情</a>-->
-        <a href="/res/zhenduan/xs.html?eid=200000004" target="_blank" class="wx_qrcode" title="点击查看相似详情"></a>
+        <!--<a href="/?c=wx_t&a=img&scene=200000001,00000000" target="_blank">相似详情</a>-->
+        <a href="/res/zhenduan/xs.html?eid=200000001" target="_blank" class="wx_qrcode" title="点击查看相似详情"></a>
       </span>
     </div>
     <span class="sf_r" id="sf_r_student">
-      <a href="/index.php?c=v2&a=write&eid=200000004&rid=1000006"><img src="https://cdn.pigai.org//res/images/ws.gif" title="还可以继续修改完善"></a>
+      <a href="/index.php?c=v2&a=write&eid=200000001&rid=1000002"><img src="https://cdn.pigai.org//res/images/ws.gif" title="还可以继续修改完善"></a>
     </span>
     <div id="score_line"></div>
   </div>
@@ -135,7 +135,7 @@
     <div class="yq_itme">
     要求：示例题目要求文本（占位）。
     </div>
-    <div id="yq_more" class="yq_itme"><a href="/index.php?c=v2&a=viewrequest&rid=1000006">更多</a></div>
+    <div id="yq_more" class="yq_itme"><a href="/index.php?c=v2&a=viewrequest&rid=1000002">更多</a></div>
   </div>
 </div>
 
@@ -232,8 +232,8 @@ Placeholder sentence one.</span>
 
 <script>
  var _self='/index.php';
- var _eid='200000004';
- var _request_id= '1000006';
+ var _eid='200000001';
+ var _request_id= '1000002';
  var _version='3';
  var _ttype = '0';
  var fb_js= "";

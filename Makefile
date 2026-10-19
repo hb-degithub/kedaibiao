@@ -4,7 +4,7 @@
 PY ?= python3
 export PYTHONPATH := src
 
-.PHONY: help test test-v doctor platforms clean fmt lint install install-dev install-browser
+.PHONY: help test test-v doctor platforms clean fmt lint install install-dev install-browser check-secrets
 
 help:
 	@echo "make test           # 跑全部单测（纯标准库，无需安装依赖）"
@@ -13,6 +13,7 @@ help:
 	@echo "make platforms      # 列出已注册平台适配器"
 	@echo "make install-dev    # 安装开发依赖（pytest/ruff/mypy）"
 	@echo "make install-browser# 安装 playwright 与 chromium"
+	@echo "make check-secrets  # 入库前检查敏感信息（暂存区）"
 	@echo "make clean          # 清理缓存与运行期数据"
 
 test:
@@ -47,6 +48,9 @@ fmt:
 lint:
 	$(PY) -m ruff check src tests
 	$(PY) -m mypy src
+
+check-secrets:
+	$(PY) scripts/check_secrets.py
 
 clean:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +

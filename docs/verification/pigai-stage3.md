@@ -67,13 +67,13 @@ $ md5sum tests/fixtures/pigai/*.html
 ### 0.3 ⚠ 更正：第一轮 §6/§7 对 lead 基线的质疑**是我比错了样本**
 
 第一轮我把 lead 的详情页基线（89.0/100、24 条点评、`level` 四类齐全）与**离线样本
-`eid=200000004`（85.5/100、19 条、`{error, error_trp}`）**对比，判为「不自洽、需澄清」。
+`eid=200000001`（85.5/100、19 条、`{error, error_trp}`）**对比，判为「不自洽、需澄清」。
 **这个质疑不成立**，是**我**拿错了对照物：lead 的基线来自**另一篇作文**
-`rid=1000003 / eid=234022144`，规格 `docs/research/pigai.md` **§6.10 的表格里明确写了 eid**，
+`rid=1000003 / eid=200000002`，规格 `docs/research/pigai.md` **§6.10 的表格里明确写了 eid**，
 并在其后的 ⚠ 注里专门做了区分说明。两篇不同的作文，两组数字都对。
 
-- 我核对的那篇（`eid=200000004`）→ 85.5 / 19 条 / `{error, error_trp}` —— 与规格 §6.3、§6.5 一致；
-- Lead 基线那篇（`eid=234022144`）→ 89.0 / 24 条 / `{error, error_trp, great, warn}` —— 与规格 §6.10 一致，
+- 我核对的那篇（`eid=200000001`）→ 85.5 / 19 条 / `{error, error_trp}` —— 与规格 §6.3、§6.5 一致；
+- Lead 基线那篇（`eid=200000002`）→ 89.0 / 24 条 / `{error, error_trp, great, warn}` —— 与规格 §6.10 一致，
   且是 **U25 关闭的依据**（四类 `level` 齐全只对这一篇成立）。
 
 **因此第一轮的「需知会-4」撤回**（见 §7 的划线与 §11.0）。教训记在这里：离线只有一篇详情样本时，
@@ -173,7 +173,7 @@ myclass.html                     email=- phone=- cookie=- 真实姓名/校=-
 | fixture 声称 | 真实 recon 里的计数 | 判定 |
 | --- | --- | --- |
 | `myclass.html` 保留 `.baseinfo/.detail/.m-score` 结构 | `class="baseinfo` ×3、`class="detail` ×6、`class="m-score` ×4 | ✅ 结构真实存在 |
-| `assignments_pending_row.html` 该页**有 1 条**数据行（推翻 U15） | `class="reItemS"` ×1，含 `1000005` | ✅ 实锤 |
+| `assignments_pending_row.html` 该页**有 1 条**数据行（推翻 U15） | `class="reItemS"` ×1，含 `1000001` | ✅ 实锤 |
 | `essays_done.html` 真实 10 行、1 条未公布、4 条多稿 | 10 行；`未截止` ×1；提交次数 `{1×6, 2, 2, 3, 6}` | ✅ 完全吻合 |
 | `essay_detail.html` 分数 85.5 / 容器 154px / 19 条点评 | `#rescoreTxt`=85.5、`class="tbL"`×4、`<li sid=`×19 | ✅ 完全吻合 |
 
@@ -194,7 +194,7 @@ rsa_login.py   可执行字符串命中=无  docstring 命中=无
 
 - **可执行代码里 0 处写入端点字面量** —— 这是要害，通过。
 - 但任务书要求的口径是「`platforms/pigai/` **全部源码**确认不存在字面量」。严格照字面，
-  `parse.py` 的 **docstring**（`parse.py:275`、`parse.py:486`）出现了 `?c=v2&a=write&rid=1000005`
+  `parse.py` 的 **docstring**（`parse.py:275`、`parse.py:486`）出现了 `?c=v2&a=write&rid=1000001`
   作为「实测 href 原样」的举例。这是**散文引用**，不是可构造请求；`_raw_href()` 保留它是**数据透传**，
   `Assignment.url` 里的写作页 href 属数据不属代码 —— 与任务书的区分口径一致。
   故判「部分通过」而非「不通过」。
@@ -272,7 +272,7 @@ spec §6.1 表头 li 文案: 作业号/作业标题/类型/出题人/指定班�
 
 规格 §8 已撤回 U15（原断言「waitComplete 只有表头、0 行」）。本地真实样本
 `data/recon/pigai/raw/b_index_php_c_write_a_waitComplete.html` 里 `class="reItemS"` **恰好 1 条**，
-含 `1000005` —— **勘误成立，行级 DOM 确为已实测**。
+含 `1000001` —— **勘误成立，行级 DOM 确为已实测**。
 但 `protocol.py:79` 仍写「已核验（0 行）」、`protocol.py:190` 仍写「**行级 DOM 未实测（推断）**」，
 与勘误矛盾（见 §8 建议-5，纯文档，无行为影响）。
 
@@ -325,7 +325,7 @@ pigai x3, outbound blocked: successful = True | tests = 100 | errors = 0 | failu
 | A8d | **宽度 `9…9`（400 位数字）** | 不崩 | `ratio` 变 `0.0` / `inf` / **`nan`**（见建议-6） | ⚠️ 见建议-6 |
 | A9 | 重复 `#essayList` 容器 | 取一个 | 取第一个容器的行 | ✅ 符合 |
 | B1 | **未完成行：标题格无锚点、操作格有锚点** | 取标题格文本 | **`title='查看'`、`url='?c=v2&a=write&rid=9999'`（跨列错位）** | ❌ 缺陷（需知会-1） |
-| B2 | 待完成 `Assignment.url` 绝对化 | 正确绝对 URL | **`https://www.pigai.org?c=v2&a=write&rid=1000005`（丢了 `/index.php`）** | ❌ 缺陷（需知会-2） |
+| B2 | 待完成 `Assignment.url` 绝对化 | 正确绝对 URL | **`https://www.pigai.org?c=v2&a=write&rid=1000001`（丢了 `/index.php`）** | ❌ 缺陷（需知会-2） |
 | B3 | 缺 `_JUKU_USER`、首页无登录表单 | 保守判否 | `is_logged_in() = True`（无 cookie jar 也 True） | ⚠️ 需知会-3 |
 | B3b | 首页是 200「500 Internal Error」页 | 保守判否 | `is_logged_in() = True` | ⚠️ 需知会-3 |
 | B4 | 合法页含子串 `lg_from_w`（如帮助文案） | 不误判 | **抛 `SessionExpiredError`**（裸子串匹配） | ⚠️ 建议-8 |
@@ -343,14 +343,14 @@ fixture 是重写件，所以我另外直接拿本地真实抓包 `data/recon/pi
 == 已完成列表 ==
 行数=10 | 全部有 rid/eid=True | score 为 None 的行数=1 | 提交次数>=2 的行数=4
 提交次数分布=[1,1,1,1,1,1,2,2,3,6]
-样例: rid=1000006 eid=200000004 score_raw='未截止' url=/index.php?c=v2&a=view&eid=200000004&rid=1000006
+样例: rid=1000002 eid=200000001 score_raw='未截止' url=/index.php?c=v2&a=view&eid=200000001&rid=1000002
 
 == 未完成列表（U15 实锤）==
-行数=1 | rid=1000005 | title/kind/author/classes/deadline 均取到（真实出题人姓名与班级串本报告不转录）
-url=?c=v2&a=write&rid=1000005
+行数=1 | rid=1000001 | title/kind/author/classes/deadline 均取到（真实出题人姓名与班级串本报告不转录）
+url=?c=v2&a=write&rid=1000001
 
 == 评分详情 ==
-rid=1000006 eid=200000004 score=85.5 full_marks=100.0
+rid=1000002 eid=200000001 score=85.5 full_marks=100.0
 dims=[('词汇',0.8951008,'title',154.0),('句子',0.86631035,'title',154.0),
       ('篇章结构',0.78319855,'title',154.0),('内容相关',0.78202034,'title',154.0)]
 四维全部 source=title: True
@@ -359,11 +359,11 @@ meta keys=[字数,开始时间,截止时间,批改公式,批改方式,满分] | 
 fb_js 条目数=17
 
 == 班级页 ==
-条目数=3 | 1000005/0/交作业 · 1000006/1367/交作业 · 3431453/43/已截止
+条目数=3 | 1000001/0/交作业 · 1000002/1367/交作业 · 1000003/43/已截止
 ```
 
 **解析器在真实（非 fixture）DOM 上端到端正确** —— 这是本次验证能给出的最强离线结论。
-班级页 3 条与规格 §6.8 的实测正文（`ID：3431453 提交人数：43 截止日期：2026-09-19 23:59 已截止`）逐字吻合。
+班级页 3 条与规格 §6.8 的实测正文（`ID：1000003 提交人数：43 截止日期：2026-09-19 23:59 已截止`）逐字吻合。
 
 ### 与 lead 基线的交叉核对
 
@@ -374,14 +374,14 @@ fb_js 条目数=17
 | 其中 4 条多稿 | 提交次数 ≥2 的 = 4 条 | ✅ 吻合 |
 | 其中 1 条成绩未公布 | `未截止` = 1 条 | ✅ 吻合 |
 | 四维均 `source="title"` | 真实详情四维全 `title` | ✅ 吻合 |
-| ~~某篇详情 **总分 89.0/100**~~ | ~~唯一本地详情样本 = 85.5/100~~ | ✅ **撤回质疑**：lead 那篇是 `eid=234022144`（§6.10），与我核对的 `eid=200000004` 是两篇 |
-| ~~按句点评 **24 条**~~ | ~~唯一本地详情样本 = 19 条~~ | ✅ **撤回质疑**：同上，24 条属 `eid=234022144` |
-| ~~`level` 四类齐全~~ | ~~本地样本 = `{error,error_trp}`~~ | ✅ **撤回质疑**：`eid=200000004` 只有两类，`eid=234022144` 四类齐全；U25 的关闭依据是后者 |
+| ~~某篇详情 **总分 89.0/100**~~ | ~~唯一本地详情样本 = 85.5/100~~ | ✅ **撤回质疑**：lead 那篇是 `eid=200000002`（§6.10），与我核对的 `eid=200000001` 是两篇 |
+| ~~按句点评 **24 条**~~ | ~~唯一本地详情样本 = 19 条~~ | ✅ **撤回质疑**：同上，24 条属 `eid=200000002` |
+| ~~`level` 四类齐全~~ | ~~本地样本 = `{error,error_trp}`~~ | ✅ **撤回质疑**：`eid=200000001` 只有两类，`eid=200000002` 四类齐全；U25 的关闭依据是后者 |
 
 ~~前三项与四维来源被本地真实样本独立证实；后三项与本地唯一真实详情样本不符。~~
 **更正（2026-10-19 11:52，task-11）**：~~后三项~~ 全部 8 项与规格一致 —— 后三项的对照物应是
-`docs/research/pigai.md` §6.10 表格里点名的 `rid=1000003 / eid=234022144`，而我当时错用了
-仓库里那唯一一篇离线样本 `eid=200000004`。**「需知会-4」撤回**，详见 §0.3。
+`docs/research/pigai.md` §6.10 表格里点名的 `rid=1000003 / eid=200000002`，而我当时错用了
+仓库里那唯一一篇离线样本 `eid=200000001`。**「需知会-4」撤回**，详见 §0.3。
 代码侧本无碍：`ANNOTATION_LEVELS` 已含四类，未知等级原样保留（A6 已验证）。
 
 ## 7. 问题清单（按影响面分级）
@@ -401,10 +401,10 @@ fb_js 条目数=17
 - 建议修法：`anchor` 只从标题格取；取不到就退回 `cells[1]` 文本，URL 留空或另从操作格单独取并**不覆盖标题**。
 
 **N-2｜待完成作业的 `Assignment.url` 绝对化丢掉 `/index.php`（`adapter.py:238`，`_to_pending_assignment`）**
-- 最小复现：`urljoin("https://www.pigai.org", "?c=v2&a=write&rid=1000005")`
-  → `'https://www.pigai.org?c=v2&a=write&rid=1000005'`。
+- 最小复现：`urljoin("https://www.pigai.org", "?c=v2&a=write&rid=1000001")`
+  → `'https://www.pigai.org?c=v2&a=write&rid=1000001'`。
 - 页面 href 是**相对当前页**（`/index.php?c=write&a=waitComplete`）的查询串，正确绝对地址应为
-  `https://www.pigai.org/index.php?c=v2&a=write&rid=1000005`。已完成列表因 href 带前导 `/` 而**没有这个问题**。
+  `https://www.pigai.org/index.php?c=v2&a=write&rid=1000001`。已完成列表因 href 带前导 `/` 而**没有这个问题**。
 - 影响：`url` 在 docstring 里声明「原样绝对化仅供展示」，原始 href 另存于 `raw`/`raw_cells`，数据未丢；
   但展示出来的链接是坏的。降级为非阻断。
 - 建议修法：以 `protocol.Endpoints.ASSIGNMENTS_PENDING` 为 base 做 urljoin，或保留原样 href 由消费方绝对化。
@@ -420,8 +420,8 @@ fb_js 条目数=17
 
 **N-4｜~~lead 基线里的详情页数字与本地唯一真实样本不自洽~~ —— 已撤回（是我比错样本）**
 - ~~本地真实样本：85.5/100、19 条点评、level∈`{error,error_trp}`；lead 简报：89.0/100、24 条、四类齐全。~~
-- **撤回（2026-10-19 11:52）**：lead 基线来自 `rid=1000003 / eid=234022144`（规格 §6.10 表格里写明），
-  我核对的离线样本是 `eid=200000004`。两篇作文，两组数字都对；U25 的关闭依据是前者。
+- **撤回（2026-10-19 11:52）**：lead 基线来自 `rid=1000003 / eid=200000002`（规格 §6.10 表格里写明），
+  我核对的离线样本是 `eid=200000001`。两篇作文，两组数字都对；U25 的关闭依据是前者。
 - 详细更正见 §0.3；本轮不构成缺陷，也不影响任何代码结论。
 
 ### 建议（6 条）
@@ -526,7 +526,7 @@ from kedaibiao.platforms.pigai import parse
 raw = Path("data/recon/pigai/raw")
 print(len(parse.parse_essay_rows((raw/"b_index_php_c_write.html").read_text(encoding="utf-8"))))
 print(len(parse.parse_assignment_rows((raw/"b_index_php_c_write_a_waitComplete.html").read_text(encoding="utf-8"))))
-d = parse.parse_essay_detail((raw/"b_index_php_c_v2_a_view_eid_200000004_rid_1000006.html").read_text(encoding="utf-8"))
+d = parse.parse_essay_detail((raw/"b_index_php_c_v2_a_view_eid_200000001_rid_1000002.html").read_text(encoding="utf-8"))
 print(d.score, [x.source for x in d.dimensions], len(d.annotations))
 print(len(parse.parse_class_rows((raw/"b_index_php_c_write_a_myclass.html").read_text(encoding="utf-8"))))
 PY
@@ -550,10 +550,10 @@ md5sum src/kedaibiao/platforms/pigai/{protocol,parse,adapter,client,rsa_login}.p
 
 | | rid / eid | 总分 | 点评数 | level 集合 | 规格出处 |
 | --- | --- | --- | --- | --- | --- |
-| 我首版核对的离线样本 | `1000006` / **`200000004`** | 85.5 | 19 | `{error, error_trp}` | §6.3 / §6.5 |
-| **lead 基线（U25 关闭依据）** | **`1000003` / `234022144`** | **89.0** | **24** | **`{error, error_trp, great, warn}`** | **§6.10** |
+| 我首版核对的离线样本 | `1000002` / **`200000001`** | 85.5 | 19 | `{error, error_trp}` | §6.3 / §6.5 |
+| **lead 基线（U25 关闭依据）** | **`1000003` / `200000002`** | **89.0** | **24** | **`{error, error_trp, great, warn}`** | **§6.10** |
 
-`docs/research/pigai.md` §6.10 的表格**点名了 `eid=234022144`**，其后还有一段 ⚠ 注专门提醒
+`docs/research/pigai.md` §6.10 的表格**点名了 `eid=200000002`**，其后还有一段 ⚠ 注专门提醒
 「不要把它和离线样本混为一谈」——**是我没有先按 eid 对齐**。撤回首版「需知会-4」，
 并在 §0.3、§6、§7、§9 四处做了更正标注。**此项不构成任何缺陷。**
 
@@ -577,7 +577,7 @@ $ PYTHONPATH=src python3 -m unittest tests.test_pigai_login tests.test_pigai_par
 | # | 首版问题 | 冻结版结论 | 关键证据 |
 | --- | --- | --- | --- |
 | **N-1** | 未完成行跨列回落（标题/URL 错位） | ✅ **已修** | 原最小复现 → `title='真正的标题（纯文本，无 a）'`（不再变成「查看」）；**反向**：操作格无锚点 → `url=''`（**不**借标题格）；rid 兜底只认标题格 href |
-| **N-2** | `urljoin` 丢 `/index.php` | ✅ **已修** | `_absolute("?c=v2&a=write&rid=1000005")` → `https://www.pigai.org/index.php?c=v2&a=write&rid=1000005`；`_absolute("/index.php?…")` → 正确；`_absolute("")` → `https://www.pigai.org/`；`list_assignments()` 合并后 **4/4 条 url 全以 BASE_URL 开头** |
+| **N-2** | `urljoin` 丢 `/index.php` | ✅ **已修** | `_absolute("?c=v2&a=write&rid=1000001")` → `https://www.pigai.org/index.php?c=v2&a=write&rid=1000001`；`_absolute("/index.php?…")` → 正确；`_absolute("")` → `https://www.pigai.org/`；`list_assignments()` 合并后 **4/4 条 url 全以 BASE_URL 开头** |
 | **N-3** | `is_logged_in()` 用否定判据、忽略陈旧 cookie | ✅ **已修（改正面判据）** | 最坏场景：**匿名失效页 + jar 里塞陈旧 `_JUKU_USER`** → `is_logged_in=False`（三份真样本各验一遍）；已登录页（无 jar）→ `True`；探针是 `GET /index.php?c=write`；HTTP 503 → `False`；**网络异常 → `OSError` 上抛**（可被 Scheduler 重试，未被吞） |
 | **S-5** | protocol 仍引用已撤回的 U15 | ✅ **已订正** | `protocol.py:87` = 「已核验（行级 DOM 亦已实测）」；`AssignmentRow` docstring 改为「行级 DOM 已实测」并附勘误说明。全包 grep「0 行」/「未实测」**只剩两处、且都是勘误自述**（`protocol.py:252`「初版注释曾写…对应已撤回的 U15」、`parse.py:566`「这与 §6.1/U15 旧结论不一致…以样本为准」）——**不再有把撤回结论当依据的表述** |
 | **S-6** | 宽度 `inf` 令 `ratio` 变 `inf`/`nan` | ✅ **已修** | 容器/条宽任一非有限 → 该维度跳过；`ratio` 再过一次 `isfinite` 兜底。见 11.2.6 的 10 组矩阵，**无一组产出 `nan`/`inf`** |
@@ -627,10 +627,10 @@ $ PYTHONPATH=src python3 -m unittest tests.test_pigai_login tests.test_pigai_par
 | 能力 | 实测（真实抓包，离线） | 判定 |
 | --- | --- | --- |
 | **A. `EssayDetail.essay_text`** | 详情页 `#contents` → **1070** 字符 | ✅ |
-| **B. `parse_write_page` / `WritePage`** | `b_write_with_draft.html` → `rid=1000006 eid=200000004 text=1070`；`b_write_fresh.html` → `text='' eid='' rid='1000005' has_draft=False` | ✅ |
-| **C. `fetch_assignment_by_rid`** | 实际请求 `GET https://www.pigai.org/index.php?c=write&a=searchReq&rid=1000006`（**读语义端点，无 `a=write` 字面量**）→ `WritePage` 同上 | ✅ |
+| **B. `parse_write_page` / `WritePage`** | `b_write_with_draft.html` → `rid=1000002 eid=200000001 text=1070`；`b_write_fresh.html` → `text='' eid='' rid='1000001' has_draft=False` | ✅ |
+| **C. `fetch_assignment_by_rid`** | 实际请求 `GET https://www.pigai.org/index.php?c=write&a=searchReq&rid=1000002`（**读语义端点，无 `a=write` 字面量**）→ `WritePage` 同上 | ✅ |
 | 两页正文一致性 | 详情页 `essay_text ==` 写作页 `essay_text` → **逐字相同（1070）** | ✅ 与规格 §6.3/§6.11 一致 |
-| 写作页其它字段 | `title='示例B层次大英I（三）- B2U5'`、`word_range='100~200'`、`full_marks=100.0`、`deadline='2026-10-19 23:59'`、`server_time='2026-10-19 11:16:06'`、`no_paste=True`（只读取、不利用） | ✅ |
+| 写作页其它字段 | `title='示例课程（三）- Unit 5'`、`word_range='100~200'`、`full_marks=100.0`、`deadline='2026-10-19 23:59'`、`server_time='2026-10-19 11:16:06'`、`no_paste=True`（只读取、不利用） | ✅ |
 
 #### 11.3.1 契约「只按 id 匹配」的必要性（**专门构造反证**）
 
@@ -792,7 +792,7 @@ pigai x3 断网: successful = True | tests = 148 | errors = 0 | failures = 0
 ### 11.8 本轮仍未验证的
 
 1. **线上一切**：`fetch_assignment_by_rid` 的真实响应、`lookup_by_rid` 的「GET 无副作用」结论、
-   24 条点评那篇（`eid=234022144`）—— 全部是 lead 的线上观察，我**无法复现**（我全程离线）。
+   24 条点评那篇（`eid=200000002`）—— 全部是 lead 的线上观察，我**无法复现**（我全程离线）。
 2. **写作页正文的回写闭环**：只验证了「读得回」（1070 逐字一致），未验证任何写回。
 3. **`#contents` 的真实标签是否恒为 `div`/`TEXTAREA`**：我只核对了 3 份样本；站点若换标签，
    「只按 id」的策略仍然成立（这正是它的价值），但 `DETAIL_BODY_TAG`/`WRITE_BODY_TAG` 会失准。
@@ -957,7 +957,7 @@ Assignment.url = 'https://www.pigai.org.evil.com/steal'
 | --- | --- |
 | **N-1a** 标题格无锚点 | `title='真正的标题（纯文本，无 a）'`、`url` 仍取操作格 ✓ |
 | **N-1b** 操作格无锚点 | `url=''`（不借标题格）✓ |
-| **N-2a** `_absolute("?c=v2&a=write&rid=1000005")` | `https://www.pigai.org/index.php?c=v2&a=write&rid=1000005` ✓ |
+| **N-2a** `_absolute("?c=v2&a=write&rid=1000001")` | `https://www.pigai.org/index.php?c=v2&a=write&rid=1000001` ✓ |
 | **N-2b** `list_assignments()` 合并结果 | 4/4 条 url 全以 BASE_URL 开头 ✓ |
 | **N-3** 匿名失效页 + jar 塞陈旧 `_JUKU_USER` | `is_logged_in() = False` ✓ |
 | **N-3** 已登录页（无 jar） | `is_logged_in() = True` ✓ |
@@ -1052,7 +1052,7 @@ OK
 ```
 '?c=v2&a=write&rid=1'                               -> 'https://www.pigai.org/index.php?c=v2&a=write&rid=1' ✓
 '/index.php?c=write'                                -> 'https://www.pigai.org/index.php?c=write' ✓
-'/index.php?c=v2&a=view&eid=200000004&rid=1000006'  -> 正确 ✓
+'/index.php?c=v2&a=view&eid=200000001&rid=1000002'  -> 正确 ✓
 'https://www.pigai.org/index.php?c=write'           -> 正确 ✓
 '//www.pigai.org/index.php?c=write'                 -> 正确 ✓（协议相对、同源）
 'HTTPS://www.pigai.org/index.php?c=write'           -> 正确 ✓（urlsplit 会把 scheme 小写化）
@@ -1068,7 +1068,7 @@ href='//www.pigai.org.evil.com/steal'    -> Assignment.url = ''   ✓（不再�
 href='https://www.pigai.org.evil.com/x'  -> Assignment.url = ''   ✓
 href='javascript:;'                      -> Assignment.url = ''   ✓
 href='#'                                 -> Assignment.url = ''   ✓
-正控 href='?c=v2&a=write&rid=1000005'    -> 'https://www.pigai.org/index.php?c=v2&a=write&rid=1000005' ✓
+正控 href='?c=v2&a=write&rid=1000001'    -> 'https://www.pigai.org/index.php?c=v2&a=write&rid=1000001' ✓
 ```
 
 真实 recon 端到端（`waitComplete` + `write`）：合并 **11 条**，**非站内 URL = 0**、**空 url = 0**，

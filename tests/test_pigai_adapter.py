@@ -91,7 +91,7 @@ class TestPendingAssignments(unittest.IsolatedAsyncioTestCase):
         items = await adapter.list_pending_assignments()
         self.assertEqual(len(items), 1)
         a = items[0]
-        self.assertEqual(a.remote_id, "1000005", "remote_id 必须是 rid")
+        self.assertEqual(a.remote_id, "1000001", "remote_id 必须是 rid")
         self.assertFalse(a.finished)
         self.assertEqual(a.deadline, datetime(2026, 11, 16, 23, 59))
         self.assertEqual(a.kind.value, "homework")
@@ -147,7 +147,7 @@ class TestMergedAssignments(unittest.IsolatedAsyncioTestCase):
         items = await adapter.list_assignments(course)
         rids = [a.remote_id for a in items]
         self.assertEqual(len(rids), len(set(rids)), "rid 不能重复")
-        self.assertIn("1000005", rids)
+        self.assertIn("1000001", rids)
         finished = [a for a in items if a.finished]
         self.assertTrue(finished, "已提交的作文应以 finished=True 出现")
         self.assertIsNotNone(finished[0].raw.get("eid"))
@@ -172,9 +172,9 @@ class TestListCourses(unittest.IsolatedAsyncioTestCase):
 class TestEssayDetail(unittest.IsolatedAsyncioTestCase):
     async def test_detail(self) -> None:
         adapter = _adapter(*_fixture("essay_detail.html"))
-        detail = await adapter.fetch_essay_detail("1000006", "200000004")
-        self.assertEqual(detail.rid, "1000006")
-        self.assertEqual(detail.eid, "200000004")
+        detail = await adapter.fetch_essay_detail("1000002", "200000001")
+        self.assertEqual(detail.rid, "1000002")
+        self.assertEqual(detail.eid, "200000001")
         self.assertIsNotNone(detail.score)
         self.assertEqual(len(detail.dimensions), 4)
         self.assertTrue(all(d.source == "title" for d in detail.dimensions))
@@ -183,9 +183,9 @@ class TestEssayDetail(unittest.IsolatedAsyncioTestCase):
 
     async def test_uses_essay_view_endpoint(self) -> None:
         adapter = _adapter(*_fixture("essay_detail.html"))
-        await adapter.fetch_essay_detail("1000006", "200000004")
+        await adapter.fetch_essay_detail("1000002", "200000001")
         url = adapter.ctx.http.transport.calls[0]["url"]
-        self.assertTrue(url.endswith(protocol.Endpoints.essay_view("200000004", "1000006")))
+        self.assertTrue(url.endswith(protocol.Endpoints.essay_view("200000001", "1000002")))
 
 
 class TestLookupByRid(unittest.IsolatedAsyncioTestCase):
@@ -193,8 +193,8 @@ class TestLookupByRid(unittest.IsolatedAsyncioTestCase):
 
     async def test_fresh_assignment(self) -> None:
         adapter = _adapter(*_fixture("write_fresh.html"))
-        page = await adapter.fetch_assignment_by_rid("1000005")
-        self.assertEqual(page.rid, "1000005")
+        page = await adapter.fetch_assignment_by_rid("1000001")
+        self.assertEqual(page.rid, "1000001")
         self.assertEqual(page.eid, "", "未写过的作业 eid 应为空")
         self.assertFalse(page.has_draft)
         self.assertEqual(page.word_range, "120~150")
@@ -203,17 +203,17 @@ class TestLookupByRid(unittest.IsolatedAsyncioTestCase):
     async def test_existing_draft_is_readable(self) -> None:
         """「未截止可以继续修改」的只读一半：先看到改到哪了。"""
         adapter = _adapter(*_fixture("write_with_draft.html"))
-        page = await adapter.fetch_assignment_by_rid("1000006")
-        self.assertEqual(page.eid, "200000004")
+        page = await adapter.fetch_assignment_by_rid("1000002")
+        self.assertEqual(page.eid, "200000001")
         self.assertTrue(page.has_draft)
         self.assertTrue(page.essay_text.strip(), "应能读回已有稿子的正文")
 
     async def test_only_gets_the_lookup_endpoint(self) -> None:
         adapter = _adapter(*_fixture("write_fresh.html"))
-        await adapter.fetch_assignment_by_rid("1000005")
+        await adapter.fetch_assignment_by_rid("1000001")
         call = adapter.ctx.http.transport.calls[0]
         self.assertEqual(call["method"], "GET")
-        self.assertTrue(call["url"].endswith(protocol.Endpoints.lookup_by_rid("1000005")))
+        self.assertTrue(call["url"].endswith(protocol.Endpoints.lookup_by_rid("1000001")))
         self.assertNotIn("a=write", call["url"], "不得使用写语义端点")
 
     async def test_session_expired_raises(self) -> None:
@@ -222,7 +222,7 @@ class TestLookupByRid(unittest.IsolatedAsyncioTestCase):
             Response(status=200, url=protocol.BASE_URL + "/", body=page.encode())
         )
         with self.assertRaises(SessionExpiredError):
-            await adapter.fetch_assignment_by_rid("1000005")
+            await adapter.fetch_assignment_by_rid("1000001")
 
 
 class TestUrlRegression(unittest.TestCase):
@@ -232,8 +232,8 @@ class TestUrlRegression(unittest.TestCase):
         from kedaibiao.platforms.pigai.adapter import _absolute
 
         self.assertEqual(
-            _absolute("?c=v2&a=write&rid=1000005"),
-            protocol.BASE_URL + "/index.php?c=v2&a=write&rid=1000005",
+            _absolute("?c=v2&a=write&rid=1000001"),
+            protocol.BASE_URL + "/index.php?c=v2&a=write&rid=1000001",
         )
         self.assertTrue(
             _absolute("/index.php?c=v2&a=view&eid=1&rid=2").endswith("/index.php?c=v2&a=view&eid=1&rid=2")
@@ -280,7 +280,7 @@ class TestUrlRegression(unittest.TestCase):
         items = asyncio.run(adapter.list_pending_assignments())
         url = items[0].url
         self.assertTrue(url.startswith(protocol.BASE_URL + "/index.php?"), url)
-        self.assertIn("rid=1000005", url)
+        self.assertIn("rid=1000001", url)
 
     def test_no_async_test_methods_in_plain_testcase(self) -> None:
         """守住上面那条教训：普通 TestCase 里不得出现 async def test_*。"""
