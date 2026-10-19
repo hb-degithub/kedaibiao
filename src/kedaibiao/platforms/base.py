@@ -48,17 +48,32 @@ class Capabilities:
 class AdapterContext:
     """适配器拿到的全部外部依赖。
 
-    用 ``Any`` 声明可选依赖（playwright / httpx），这样没装浏览器依赖时
-    核心依然可以导入并跑单测。
+    两种传输方式按平台二选一：
+
+    - ``browser``：浏览器型（页面即接口，重 JS 的教学平台）；
+    - ``http``：协议型（直接打 HTTP 接口，需要自己管 cookie 与编码）。
+
+    用 ``Any`` 声明这些可选依赖，这样没装 playwright 时核心依然可导入、
+    单测依然能跑（协议型适配器可以注入假的 ``Transport`` 完全离线验证）。
     """
 
     bus: EventBus = field(default_factory=EventBus)
     browser: Any | None = None  # kedaibiao.browser.session.BrowserSession
+    http: Any | None = None  # kedaibiao.net.http.HttpClient
     bank: Any | None = None  # kedaibiao.bank.store.QuestionBank
     notifier: Any | None = None
     store: Any | None = None  # kedaibiao.bank.store.ProgressStore
     settings: Any | None = None
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("kedaibiao"))
+
+    def client(self) -> Any:
+        """取 HTTP 客户端；协议型适配器的统一入口，缺了直接报清楚。"""
+        if self.http is None:
+            raise RuntimeError(
+                "AdapterContext.http 未注入。协议型适配器需要 "
+                "kedaibiao.net.http.HttpClient；请在构造 AdapterContext 时传入。"
+            )
+        return self.http
 
 
 class PlatformAdapter(ABC):
