@@ -1048,6 +1048,15 @@
 
     var changedPage = r.page !== state.page;
     var changedPlat = r.platform !== state.platform;
+
+    /* 自动化还没跑完就换界面：先弹确认。取消就把地址栏改回去，不真的切。 */
+    if ((changedPage || changedPlat) && autoRunning()) {
+      if (!window.confirm(autoLeaveWarning())) {
+        replaceHash(state.page, state.platform);
+        return;
+      }
+    }
+
     state.page = r.page;
     state.platform = r.platform;
 
@@ -5511,6 +5520,23 @@
       });
   }
 
+  /** 自动化任务是否还在跑（决定要不要拦切换）。 */
+  function autoRunning() {
+    var a = state.auto;
+    return !!(a.jobId && a.job && a.job.status === 'running');
+  }
+
+  function autoLeaveWarning() {
+    var a = state.auto;
+    var steps = (a.job && a.job.steps) || [];
+    var logs = (a.job && a.job.logs) || [];
+    var tail = logs.length ? logs[logs.length - 1].text : '';
+    return '「一键自动化」还在运行（已完成 ' + steps.length + ' 步）。\n\n' +
+      (tail ? '当前：' + tail + '\n\n' : '') +
+      '切换界面后日志面板会收起 —— 任务仍会在后台继续跑，' +
+      '回到「作业」页可以点「继续查看自动化」看进度。\n\n确定要切换吗？';
+  }
+
   /**
    * 收起自动化面板。
    * keepRef=true 时保留 last（job 还在后台跑），作业页会显示「继续查看自动化」入口；
@@ -5560,6 +5586,26 @@
     pollAuto();
   }
 
+  /* 自测钩子（只在 ?debug=1 时挂）：把自动化标成「运行中」，用来验证切换拦截。
+     正常访问时不存在，不参与任何业务逻辑。 */
+  if (/[?&]debug=1\b/.test(location.search)) {
+    window.__kdbAutoDebug = function (running) {
+      if (running) {
+        state.auto.jobId = state.auto.jobId || 'debug-job';
+        state.auto.job = {
+          job_id: 'debug-job', status: 'running',
+          steps: [{ name: '取卷', ok: true }, { name: 'AI 答题', ok: true }],
+          logs: [{ at: '', level: 'info', text: '[3/6] 音频转写 + 大模型答题…' }],
+          manual: [], verify: null,
+        };
+      } else {
+        state.auto.job = null;
+        state.auto.jobId = null;
+      }
+      return autoRunning();
+    };
+  }
+
   function bindEvents() {
     /* 登录 / 退出：401 由请求层切登录页，这里只管表单与手动退出。 */
     $('login-form').addEventListener('submit', doLogin);
@@ -5591,6 +5637,14 @@
     });
 
     window.addEventListener('hashchange', function () { applyRoute(); });
+
+    /* 关标签页 / 刷新 / 退出登录：自动化没跑完就让浏览器弹原生确认 */
+    window.addEventListener('beforeunload', function (ev) {
+      if (!autoRunning()) { return undefined; }
+      ev.preventDefault();
+      ev.returnValue = '「一键自动化」还没跑完，离开页面会看不到进度（任务仍在后台运行）。';
+      return ev.returnValue;
+    });
 
     /* 一键自动化面板 */
     if ($('auto-close')) { $('auto-close').addEventListener('click', function () { closeAuto(false); }); }
