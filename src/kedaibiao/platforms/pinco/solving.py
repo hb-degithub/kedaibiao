@@ -53,6 +53,35 @@ def build_answerer(bank: Any | None, *, min_confidence: float = 0.75) -> Answere
     return ChainAnswerer(answerers, min_confidence=min_confidence)
 
 
+def failed_course_item(
+    *,
+    course_id: str,
+    course_name: str,
+    reason: str,
+    platform: str = "pinco",
+) -> PincoAssignmentPlan:
+    """给「整门课没抓下来」造一条 ``FAILED`` 计划项。
+
+    为什么必须进计划而不是跳过：跳过等于告诉用户「那门课没有作业」。实测坏课程
+    （``6569 课程不存在``）就是这样 —— 用户会以为不用管它，而实际上课还在、
+    作业也可能在。失败要在复核页面上看得见，``reason`` 要带上平台原话。
+
+    ``kind`` 用 ``HOMEWORK``：这门课的作业与学习任务**都没枚举成功**，无从判断
+    它到底有什么；``FAILED`` 项永远不进可提交集合（``PincoPlan.planned`` 只取
+    ``PLANNED``），所以这个默认值只影响展示，不会造成误提交。
+    """
+    name = course_name or course_id
+    return PincoAssignmentPlan(
+        platform=platform,
+        assignment_id=course_id,
+        title=name,
+        course_name=course_name,
+        kind=TaskKind.HOMEWORK,
+        state=PlanState.FAILED,
+        reason=f"课程「{name}」的作业与学习任务都没取到：{reason}",
+    )
+
+
 @dataclass(slots=True)
 class PlanBuilder:
     """把「抓到的一组题」变成「一份可复核的计划」。"""
@@ -64,11 +93,22 @@ class PlanBuilder:
     platform: str = "pinco"
     display_name: str = "希沃品课"
 
-    async def build(self, items: list[tuple[Assignment, list[Question]]]) -> PincoPlan:
-        """生成并盖章一份计划。整个过程**没有任何写操作**。"""
+    async def build(
+        self,
+        items: list[tuple[Assignment, list[Question]]],
+        *,
+        failures: list[PincoAssignmentPlan] | None = None,
+    ) -> PincoPlan:
+        """生成并盖章一份计划。整个过程**没有任何写操作**。
+
+        ``failures`` 是抓取阶段就坏掉的整门课（见 :func:`failed_course_item`）。
+        它们照样进计划、标 ``FAILED``：**计划里少一项，用户就无法知道那里有东西
+        没抓到**。门数多时失败项排在成功项之后，不影响状态与哈希。
+        """
         plan = PincoPlan(platform=self.platform, display_name=self.display_name)
         for assignment, questions in items:
             plan.assignments.append(await self._build_one(assignment, questions))
+        plan.assignments.extend(failures or ())
         return plan.seal()
 
     # -- 单个作业 -----------------------------------------------------------

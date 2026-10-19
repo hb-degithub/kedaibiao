@@ -35,6 +35,7 @@
 | `homework_list.json` | 真实抓包（标题脱敏；补了 2 条状态组合样本，结构同真实） | `GetV1StudenthomeworkList` |
 | `homework_detail.json` | 真实抓包（标题/课程名脱敏） | `GetV1StudenthomeworkByStudentHomeworkIdDetail` |
 | `homework_questions.json` | 真实抓包（题干保留 HTML 形态，含 `rich-img` / `rich-formula` / 上传题） | `GetV1StudenthomeworkByStudentHomeworkIdQuestions` |
+| `homework_questions_all_groups.json` | 真实抓包：**题干与选项文本脱敏，分组与字段结构为真实抓包**（`data` 段原文落盘，四个分组 2+30+6+6=44 道） | 同上（题目接口） |
 | `material_list.json` | 真实抓包（文件名脱敏，`learningRatio` 补了 0.5 / 1.0 两档） | `GetV1CourseByCourseIdStudentMaterialList` |
 | `material_detail.json` | 真实抓包（文件名脱敏） | `GetV1CourseByCourseIdStudentMaterial` |
 | `system_current_time.json` | **真实抓包逐字节**：`{"code":0,"msg":"ok","data":{"currentTime":…},"statusCode":200,"message":"ok"}` | `GET /server-main/api/v1/system/currentTime` |
@@ -43,6 +44,11 @@
 > `homework_questions_plain.json` 是合成的：真实样本里每道主观题都带图片或公式，
 > 拿不到「全纯文本」的真实样本。它的信封形状与真实一致（测试会校验），但**不要**
 > 拿它去证明线上行为 —— 只用来覆盖解析分支。
+
+> `homework_questions_all_groups.json` 落的是响应 **`data` 段原文**（不是整封信封），
+> 所以测试直接 `json.loads` 后交给 `parse_questions`，不走 `fixture_data()`。
+> 它是「分组静默丢失」事故的取证样本：**只脱敏了题干/选项文本，分组名、
+> `optionItems`、`answer` 答案槽、`labels` 等字段一个都没动** —— 别顺手精简。
 
 ## 成功的判据（两个家族不同）
 

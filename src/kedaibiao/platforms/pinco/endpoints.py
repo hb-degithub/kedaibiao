@@ -107,8 +107,9 @@ EVIDENCE["ACTION_HOMEWORK_LIST"] = Evidence.MEASURED
 ACTION_HOMEWORK_DETAIL = "GetV1StudenthomeworkByStudentHomeworkIdDetail"
 EVIDENCE["ACTION_HOMEWORK_DETAIL"] = Evidence.MEASURED
 
-#: 作业题目。**实测确认**：``{studentHomeworkId}`` → ``data.shortAnswers[]`` /
-#: ``data.singleChoices[]``（分组名见 :data:`QUESTION_GROUPS`）。
+#: 作业题目。**实测确认**：``{studentHomeworkId}`` →
+#: ``data.shortAnswers[]`` / ``data.singleChoices[]`` / ``data.multipleChoices[]`` /
+#: ``data.trueOrFalses[]``（四个分组，见 :data:`QUESTION_GROUPS`）。
 ACTION_HOMEWORK_QUESTIONS = "GetV1StudenthomeworkByStudentHomeworkIdQuestions"
 EVIDENCE["ACTION_HOMEWORK_QUESTIONS"] = Evidence.MEASURED
 
@@ -327,9 +328,12 @@ FIELD_CAN_REDO = "canRedo"
 FIELD_CAN_SUBMITTED = "canSubmitted"
 FIELD_ATTACHMENTS = "attachments"
 FIELD_COURSE = "course"
-#: 题目分组（实测同时出现：主观题 shortAnswers、单选 singleChoices）。
+#: 题目分组（实测**同时出现四个**：主观题 shortAnswers、单选 singleChoices、
+#: 多选 multipleChoices、判断 trueOrFalses）。字段名逐个从真实响应读出，不猜。
 FIELD_SHORT_ANSWERS = "shortAnswers"
 FIELD_SINGLE_CHOICES = "singleChoices"
+FIELD_MULTIPLE_CHOICES = "multipleChoices"
+FIELD_TRUE_OR_FALSES = "trueOrFalses"
 FIELD_OPTION_ITEMS = "optionItems"
 FIELD_OPTION = "option"
 FIELD_LABELS = "labels"
@@ -375,6 +379,8 @@ for _name in (
     "FIELD_COURSE",
     "FIELD_SHORT_ANSWERS",
     "FIELD_SINGLE_CHOICES",
+    "FIELD_MULTIPLE_CHOICES",
+    "FIELD_TRUE_OR_FALSES",
     "FIELD_OPTION_ITEMS",
     "FIELD_OPTION",
     "FIELD_LABELS",
@@ -418,12 +424,22 @@ for _name in (
 ):
     EVIDENCE[_name] = Evidence.STATIC
 
-#: 已知的题目分组：分组名 → 对应的核心题型。
-#: 只列**实测响应里出现过**的两个；别的分组名（判断题、多选等）不猜 ——
-#: 解析时遇到未知分组按空处理并告警（见 parsing.parse_questions）。
+#: 已知的题目分组：分组名 → 对应的核心题型。**实测四组，全部登记在册。**
+#:
+#: ☠️ 事故记录（静默丢 42 题）：这里一度只列了 ``shortAnswers`` 与
+#: ``singleChoices``，注释还写着「只列实测响应里出现过的两个」。前半句是对的
+#: ——分组名不许猜；但**结论下早了**：真实响应里一直有四个分组，
+#: ``multipleChoices``（多选）与 ``trueOrFalses``（判断）被当成未知分组按空处理，
+#: 于是全账号 30 道多选 + 12 道判断无声蒸发（美学概论原始 44 道只解析出 32 道）。
+#:
+#: 教训不是「可以猜分组名」，而是：**不猜 + 看到新分组必须回头核对**。解析时遇到
+#: 未知分组会告警（``parsing.parse_questions``），那条告警就是为这类事故留的
+#: 探针 —— 它是「有题没被解析」，不是噪声。
 QUESTION_GROUPS: dict[str, str] = {
     FIELD_SHORT_ANSWERS: "essay",
     FIELD_SINGLE_CHOICES: "single",
+    FIELD_MULTIPLE_CHOICES: "multiple",
+    FIELD_TRUE_OR_FALSES: "judge",
 }
 
 #: 学生端**没有**这些字段（Lead 与 pinco-recon 都已核对，0 命中）。

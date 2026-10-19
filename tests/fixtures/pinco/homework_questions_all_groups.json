@@ -1,0 +1,1323 @@
+{
+ "deadline": 1792381200000,
+ "expired": true,
+ "corrected": false,
+ "submitted": true,
+ "publishStandardSolution": true,
+ "shortAnswers": [
+  {
+   "questionId": "1338885763713777688",
+   "standardScore": 20,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "labels": [],
+   "answer": {
+    "answerId": "1338912219721904128",
+    "score": -1,
+    "review": "",
+    "content": "课上曾播放“棉花糖实验”的短视频：研究者让儿童独自面对一颗棉花糖，若能等待一段时间不吃，就能得到两颗。当时涉及的理论是延迟满足与自我控制理论，强调个体为更大回报而抑制即时冲动的能力，并讨论其与后续学业、行为适应的关系。这个例子让我印象很深，因为它把抽象的自控力变成了可观察的行为情境，也让我意识到实验结果并非简单判断孩子“意志力强不强”，还受年龄、信任感、策略和环境影响。它提醒我，在理解心理与行为时不能只看表面结果，而要结合实验设计和情境因素，这也激发了我对心理学研究方法的兴趣。",
+    "submitted": true,
+    "attachments": []
+   }
+  },
+  {
+   "questionId": "1338885763713777689",
+   "standardScore": 20,
+   "content": "<p><img id=\"rich-img-bb2003bfc775435a8b58db2cdc9a66a7\" class=\"rich-img\" src=\"https://cstore-public.seewo.com/seewo-pinco/uwizohmyhimyjhjxhvuylkmmkyhhihhh\" style=\"min-width: 70px\"/><img id=\"rich-img-2ec09e6ea6434eafaf5e620fc54418d0\" class=\"rich-img\" src=\"https://cstore-public.seewo.com/seewo-pinco/uwiwojnvhimyjhjxhvuylkmzzjhhihhh\" style=\"min-width: 89px\"/></p><p>题干文本</p><p><br/></p>",
+   "publishStandardSolution": true,
+   "labels": [],
+   "answer": {
+    "answerId": "1338913227996102656",
+    "score": -1,
+    "review": "",
+    "content": "这种现象可从审美心理距离、格式塔完形、接受美学与符号学解释。具象的莲花直接诉诸日常经验，能指与所指过于固定，观众一眼识别后便缺少回味，还容易因仿生比例、材质色彩显得俗套、媚俗，像放大的玩具，削弱建筑的结构、功能和场所逻辑。抽象设计则通过简化、变形、几何化制造“陌生化”，拉开审美距离，给观众留下想象和完形空间；格式塔心理学认为人会主动补全形式，接受美学所谓“召唤结构”和“空白”使意义在观看中生成，因而更耐看、更有高级感。符号学上，抽象使能指与所指关系松动，避免简单比附；现代建筑也强调形式应回应结构、材料和功能，而非直接模仿自然物。当然，抽象并不必然更美，具象也可以有表现力，关键在是否与建筑逻辑、环境文脉和公共体验结合。恒大案例更多说明：过度直白的具象象征容易触发俗套判断，而适度抽象更符合当代大众对建筑审美的期待。",
+    "submitted": true,
+    "attachments": []
+   }
+  }
+ ],
+ "singleChoices": [
+  {
+   "questionId": "1338885763713777678",
+   "standardScore": 1,
+   "content": "陶渊明认为，欣赏自然美景时“此中有真意，欲辨已忘言”。这指的是（）",
+   "analyze": "暂无解析",
+   "publishStandardSolution": true,
+   "standardSolution": "C",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "审美的个性"
+    },
+    {
+     "option": "B",
+     "content": "审美的具象性"
+    },
+    {
+     "option": "C",
+     "content": "审美的非自觉性"
+    },
+    {
+     "option": "D",
+     "content": "审美的非功利性"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "C"
+   }
+  },
+  {
+   "questionId": "1338896471662211073",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "A",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "A"
+   }
+  },
+  {
+   "questionId": "1338885763713777677",
+   "standardScore": 1,
+   "content": "俗话说“对牛弹琴”，它说明美感的形成依赖于（）",
+   "analyze": "暂无解析",
+   "publishStandardSolution": true,
+   "standardSolution": "B",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "感官"
+    },
+    {
+     "option": "B",
+     "content": "审美能力"
+    },
+    {
+     "option": "C",
+     "content": "想象"
+    },
+    {
+     "option": "D",
+     "content": "灵性"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "B"
+   }
+  },
+  {
+   "questionId": "1338896471662211078",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "B",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "B"
+   }
+  },
+  {
+   "questionId": "1338896471662211074",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "B",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "B"
+   }
+  },
+  {
+   "questionId": "1338896471662211075",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "B",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 0,
+    "submitted": true,
+    "solution": "A"
+   }
+  },
+  {
+   "questionId": "1338896471662211076",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "C",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "C"
+   }
+  },
+  {
+   "questionId": "1338897897314529280",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "D",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "D"
+   }
+  },
+  {
+   "questionId": "1338896471662211072",
+   "standardScore": 1,
+   "content": "<p><br/></p><p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "B",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "B"
+   }
+  },
+  {
+   "questionId": "1338896471662211079",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "D",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 0,
+    "submitted": true,
+    "solution": "B"
+   }
+  },
+  {
+   "questionId": "1338896471662211080",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "A",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "A"
+   }
+  },
+  {
+   "questionId": "1338897897314529283",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "C",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "C"
+   }
+  },
+  {
+   "questionId": "1338896471662211077",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "B",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 0,
+    "submitted": true,
+    "solution": "A"
+   }
+  },
+  {
+   "questionId": "1338897897314529281",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "C",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "C"
+   }
+  },
+  {
+   "questionId": "1338897897314529285",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "C",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "C"
+   }
+  },
+  {
+   "questionId": "1338896471662211081",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "C",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "C"
+   }
+  },
+  {
+   "questionId": "1338897897314529282",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "A",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "A"
+   }
+  },
+  {
+   "questionId": "1338897897314529284",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "A",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "A"
+   }
+  },
+  {
+   "questionId": "1338885763713777664",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>暂无解析</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "A",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "A"
+   }
+  },
+  {
+   "questionId": "1338885763713777666",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>无</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "B",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "B"
+   }
+  },
+  {
+   "questionId": "1338885763713777667",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>暂无解析</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "C",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "C"
+   }
+  },
+  {
+   "questionId": "1338885763713777668",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>暂无解析</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "D",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "D"
+   }
+  },
+  {
+   "questionId": "1338885763713777669",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>无</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "B",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "B"
+   }
+  },
+  {
+   "questionId": "1338885763713777670",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>无</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "A",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "A"
+   }
+  },
+  {
+   "questionId": "1338885763713777671",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>暂无解析</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "B",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "B"
+   }
+  },
+  {
+   "questionId": "1338885763713777672",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>无</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "C",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 0,
+    "submitted": true,
+    "solution": "A"
+   }
+  },
+  {
+   "questionId": "1338885763713777673",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>无</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "B",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "B"
+   }
+  },
+  {
+   "questionId": "1338885763713777674",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>无</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "A",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "A"
+   }
+  },
+  {
+   "questionId": "1338885763713777675",
+   "standardScore": 1,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "D",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "D"
+   }
+  },
+  {
+   "questionId": "1338885763713777676",
+   "standardScore": 1,
+   "content": "“爱美是人的天性”的说法出自（）",
+   "analyze": "暂无解析",
+   "publishStandardSolution": true,
+   "standardSolution": "C",
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "尼采"
+    },
+    {
+     "option": "B",
+     "content": "柏拉图"
+    },
+    {
+     "option": "C",
+     "content": "亚里士多德"
+    },
+    {
+     "option": "D",
+     "content": "席勒"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "score": 1,
+    "submitted": true,
+    "solution": "C"
+   }
+  }
+ ],
+ "multipleChoices": [
+  {
+   "questionId": "1338885763713777679",
+   "standardScore": 3,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": [
+    "A",
+    "B",
+    "C",
+    "D"
+   ],
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 3,
+    "solutions": [
+     "A",
+     "B",
+     "C",
+     "D"
+    ]
+   }
+  },
+  {
+   "questionId": "1338885763713777680",
+   "standardScore": 3,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": [
+    "B",
+    "C",
+    "D"
+   ],
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 3,
+    "solutions": [
+     "B",
+     "C",
+     "D"
+    ]
+   }
+  },
+  {
+   "questionId": "1338885763713777681",
+   "standardScore": 3,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": [
+    "A",
+    "C",
+    "D",
+    "E"
+   ],
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "B",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "C",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "D",
+     "content": "<p>题干文本</p>"
+    },
+    {
+     "option": "E",
+     "content": "<p>题干文本</p>"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 3,
+    "solutions": [
+     "A",
+     "C",
+     "D",
+     "E"
+    ]
+   }
+  },
+  {
+   "questionId": "1338885763713777682",
+   "standardScore": 3,
+   "content": "美感的差异性表现在（）",
+   "analyze": "暂无解析",
+   "publishStandardSolution": true,
+   "standardSolution": [
+    "A",
+    "B",
+    "C",
+    "D"
+   ],
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "民族差异"
+    },
+    {
+     "option": "B",
+     "content": "群阶级差异"
+    },
+    {
+     "option": "C",
+     "content": "时代差异"
+    },
+    {
+     "option": "D",
+     "content": "个体差异"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 3,
+    "solutions": [
+     "A",
+     "B",
+     "C",
+     "D"
+    ]
+   }
+  },
+  {
+   "questionId": "1338885763713777683",
+   "standardScore": 3,
+   "content": "中国古典美学的重要范畴有（）",
+   "analyze": "暂无解析",
+   "publishStandardSolution": true,
+   "standardSolution": [
+    "A",
+    "B",
+    "C",
+    "D"
+   ],
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "意境"
+    },
+    {
+     "option": "B",
+     "content": "风骨"
+    },
+    {
+     "option": "C",
+     "content": "气韵"
+    },
+    {
+     "option": "D",
+     "content": "意象"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 3,
+    "solutions": [
+     "A",
+     "B",
+     "C",
+     "D"
+    ]
+   }
+  },
+  {
+   "questionId": "1338885763713777684",
+   "standardScore": 3,
+   "content": "审美情感的作用有（）",
+   "analyze": "暂无解析",
+   "publishStandardSolution": true,
+   "standardSolution": [
+    "A",
+    "B",
+    "C"
+   ],
+   "optionItems": [
+    {
+     "option": "A",
+     "content": "感染作用"
+    },
+    {
+     "option": "B",
+     "content": "中介作用"
+    },
+    {
+     "option": "C",
+     "content": "动力作用"
+    },
+    {
+     "option": "D",
+     "content": "认识作用"
+    }
+   ],
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 0,
+    "solutions": [
+     "A",
+     "B",
+     "C",
+     "D"
+    ]
+   }
+  }
+ ],
+ "trueOrFalses": [
+  {
+   "questionId": "1338885763713777686",
+   "standardScore": 2,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "T",
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 2,
+    "solution": "T"
+   }
+  },
+  {
+   "questionId": "1338885763713777687",
+   "standardScore": 2,
+   "content": "<p>题干文本</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "F",
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 2,
+    "solution": "F"
+   }
+  },
+  {
+   "questionId": "1338885589031157760",
+   "standardScore": 2,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>暂无解析</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "F",
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 2,
+    "solution": "F"
+   }
+  },
+  {
+   "questionId": "1338885606823395328",
+   "standardScore": 2,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>暂无解析</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "F",
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 2,
+    "solution": "F"
+   }
+  },
+  {
+   "questionId": "1338885627870679040",
+   "standardScore": 2,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>暂无解析</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "F",
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 2,
+    "solution": "F"
+   }
+  },
+  {
+   "questionId": "1338885763713777685",
+   "standardScore": 2,
+   "content": "<p>题干文本</p>",
+   "analyze": "<p>无</p>",
+   "publishStandardSolution": true,
+   "standardSolution": "T",
+   "labels": [],
+   "answer": {
+    "submitted": true,
+    "score": 2,
+    "solution": "T"
+   }
+  }
+ ],
+ "canRedo": false,
+ "canSubmitted": false,
+ "rejected": false
+}

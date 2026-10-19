@@ -37,7 +37,7 @@ from kedaibiao.platforms.base import (
     PlatformAdapter,
 )
 from kedaibiao.platforms.pinco import endpoints as ep
-from kedaibiao.platforms.pinco import guard, parsing, sso
+from kedaibiao.platforms.pinco import guard, parsing, solving, sso
 from kedaibiao.platforms.pinco.client import PincoClient
 from kedaibiao.platforms.pinco.errors import PincoError, PincoNotLoggedIn
 from kedaibiao.platforms.pinco.models import (
@@ -46,7 +46,11 @@ from kedaibiao.platforms.pinco.models import (
     PincoSession,
     PincoSubmissionState,
 )
-from kedaibiao.platforms.pinco.plan import PincoPlan, submission_digest
+from kedaibiao.platforms.pinco.plan import (
+    PincoAssignmentPlan,
+    PincoPlan,
+    submission_digest,
+)
 from kedaibiao.platforms.pinco.solving import PlanBuilder, build_answerer
 from kedaibiao.tasks.answerer import Answerer
 
@@ -459,12 +463,44 @@ class PincoAdapter(PlatformAdapter):
 
         学习任务（课程材料）也会列出来，但只带进度、不带题目：计划层会把它们
         标成跳过，保证不进可提交集合。
+
+        **按课程兜底**：一门课坏掉不许让整份计划崩（实测：3 门课程回
+        ``6569 课程不存在``，以前一门坏课直接抛异常，用户看不到任何别的课程）。
+        兜底**不是静默跳过** —— 坏课以 ``PlanState.FAILED`` 出现在计划里，
+        ``reason`` 带平台原话，否则用户会以为「那门课没有作业」。
         """
         self._require_session()
         items: list[tuple[Assignment, list[Question]]] = []
+        failures: list[PincoAssignmentPlan] = []
+        builder = self.builder()
         for course in await self.list_courses():
-            candidates = await self.list_assignments(course)
-            candidates.extend(await self.list_learning_tasks(course))
+            try:
+                # 两条抓取链路一起兜：作业列表与学习任务列表任一失败，这门课
+                # 就是「没抓全」，不能只报一半。
+                candidates = await self.list_assignments(course)
+                candidates.extend(await self.list_learning_tasks(course))
+            except PincoNotLoggedIn:
+                # 登录态失效不是「这门课坏了」：会话一死每门课都会这样，
+                # 记成 FAILED 会把「重新登录」误导成「这门课有问题」。原样上抛。
+                raise
+            except PincoError as exc:
+                # 只兜业务/协议错误（不可重试）。网络类 OSError **不兜**：
+                # 它是可重试的，按 client.py 的纪律原样上抛交给调度层退避。
+                self.log.warning(
+                    "品课课程 %s（%s）抓取失败，记为 FAILED：%s",
+                    course.remote_id,
+                    course.name or "未命名",
+                    exc,
+                )
+                failures.append(
+                    solving.failed_course_item(
+                        course_id=course.remote_id,
+                        course_name=course.name,
+                        reason=str(exc),
+                        platform=self.name,
+                    )
+                )
+                continue
             for assignment in candidates:
                 if kinds and assignment.kind not in kinds:
                     continue
@@ -482,7 +518,7 @@ class PincoAdapter(PlatformAdapter):
                 items.append((assignment, questions))
             if max_assignments and len(items) >= max_assignments:
                 break
-        return await self.builder().build(items)
+        return await builder.build(items, failures=failures)
 
     def confirm_plan(self, plan: PincoPlan) -> guard.ReviewedPlan:
         """登记「人已经复核过这份计划」。

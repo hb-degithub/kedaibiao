@@ -91,6 +91,10 @@ HOMEWORK_ITEMS = fixture_data("homework_list.json")["content"]
 HOMEWORK_DETAIL = fixture_data("homework_detail.json")
 IMAGE_QUESTIONS = fixture_data("homework_questions.json")
 PLAIN_QUESTIONS = fixture_data("homework_questions_plain.json")
+#: 四组题目全在的真实样本：落盘的是响应 ``data`` 段原文（**不是整封信封**），
+#: 所以这里用 ``load_fixture`` 而不是 ``fixture_data``。它是「分组静默丢失」
+#: 事故的取证样本（2 主观 + 30 单选 + 6 多选 + 6 判断）。详见 fixtures README。
+ALL_GROUP_QUESTIONS = load_fixture("homework_questions_all_groups.json")
 MATERIAL_ITEMS = fixture_data("material_list.json")["courseMaterials"]
 MATERIAL_DETAIL = fixture_data("material_detail.json")
 
@@ -560,15 +564,140 @@ class TestParseBusinessData(unittest.TestCase):
         choice = questions[3]
         self.assertEqual(choice.options[:2], ["i1(t)滞后i2(t)60°", "i1(t)超前i2(t)60°"])
 
+    def test_parse_questions_keeps_all_four_measured_groups(self) -> None:
+        """真实样本四组全收：2 主观 + 30 单选 + 6 多选 + 6 判断 = 44 道。
+
+        修复前这条会挂：只认 shortAnswers/singleChoices，返回 32 道，多选与判断
+        整组消失（全账号静默丢 42 道）。断言的 44 是「原始条数」，不是「解析器
+        现在吐多少」—— 拿实现值当期望值就锁不住这类丢题。
+        """
+        data = ALL_GROUP_QUESTIONS
+        self.assertEqual(
+            [len(data[key]) for key in ("shortAnswers", "singleChoices", "multipleChoices", "trueOrFalses")],
+            [2, 30, 6, 6],
+            "前置条件：真实样本必须四组俱在（fixture 不许被精简）",
+        )
+        questions = parsing.parse_questions(data)
+        self.assertEqual(len(questions), 44)
+        types = [q.type for q in questions]
+        self.assertEqual(types.count(QuestionType.ESSAY), 2)
+        self.assertEqual(types.count(QuestionType.SINGLE), 30)
+        self.assertEqual(types.count(QuestionType.MULTIPLE), 6)
+        self.assertEqual(types.count(QuestionType.JUDGE), 6)
+        self.assertEqual(types[:2], [QuestionType.ESSAY] * 2)
+        self.assertEqual(types[2:32], [QuestionType.SINGLE] * 30)
+        self.assertEqual(types[32:38], [QuestionType.MULTIPLE] * 6)
+        self.assertEqual(types[38:], [QuestionType.JUDGE] * 6)
+
+    def test_each_measured_group_count_matches_parsed_count(self) -> None:
+        """逐组条数必须一一对齐 —— 这是防「又漏一组」的那条断言。
+
+        只断言总数会漏：两组各少 1、另一组多 2，总数照样对得上。
+        """
+        data = ALL_GROUP_QUESTIONS
+        expected = {
+            QuestionType.ESSAY: len(data["shortAnswers"]),
+            QuestionType.SINGLE: len(data["singleChoices"]),
+            QuestionType.MULTIPLE: len(data["multipleChoices"]),
+            QuestionType.JUDGE: len(data["trueOrFalses"]),
+        }
+        questions = parsing.parse_questions(data)
+        actual: dict[QuestionType, int] = {}
+        for question in questions:
+            actual[question.type] = actual.get(question.type, 0) + 1
+        for question_type, count in expected.items():
+            self.assertEqual(
+                actual.get(question_type, 0),
+                count,
+                f"{question_type.value} 组被漏掉了（原始 {count} 道）",
+            )
+        self.assertEqual(sum(expected.values()), len(questions))
+
+    def test_multiple_choice_options_come_from_option_items(self) -> None:
+        """多选的 optionItems 要变成 options，且字母与文本对得上号。
+
+        取第 4 道多选（真实文本未被脱敏成占位符的那道）：字母 A→D 对应的
+        选项原文必须一一对应，不能因为排序把序号对错。
+        """
+        item = ALL_GROUP_QUESTIONS["multipleChoices"][3]
+        self.assertEqual(
+            [entry["option"] for entry in item["optionItems"]], ["A", "B", "C", "D"]
+        )
+        questions = parsing.parse_questions(ALL_GROUP_QUESTIONS)
+        multiple = [q for q in questions if q.type is QuestionType.MULTIPLE]
+        self.assertEqual(len(multiple), 6)
+        self.assertEqual(multiple[3].options, ["民族差异", "群阶级差异", "时代差异", "个体差异"])
+        self.assertEqual(
+            len(multiple[0].options), len(ALL_GROUP_QUESTIONS["multipleChoices"][0]["optionItems"])
+        )
+
+    def test_option_letters_drive_the_order(self) -> None:
+        """选项字母乱序时必须按字母排 —— 否则计划里的选项序号与原文对不上。
+
+        输入是**内存里的纯函数入参**（不是 fixture 文件）：真实样本的选项文本
+        大多脱敏成同一句，分不出顺序，所以这里只借真实字段名造一份乱序入参。
+        """
+        item = {
+            ep.FIELD_OPTION_ITEMS: [
+                {ep.FIELD_OPTION: "C", ep.FIELD_CONTENT: "<p>丙</p>"},
+                {ep.FIELD_OPTION: "A", ep.FIELD_CONTENT: "<p>甲</p>"},
+                {ep.FIELD_OPTION: "B", ep.FIELD_CONTENT: "<p>乙</p>"},
+            ]
+        }
+        self.assertEqual(parsing._parse_options(item), ["甲", "乙", "丙"])
+
+    def test_judge_questions_have_no_options(self) -> None:
+        """判断题**没有** optionItems（实测）：不许凭空造出选项。"""
+        for item in ALL_GROUP_QUESTIONS["trueOrFalses"]:
+            self.assertNotIn(ep.FIELD_OPTION_ITEMS, item, "前置条件：判断题没有 optionItems")
+        questions = parsing.parse_questions(ALL_GROUP_QUESTIONS)
+        judge = [q for q in questions if q.type is QuestionType.JUDGE]
+        self.assertEqual(len(judge), 6)
+        self.assertTrue(all(q.options == [] for q in judge))
+        self.assertTrue(all(q.stem for q in judge), "判断题的题干要解析出来")
+        self.assertTrue(all(q.remote_id for q in judge), "判断题要有 ID 才能幂等")
+
+    def test_multiple_choice_and_judge_answer_slots_stay_in_raw(self) -> None:
+        """答案槽命名与主观题不同（多选 ``answer.solutions``、判断 ``answer.solution``）。
+
+        解析器不自己拼标准答案（那是题库/答题器的活），但原始答案槽必须原样带在
+        ``Question.raw`` 里 —— 抹掉它，将来核对「平台标准答案 vs 我们答的」就没依据。
+        """
+        questions = parsing.parse_questions(ALL_GROUP_QUESTIONS)
+        multiple = [q for q in questions if q.type is QuestionType.MULTIPLE]
+        judge = [q for q in questions if q.type is QuestionType.JUDGE]
+        self.assertIsInstance(multiple[0].raw["answer"]["solutions"], list)
+        self.assertIsInstance(judge[0].raw["answer"]["solution"], str)
+
     def test_image_only_option_is_labelled(self) -> None:
         """选项本身是图片（实测 rich-formula 选项）时不能渲染成空字符串。"""
         questions = parsing.parse_questions(IMAGE_QUESTIONS)
         self.assertEqual(questions[4].options, ["(图片选项)", "(图片选项)"])
 
     def test_parse_questions_does_not_fabricate_unknown_groups(self) -> None:
-        """未知分组按空处理（并告警），不能凭空造题。"""
-        questions = parsing.parse_questions({"judges": [{"questionId": "q9"}]})
+        """未知分组按空处理**并告警**，不能凭空造题。"""
+        with self.assertLogs("kedaibiao.platforms.pinco.parsing", level="WARNING") as logs:
+            questions = parsing.parse_questions({"judges": [{"questionId": "q9"}]})
         self.assertEqual(questions, [])
+        self.assertIn("未知的分组候选", "\n".join(logs.output))
+
+    def test_new_group_beside_known_groups_is_still_reported(self) -> None:
+        """已知分组还在时冒出的新分组也必须告警 —— 这才是「静默丢 42 题」的形态。
+
+        老告警只在「一个已知分组都没有」时响，而真实响应里四组并存；
+        多选/判断被丢时 shortAnswers 还在，于是没有任何声音。这条钉住那个盲区。
+        """
+        data = {
+            "shortAnswers": [{"questionId": "q1", "content": "<p>题干</p>"}],
+            "brandNewGroups": [{"questionId": "q2", "content": "<p>题干</p>"}],
+            "submitted": True,
+            "deadline": 1792381200000,
+        }
+        with self.assertLogs("kedaibiao.platforms.pinco.parsing", level="WARNING") as logs:
+            questions = parsing.parse_questions(data)
+        self.assertEqual(len(questions), 1, "已知分组照常解析，新分组不猜内容")
+        self.assertIn("brandNewGroups", "\n".join(logs.output))
+        self.assertNotIn("submitted", "\n".join(logs.output), "标量字段不该刷告警")
 
     def test_parse_questions_skips_item_without_stem_and_id(self) -> None:
         data = {"shortAnswers": [{"standardScore": 10}, *IMAGE_QUESTIONS["shortAnswers"]]}

@@ -60,10 +60,14 @@ _LIST_KEYS = (
     "classList",
 )
 
-#: 题目分组 → 核心题型。**只列实测响应里出现过的两个**；别的分组名不猜。
+#: 题目分组 → 核心题型。**只列实测响应里出现过的四组**；别的分组名不猜。
+#: 四组缺一不可：漏掉哪一组，那一组就是整组静默消失（曾漏掉多选 30 道 +
+#: 判断 12 道，见 :data:`endpoints.QUESTION_GROUPS` 的事故记录）。
 _GROUP_TYPES: dict[str, QuestionType] = {
     ep.FIELD_SHORT_ANSWERS: QuestionType.ESSAY,
     ep.FIELD_SINGLE_CHOICES: QuestionType.SINGLE,
+    ep.FIELD_MULTIPLE_CHOICES: QuestionType.MULTIPLE,
+    ep.FIELD_TRUE_OR_FALSES: QuestionType.JUDGE,
 }
 
 #: 视作「已完成」的字面量。
@@ -501,13 +505,18 @@ def _parse_options(item: dict[str, Any]) -> list[str]:
 
 
 def parse_questions(data: Any) -> list[Question]:
-    """解析题目。实测：分组在 ``data.shortAnswers[]`` 与 ``data.singleChoices[]``。
+    """解析题目。实测：分组在 ``data.shortAnswers[]`` / ``data.singleChoices[]`` /
+    ``data.multipleChoices[]`` / ``data.trueOrFalses[]`` —— **四组都要收**。
 
     - 题干 ``content`` 是 HTML，这里抽成纯文本存进 ``Question.stem``，原始 HTML
       留在 ``Question.raw``；
+    - 选项来自 ``optionItems``（判断题**没有**这个数组，所以判断题没有 options）；
     - 图片判定交给 :mod:`question_map`（题干里的 ``rich-img`` / ``rich-formula``
       都算「程序读不到」，转人工）；
     - **未知分组按空处理并告警**：新分组出现时要看得见，不能悄悄当成「没有题目」。
+      告警认两种形态：一个已知分组都没有；或除了已知分组还冒出别的非空列表。
+      后者才是「静默丢 42 题」那次真正漏掉的情形 —— 当时 shortAnswers 还在，
+      所以老告警一声没响；别把它当噪声关掉。
     """
     if not isinstance(data, dict):
         raise PincoProtocolError(
@@ -528,7 +537,24 @@ def parse_questions(data: Any) -> list[Question]:
             if question is not None:
                 questions.append(question)
 
-    if not groups_seen and data:
+    # 探针：除了已知分组，响应里**还有别的非空列表**时告警。
+    # 为什么不能只靠下面那条「一个已知分组都没有」的告警：真实响应里四个分组是
+    # 并存的，漏认其中一两个时 groups_seen 照样非空 —— 那次「静默丢 42 题」就是
+    # 这样一点声音都没有。这里只认「非空列表」这一种形态，是为了避开 deadline /
+    # submitted 这类同级的标量字段（否则每次都刷一屏噪声，人就不看了）。
+    unknown_lists = [
+        key
+        for key, value in data.items()
+        if key not in _GROUP_TYPES and isinstance(value, list) and value
+    ]
+    if unknown_lists:
+        log.warning(
+            "题目响应里有未知的分组候选 %s（已知：%s）—— 看着像新分组，已按空处理"
+            "（不猜内容），但请核对字段名：漏认一个分组就是整组题静默消失。",
+            ", ".join(sorted(unknown_lists)),
+            "/".join(_GROUP_TYPES),
+        )
+    elif not groups_seen and data:
         log.warning(
             "题目响应里没有已知分组（已知：%s；实际键：%s）—— 可能出现了新分组，"
             "先按「没有题目」处理，但请核对字段名。",
