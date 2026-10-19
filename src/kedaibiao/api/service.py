@@ -37,6 +37,7 @@ from kedaibiao.config.settings import (
     resolve_environ,
 )
 from kedaibiao.core.models import TaskKind
+from kedaibiao.platforms import load_builtin_adapters
 from kedaibiao.runtime import build_runtime, persist_http_cookies
 from kedaibiao.security.accounts import AccountError, AccountStore, PlatformAccount
 from kedaibiao.security.auth import (
@@ -147,7 +148,10 @@ class ConsoleService:
         self._events: list[dict[str, Any]] = []
         self._seq = 0
         self._active_job_id: str | None = None
-        # 动作注册表是进程级的，重复登记会覆盖，这里调用是幂等的
+        # 动作与适配器注册表都是进程级的，重复登记会覆盖，这里调用是幂等的。
+        # 必须显式调用：程序化使用 ConsoleService 时不会经过 CLI 的 main()，
+        # 否则会出现「平台数 0」这种看起来像坏了的结果。
+        load_builtin_adapters()
         load_builtin_actions()
 
     # -- 配置与存储 -------------------------------------------------------
