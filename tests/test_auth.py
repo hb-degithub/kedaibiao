@@ -681,5 +681,40 @@ class TestSessionPersistence(unittest.TestCase):
         self.assertEqual(self.adapter_cls.login_calls, 1, "不该再登录一次")
 
 
+class TestUnipusSessionPersistence(unittest.TestCase):
+    """U校园的会话也要能导出/恢复（它原先的约定是「只存内存」）。"""
+
+    def test_export_requires_portal_token(self) -> None:
+        from kedaibiao.platforms.unipus.adapter import UnipusAdapter
+        from kedaibiao.platforms.base import AdapterContext
+
+        adapter = UnipusAdapter(AdapterContext())
+        self.assertIsNone(adapter.export_session(), "还没登录就不该导出")
+
+    def _adapter(self):
+        from kedaibiao.net.http import HttpClient, UrllibTransport
+        from kedaibiao.platforms.base import AdapterContext
+        from kedaibiao.platforms.unipus.adapter import UnipusAdapter
+
+        return UnipusAdapter(AdapterContext(http=HttpClient(UrllibTransport())))
+
+    def test_import_then_export_roundtrip(self) -> None:
+        adapter = self._adapter()
+        ok = adapter.import_session({
+            "portal_token": "T-1", "open_id": "open-1",
+            "display_name": "张三", "school": "某校", "app_user_id": "u1",
+        })
+        self.assertTrue(ok)
+        exported = adapter.export_session()
+        self.assertEqual(exported["portal_token"], "T-1")
+        self.assertEqual(exported["open_id"], "open-1")
+        self.assertEqual(exported["school"], "某校")
+
+    def test_import_rejects_incomplete(self) -> None:
+        adapter = self._adapter()
+        self.assertFalse(adapter.import_session({"portal_token": "T"}))
+        self.assertFalse(adapter.import_session({}))
+
+
 if __name__ == "__main__":
     unittest.main()

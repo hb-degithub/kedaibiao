@@ -65,7 +65,9 @@ def _system_clock_ms() -> int:
 class UnipusSession:
     """会话里要存的东西（规格第 2.2 节）。
 
-    ⚠️ 只存内存，**不落盘**：本适配器不写任何含令牌的文件。
+    ⚠️ 默认只在内存；控制台会把会话导出到账号专属的
+    ``<cookie>.session.json``（0600，与 cookie 文件同级别）以便跨进程复用 ——
+    因为账号库不存密码，不落盘的话每次请求都要重新登录。
     """
 
     portal_token: str = ""

@@ -106,6 +106,40 @@ class UnipusAdapter(PlatformAdapter):
             return False
         return await self._client.is_logged_in()
 
+    # -- 会话持久化 --------------------------------------------------------
+    #
+    # 原先这里的约定是「只存内存、不写任何含令牌的文件」。但账号库**刻意不存
+    # 密码**，于是每次请求都会新建适配器 → 内存会话丢失 → 只剩空密码 →
+    # 报「登录失败」。所以必须把会话本身存下来。
+    #
+    # 存的是**会话**（令牌），不是密码；落盘位置与 cookie 文件同目录、
+    # 权限 0600，生命周期与「登录态」一致，登出/删账号时一并删除。
+
+    def export_session(self) -> dict[str, Any] | None:
+        session = self.session
+        if session is None or not getattr(session, "has_portal_token", False):
+            return None
+        return {
+            "portal_token": session.portal_token,
+            "open_id": session.open_id,
+            "display_name": session.display_name,
+            "school": session.school,
+            "app_user_id": session.app_user_id,
+        }
+
+    def import_session(self, data: dict[str, Any]) -> bool:
+        portal_token = str(data.get("portal_token") or "")
+        open_id = str(data.get("open_id") or "")
+        if not portal_token or not open_id:
+            return False
+        session = self.client().session
+        session.portal_token = portal_token
+        session.open_id = open_id
+        session.display_name = str(data.get("display_name") or "")
+        session.school = str(data.get("school") or "")
+        session.app_user_id = str(data.get("app_user_id") or "")
+        return True
+
     # -- 课程 -------------------------------------------------------------
 
     async def list_courses(self, *, with_bookshelf: bool = True) -> list[Course]:

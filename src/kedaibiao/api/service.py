@@ -41,6 +41,7 @@ from kedaibiao.platforms import load_builtin_adapters
 from kedaibiao.runtime import (
     build_runtime,
     persist_http_cookies,
+    session_path,
     restore_adapter_session,
     save_adapter_session,
 )
@@ -824,9 +825,12 @@ class ConsoleService:
         self._with_accounts(lambda st: st.delete(account.id))
         try:
             settings = load_settings(root=self.root, environ=self.environ)
-            account.cookie_path(settings.session_dir).unlink(missing_ok=True)
+            cookie = account.cookie_path(settings.session_dir)
+            cookie.unlink(missing_ok=True)
+            # 会话快照也是凭据，一并删掉
+            session_path(cookie).unlink(missing_ok=True)
         except OSError:
-            log.debug("删除 cookie 文件失败", exc_info=True)
+            log.debug("删除会话文件失败", exc_info=True)
 
     def _login_account(self, account: PlatformAccount, password: str) -> tuple[bool, str]:
         """用给定密码登录该账号，成功则把 cookie 落到**它自己的文件**里。
