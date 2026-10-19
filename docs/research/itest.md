@@ -4,10 +4,13 @@
   <https://itest.unipus.cn/itest/>（iTEST 4.0 网页答题客户端）、iTEST 移动端 App、
   校内端（学校局域网自建）
 - 调研日期：2026-10-19（Asia/Shanghai）
-- 调研阶段：**Stage 0 —— 公开资料 + 匿名只读探测**。登录态下的接口/数据**尚未实测**
-- 调研方式：官方帮助中心与 App 介绍页阅读 + 匿名 `GET`/`POST`（仅登录表单一次，见 §5）
-  + 公开静态 JS 阅读；请求全部为低频单发，未爆破、未压测
-- 本轮**没有**拿到任何账号内数据：未登录前平台只暴露登录页与 CMS 页面
+- 调研阶段：**Stage 0 公开资料 + Stage 1 登录态实测**。已用账号本人授权的凭据跑通
+  「登录 → 考试列表 → 去考试换 token → 答题页 → 设备检测 → 取卷(load)」；
+  取卷时**真实进入了一次该单元作业**（浏览器里点「开始考试」），**未作答、未保存、未交卷**
+- 调研方式：官方帮助中心与 App 介绍页阅读 + 公开静态 JS 阅读 + 登录态低频只读请求
+  （单发、无并发）；一次换 token 调用，其余均为读取
+- 账号内数据：只读取了本人考试列表、考试元信息与一份答题页 HTML；报告只留字段名与
+  结构，不留姓名/学号/手机号/token
 
 > 外部内容一律按「不可信数据」处理，只读取不执行；凡未经直接验证的结论标注
 > **未验证**，由事实推出的标注 **推断**。本报告只记录事实（入口、字段名、流程），
@@ -28,8 +31,17 @@
 | 考试过程形态 | 实时保存答题记录；断线/关浏览器后可「继续答题」，**剩余时长延续**；网页端**听力必须按顺序先听**，否则只能看到首页部分小题 | 官方资料 |
 | 考试窗口 | **独立弹窗 + 一次性 JWT**：`/itest-api/itest/s/answer/index?token=<JWT>&returnUrl=…`，不是新域名 | 已核验（公共存档/公开 JS） |
 | 答题端接口 | `/itest-api/itest/s/answer/{ksInfo,load,submit,exam/wait,screen/switch}`、`/itest-api/itest/s/env/*` | 已核验（公开 JS + 匿名 200） |
+| 登录链路 | SSO `POST /sso/0.1/sso/cip/login`（AES 表单）→ `?ticket=` → cookie `jwt`/`iTSsiD` | **已核验（实测）** |
+| 考试列表 | `POST /utest/itest-mobile-api/student/exam/list`（JSON `{}`） | **已核验（实测）** |
+| 换 token | `POST /utest/itest/s/exam/judgeEntry`（表单 `examId`+`examCode`）→ `data.url` 里带 JWT | **已核验（实测）** |
+| 换 token 会开始考试吗 | **不会**：调用前后 `ansBeginTime` 仍为 null、`finish` 仍为 0 | **已核验（实测）** |
+| 答题页 | `url + "&returnUrl=" + 列表页`，`$GLOBAL` 里带 sppid/dataType=8/dataUser/openId | **已核验（实测）** |
+| 能读到什么 | `ksInfo`（考试名/时长/起止）、`exam/wait`（waitingTime/isExpire） | **已核验（实测）** |
+| 取卷 `load` | 浏览器里已通：返回 `D_HTML`/`C_HTML`/`UIK`/`TL`，题号+题干+选项全在里面 | **已核验（浏览器）** |
+| load 的门槛 | 需带 `envTest*`、`iTMExam` 两个不透明 cookie（设备检测 + 作答会话） | **已核验（实测）** |
+| 交卷报文 | `POST /itest/s/answer/submit`：`ansData`（`{al,sl}`）+ `act=save`（cache=自动保存） | 已核验（JS 常量，未真发） |
 | 监考参数 | 全在 token 里：`screenLimit`（切屏次数）、`capture`、`rtcRecord`、`faceRecognize`、`minSubmitLimit`、`ksLimit` | 已核验（JWT 字段） |
-| 自动化抓手 | **token 是钥匙**：拿到 token 不必开窗口，直接走 JSON 接口；交卷是写操作 | 推断 |
+| 自动化抓手 | **token 是钥匙**：拿到 token 不必开窗口，直接走 JSON 接口；交卷是写操作 | 推断（ksInfo/wait 已验证） |
 | 非派发的练习形态 | **诊后训练 / 班级训练 / 模考训练**（学生自主发起，不属于教师派发） | 官方资料 |
 | 匿名能拿到什么 | 只有入口、登录流程、静态资源版本与少量路径线索；**业务数据一律拿不到** | 已核验 |
 | 登录拦截 | Unipus SSO（`sso.unipus.cn`），用户名/密码 AES 加密后提交；失败若干次后出图形验证码 | 已核验（登录页 JS）+ 实测 |
@@ -72,6 +84,24 @@
 
 **对自动化的含义（推断）**：登录链路要先过 Unipus SSO，再用学校 iTEST 账号做一次绑定认证；
 若账号已认证过，Cookie/令牌续期即可复用，不需要每次重新认证。
+
+### 1.3 云平台登录链路（2026-10-19 实测，已核验）
+
+```http
+GET  https://itestcloud.unipus.cn/utest/itest/login
+     → 302 https://sso.unipus.cn/sso/login?service=<itestcloud 登录地址>
+POST https://sso.unipus.cn/sso/0.1/sso/cip/login          # JSON
+     {"service": <service>, "username": <AES>, "password": <AES>}
+     → {"code": 0, "rs": {"serviceTicket": "<ticket>"}}
+GET  <service>?ticket=<ticket>
+     → 302 回 /utest/itest/...，落 cookie：jwt、iTSsiD、SSOExpireTime、TGC
+```
+
+- AES 参数与 U 校园同源：key `8AD70B641C024C7ADA2ECD082EC0334F`、IV
+  `0102030405060708090A0B0C0D0E0F10`、CBC+PKCS7、**大写十六进制**——
+  `platforms/unipus/crypto.py` 的 `encrypt_login_field()` 可直接复用。
+- 登录后云平台的学生页（`/utest/itest/s/exam`）直接 200，不再跳 SSO。
+- 首次登录**没有**出图形验证码；错误次数累积后才可能要求（本次未触发）。
 
 ---
 
@@ -278,11 +308,110 @@ dataid / extSourceType / extSource / extUser / openId
 - **风险**：教师开了 `capture` / `rtcRecord` / `videoSpeak` / `faceRecognize` 时，无人值守
   自动作答会被监考端看到；`minSubmitLimit` 会拒绝过早交卷；切屏超限会被自动交卷。
 
-### 3.7 还缺的最后一块：签发 token 的那个请求
+### 3.7 实测：进入考试的完整链路（2026-10-19，已核验）
 
-「去考试」按钮背后的 token 签发请求（预计是列表页 XHR，`POST/GET` 到
-`/itest-api/itest/s/exam/...` 或 `/itest-mobile-api/student/exam/...`）**尚未捕获**。
-拿到一次登录态后抓 HAR 即可补齐；仓库里的 `scripts/har_mine.py` 可以直接脱敏成接口清单。
+用账号本人授权的凭据实测，全程**只读到「拿到答题页并确认 token 可用」，未作答、未交卷**。
+顺序如下（每一步都是真实请求，不是推断）：
+
+```
+① 登录（Unipus SSO，见 §1.3）
+   GET  https://itestcloud.unipus.cn/utest/itest/login
+        → 302 https://sso.unipus.cn/sso/login?service=<itestcloud 登录地址>
+   POST https://sso.unipus.cn/sso/0.1/sso/cip/login   (JSON)
+        {"service": <上面的 service>, "username": <AES 加密>, "password": <AES 加密>}
+        → {"code": 0, "rs": {"serviceTicket": "..."}}
+   GET  <service>?ticket=<serviceTicket>
+        → 落 cookie：jwt / iTSsiD / SSOExpireTime（itestcloud + .unipus.cn）
+
+② 考试列表
+   POST https://itestcloud.unipus.cn/utest/itest-mobile-api/student/exam/list   (JSON {})
+        → {"code":0,"rs":{"data":[{"ksdId":<考试详情ID>,"ksId":<试卷/考试ID>,"ksName":...,
+           "examType":0,"examTag":2,"beingOrOver":2,"finish":0,"ksLimit":999,
+           "restrictBeginTime":...,"restrictEndTime":...,
+           "captureFlag":0,"faceRecognize":0,"rtcFlag":0,"screenMonitoringFlag":0}]}}
+
+③ 点「去考试」→ 换 token（就是列表页那个 XHR）
+   POST https://itestcloud.unipus.cn/utest/itest/s/exam/judgeEntry   (表单)
+        examId=<ksdId>&examCode=<比赛码，普通考试为空>
+        → {"code":1,"data":{"ksId":"...","openId":"...","isNeiWangKs":false,
+           "xiaoNeiAddr":"","url":"https://itestcloud.unipus.cn/itest-api/itest/s/answer/index?token=<JWT>"}}
+   * 本次实测的考试 `item.type == 1`，走的是 `/itest/s/exam/judgeEntry`（**已核验**）；
+     打包代码里 `item.type == 0` 走 `/itest/s/clsanswer/judgeEntry`（`type` 的语义未定，
+     可能是考试通道而非 examType，待补测）。
+
+④ 弹窗
+   window.open(url + "&returnUrl=" + encodeURIComponent(当前页), "student_answer_window", ...)
+   * 缺 returnUrl 时答题页直接报「没有权限 / 参数缺失」——已实测，参数是必需的。
+
+⑤ 答题页（服务端渲染的壳，再加载 SPA）
+   GET <url>&returnUrl=...  → HTML 注入 window.$GLOBAL：
+       { examName, username(学号), realName, schoolName, facultyName, gradeName, clsNames,
+         hasRecord, capture, hasRecognize, itestStudentUrl, rtcFlag, rtcRecord,
+         prepareBroadcast, kcId, sppid=<ksId>, dataSource:"itest", dataType:"8",
+         dataUser=<uid>, openId, cdnUrl:"https://itestres.unipus.cn/itest-mobile/static" }
+       window.CTX = "/itest-api"
+   * 页面还挂 vendor.js / common.js / checkService.js（答题 SPA），并锁 F12/右键。
+
+⑥ 读考试信息（JWT 可用）
+   GET  /itest-api/itest/s/answer/ksInfo?token=<JWT>
+        → {"code":0,"rs":{"ksName":...,"ksLimit":999,"beginTime":"2026-10-19 04:15:00",
+           "endTime":"2026-11-16 23:55:00","kcName":""}}
+   POST /itest-api/itest/s/answer/exam/wait   (表单 token=<JWT>)
+        → {"code":0,"rs":{"waitingTime":-34076,"isExpire":0}}
+          waitingTime 为负 = 已过开考时间、可进入；isExpire=1 才是窗口关闭
+
+⑦ 取卷（2026-10-19 打通，浏览器环境下已核验）
+   POST /itest-api/itest/s/answer/load?t=<rand>   (表单)
+        dataid=<ksId>&examId=&dataType=8&dataSource=itest
+        &dataUser=<uid>&openId=<openId>
+   → {"code":1,"data":{
+        "D_HTML":  "<div class='dtk'>…题号目录，104 个 <li qid=… sectionKey=…>…",
+        "C_HTML":  "<div class='itest-section' sectionType='sNormal|sHear'>…11 个 section、
+                    26 道大题、填空 <input class='blankinput' qSubIndex=…>…",
+        "OPTION_ORDER": false, "IS_SHOW_QUESPARSE": false, "BACK_PLAY": true,
+        "UIK": <作答版本号，每 load 一次 +1>, "TL": 59940, "NTL": 59940,
+        "TYPE": 0 }}
+   * 实测 TL/NTL = 59940 = 999 分钟（单位秒），与 ksLimit 对得上。
+   * 题目结构：section（sectionType sNormal/sHear 区分听/读）→ itest-ques[qid] →
+     题型容器 class="itest-danxuan|itest-write|…"（即答案采集函数名）；
+     填空为 input.blankinput[qSubIndex][qSubSubIndex]，<u> 标出要填的原文词。
+   * 交卷 = POST 到 #submitAnswerForm 的 action（即 /itest-api/itest/s/answer/submit），
+     报文 {ansData: JSON.stringify({al:[…], sl:[…]}), act:'save'|'cache',
+      sppid, uik, clearUik, dataType, dataSource, dataUser, openId, exitFlag, __t}。
+     act='cache' 是每分钟自动保存，act='save' 才是交卷（写操作）。
+```
+
+**取卷为什么之前一直 400（已定位）**：`load` 不只认 token，还认「本设备已进入该考试」的
+服务端会话，由下面两个不透明 cookie 承载：
+
+| cookie | 由谁下发 | 作用 |
+| --- | --- | --- |
+| `envTest<32位大写>` | 设备检测（键盘/耳机）通过后 | 证明这台设备做过考中设备检测 |
+| `iTMExam`（64 字节 hex） | `GET /answer/index?token=…` | 本机持有该考试的作答会话 |
+
+真实浏览器里还有一步 `POST /itest-mobile-api/student/exam/examToken`（body `{}`）——
+它把 `p_examtype` 从 `0` 改成 `8`，之后 `GET /answer/index` 才会下发 `iTMExam`；
+若账号已在别处进入同一考试，页面会先弹「考试冲突」，点确定触发
+`POST /itest-api/itest/s/answer/solveUikConflict`
+（`sppid&dataType&dataSource&dataUser&openId&__r`）把作答会话「抢」到本设备。
+
+> 实测：纯 HTTP（requests + 同一套 cookie）复刻到 `solveUikConflict` 为止仍然 `load → 400`；
+> 说明 `envTest*`/`iTMExam` 这两个值不是 cookie jar 里能自然长出来的（浏览器端生成/校验）。
+> 结论：**协议路线到取卷这一层需要浏览器兜一次底**，或者后续把这套设备检测的接口补齐。
+
+**两条重要的实测结论：**
+
+1. **`judgeEntry` 本身不开始考试。** 调用前后 `ansBeginTime` 始终为 `null`、
+   `finish` 仍为 0 —— 真正开始答题是答题页里「确认信息 → 开始答题」那一步。
+   所以「换 token」可以单独做，不会消耗/启动考试。
+2. **token 可以直接用**：`ksInfo` 与 `exam/wait` 都接受 URL 上那个 JWT；
+   `sign-token` 头在 `screen/switch`、上传/人脸接口里用的也是它。
+
+**仍未知的两小块**：
+1. `envTest*` / `iTMExam` 的生成规则（浏览器端还是边缘网关下发，值不可伪造）；
+2. `submit` 的 `ansData` 精确结构——`getAllUserAnswer()` 按题型 class 分派采集函数
+   （`itest-danxuan` → `itest_danxuan` …），要拿到每种题型的字段名，最省事的办法仍是
+   浏览器里填一题、抓一次 `act=cache` 的报文。
 
 ### 3.8 附：iTEST 4.0 老客户端的登录线索（公开静态资源）
 
@@ -301,19 +430,47 @@ dataid / extSourceType / extSource / extUser / openId
 
 ---
 
+### 3.9 取卷脚本（`scripts/itest_exam.py`，已跑通）
+
+把 §3.7 的链路固化成可复用脚本，**取到卷就停手**（不点「确定」、不 submit、不计时）：
+
+```
+python3 scripts/itest_exam.py list            # 登录 + 列考试（只读）
+python3 scripts/itest_exam.py paper <ksdId>   # 浏览器进窗口 → 设备检测 → 开始考试 → 抓 load
+```
+
+产物（`data/recon/itest/`，已被 `.gitignore` 忽略）：
+
+| 文件 | 内容 |
+| --- | --- |
+| `load_<ksdId>.json` | `load` 原始响应（D_HTML / C_HTML / UIK / TL …） |
+| `paper_<ksdId>.json` | 解析后的试卷：section → question → 题型 / 题干 / 选项 / 空位 / 听力音频 |
+
+实现要点：
+
+- 登录与换 token 用 `urllib`（零第三方依赖），只把 cookie 灌进 Playwright context；
+- 浏览器在**列表页点该考试卡片的「进入考试」**（直接打开窗口 URL 会触发「考试页面被拦截」）；
+- 自动处理「考试冲突 → 确定」与键盘/耳机检测；看到「加载成功」立即停止；
+- 解析按 `itest-section` → `itest-ques` → 题型容器切分，选项兼容两种来源
+  （`<label><input type=radio>` 与 `option-head` 里的 `A) … B) …` 文本）。
+
+---
+
 ## 4. 待实测清单（需登录态，按优先级）
 
 | # | 目标 | 要确认的东西 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 登录态建立 | SSO 密码登录 → `serviceTicket` → 换 iTEST 云平台会话（JWT/cookie 形态）；学校认证是否已做 | 待测 |
-| 2 | 考试列表 | `/utest/itest/s/exam` 的列表 XHR：考试 ID、时间、状态、是否移动端 | 待测 |
-| 3 | **去考试 → token 签发** | 点击「去考试」时的 XHR（响应里应含 §3.2 那个 JWT）；弹窗 URL 的实际形态 | 待测（最高优先） |
-| 4 | 答题端读取 | `ksInfo` / `paper resource info` / `load` 的真实响应结构；题干、选项、听力资源 URL 的字段 | 待测 |
-| 5 | 自动保存 | `submit` + `act=cache` 的响应；断线续答（`load` 返回已答） | 待测 |
-| 6 | 交卷 | `act=save` 的响应；`minSubmitLimit` / `screenLimit` 命中时的返回 | 待测（写操作，人工确认后才做） |
-| 7 | 班级 | 班级列表、授权码加入、考生名单（只读） | 待测 |
-| 8 | 训练族 | 诊后 / 班级 / 模考训练的列表与题目接口 | 待测（低优先） |
-| 9 | 移动端标记 | 试卷/考试上的「支持移动端」字段在哪里体现 | 待测 |
+| 1 | 登录态建立 | SSO `cip/login` + `?ticket=` → cookie `jwt`/`iTSsiD`；无图形验证码 | **已核验**（2026-10-19） |
+| 2 | 考试列表 | `POST /utest/itest-mobile-api/student/exam/list`（JSON `{}`）→ 分页考试数组 | **已核验** |
+| 3 | **去考试 → token 签发** | `POST /utest/itest/s/exam/judgeEntry`（表单 `examId`/`examCode`）→ `data.url` 内嵌 JWT | **已核验** |
+| 4 | 答题页 | `url + "&returnUrl=" + 列表页` 打开；`$GLOBAL`（sppid/dataType=8/dataUser/openId）| **已核验** |
+| 5 | 答题端读取 | `ksInfo`、`exam/wait`、`load`（`D_HTML` 题号 `/ C_HTML` 题干+选项 `/ UIK`） | **已核验（浏览器）** |
+| 6 | 自动保存 | `submit` + `act=cache` 的响应；断线续答（`load` 返回已答） | 待测（写操作） |
+| 7 | 交卷 | `act=save` 的响应；`minSubmitLimit` / `screenLimit` 命中时的返回 | 待测（写操作，人工确认后才做） |
+| 8 | 确认页/设备检测 | 信息确认 → 键盘/耳机检测 → `examToken` → `考试冲突` → `solveUikConflict` → `load`；下发 `envTest*`/`iTMExam` | **已核验（浏览器交互）** |
+| 9 | 班级 | 班级列表、授权码加入、考生名单（只读） | 待测 |
+| 10 | 训练族 | 诊后 / 班级 / 模考训练的列表与题目接口 | 待测（低优先） |
+| 11 | 移动端标记 | 试卷/考试上的「支持移动端」字段在哪里体现 | 待测 |
 
 ---
 
@@ -329,3 +486,7 @@ dataid / extSourceType / extSource / extUser / openId
   尝试4次」）后立即停手，未再尝试；后续凭据由账号本人提供。
 - **低频只读**：公开面探测全部单发、无并发；登录后仍按此纪律（≥1.2s 间隔）。
 - **凭据不落盘**：账号/密码只进 `.env`（已被 `.gitignore` 忽略），报告与日志不出现明文。
+- **本轮实际动作清单**（可审计）：SSO 登录 3 次、考试列表 2 次、`judgeEntry` 2 次
+  （只为取 token，已确认不写 `ansBeginTime`）、答题页 GET 3 次、`ksInfo`/`exam/wait`
+  各 2 次、`load` 若干次（均为 400，无副作用）、`/env/*` 匿名探测若干。**没有**调用
+  `submit`、`screen/switch`、`upload`、`face/acquire`、`rtc`。
