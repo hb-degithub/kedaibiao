@@ -12,268 +12,611 @@
 </head>
 <body>
 
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-name">课代表</span>
-    <span class="brand-slug mono">kedaibiao</span>
-  </div>
-  <div class="topbar-meta">
-    <span class="kv">版本 <span id="meta-version" class="mono">—</span></span>
-    <span class="kv">环境 <span id="meta-env" class="mono">—</span></span>
-    <span class="kv">Python <span id="meta-python" class="mono">—</span></span>
-    <span id="meta-mode" class="badge badge-dry">干跑</span>
-  </div>
-  <div class="topbar-actions">
-    <span id="conn-state" class="conn conn-idle">未连接</span>
-    <button id="refresh-btn" class="btn btn-ghost" type="button">刷新</button>
-  </div>
-</header>
+<div class="layout">
 
-<div id="boot-note" class="banner banner-boot" role="alert" hidden></div>
-<div id="banner" class="banner" role="alert" hidden></div>
-<div id="toast" class="toast" role="status" hidden></div>
-
-<main id="main">
-
-  <!-- 概览 -->
-  <section class="panel" aria-labelledby="h-overview">
-    <h2 id="h-overview">概览</h2>
-    <div class="cards">
-      <div class="card">
-        <div class="card-label">平台</div>
-        <div id="ov-platforms" class="card-value mono">—</div>
-        <div id="ov-platforms-sub" class="card-sub">—</div>
-      </div>
-      <div class="card">
-        <div class="card-label">题库</div>
-        <div id="ov-bank" class="card-value mono">—</div>
-        <div id="ov-bank-sub" class="card-sub">—</div>
-      </div>
-      <div class="card">
-        <div class="card-label">跑批记录</div>
-        <div id="ov-runs" class="card-value mono">—</div>
-        <div id="ov-runs-sub" class="card-sub">—</div>
-      </div>
-      <div class="card">
-        <div class="card-label">运行参数</div>
-        <div id="ov-runtime" class="card-value mono">—</div>
-        <div id="ov-runtime-sub" class="card-sub">—</div>
-      </div>
+  <!-- ==================================================================
+       左侧栏：一列两段
+         上段 = 平台切换（全部平台 / 批改网 / 希沃品课 / U校园 …）
+         下段 = 当前平台的功能切换（概览 / 课程 / 作业 / 题库 / 工具 /
+                运行日志 / 统计 / 账号）
+       底部 = 连接状态 + 刷新 + 版本信息
+       ================================================================== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-name">课代表</span>
+      <span class="brand-slug mono">kedaibiao</span>
     </div>
-    <dl id="env-list" class="env-list" hidden></dl>
-  </section>
 
-  <!-- 平台 -->
-  <section class="panel" aria-labelledby="h-platforms">
-    <div class="panel-head">
-      <h2 id="h-platforms">平台</h2>
-      <span class="hint">能力矩阵按适配器声明；「跑一次」为干跑（live=false，全部类型，不限量）</span>
-    </div>
-    <p id="platforms-empty" class="empty" hidden></p>
-    <div class="table-wrap">
-      <table id="platforms-table" hidden>
-        <thead>
-          <tr>
-            <th>平台</th>
-            <th>显示名</th>
-            <th class="ctr" title="login">登录</th>
-            <th class="ctr" title="list_courses">课程</th>
-            <th class="ctr" title="list_assignments">作业</th>
-            <th class="ctr" title="fetch_questions">取题</th>
-            <th class="ctr" title="submit">提交</th>
-            <th class="ctr" title="course_playback">回放</th>
-            <th>凭据</th>
-            <th class="ctr">操作</th>
-          </tr>
-        </thead>
-        <tbody id="platforms-body"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <!-- 触发跑批 -->
-  <section class="panel" aria-labelledby="h-run">
-    <div class="panel-head">
-      <h2 id="h-run">触发跑批</h2>
-      <span class="hint">同一时刻只允许一个任务；默认干跑，只规划不提交</span>
-    </div>
-    <form id="run-form" class="run-form" autocomplete="off">
-      <div class="field">
-        <label for="run-platform">平台</label>
-        <select id="run-platform" required></select>
+    <!-- ---------- 上段：平台 ---------- -->
+    <div class="side-block side-platforms">
+      <div class="side-head">
+        <h2 class="side-title">平台</h2>
+        <span class="hint">点击切换</span>
       </div>
-
-      <div class="field">
-        <label for="run-limit">limit</label>
-        <input id="run-limit" class="mono" type="number" min="0" step="1" value="0" inputmode="numeric">
-        <span class="field-hint">0 = 不限；首次试跑建议设小值</span>
-      </div>
-
-      <fieldset class="field field-wide">
-        <legend>kinds（不勾选 = 全部）</legend>
-        <div class="checks">
-          <label class="check"><input type="checkbox" name="kind" value="course"> 课程 course</label>
-          <label class="check"><input type="checkbox" name="kind" value="homework"> 作业 homework</label>
-          <label class="check"><input type="checkbox" name="kind" value="exam"> 考试 exam</label>
-          <label class="check"><input type="checkbox" name="kind" value="practice"> 练习 practice</label>
-        </div>
-      </fieldset>
-
-      <div class="field field-wide live-field">
-        <label class="switch" for="run-live">
-          <input id="run-live" type="checkbox">
-          <span class="switch-text">真提交（live）</span>
-        </label>
-        <span id="live-badge" class="badge badge-dry">当前：干跑</span>
-        <span id="run-live-hint" class="field-hint" hidden></span>
-      </div>
-
-      <div class="field field-wide">
-        <button id="run-submit" class="btn btn-run" type="submit">开始跑批（干跑）</button>
-        <span id="run-state" class="field-hint"></span>
-      </div>
-    </form>
-    <p class="note">
-      干跑（live=false）只读取与规划，不向平台提交任何内容。打开「真提交」需要二次确认，
-      <strong>这会真的提交作业，不可撤销</strong>。
-    </p>
-  </section>
-
-  <!-- 当前任务 -->
-  <section class="panel" aria-labelledby="h-job">
-    <div class="panel-head">
-      <h2 id="h-job">当前任务</h2>
-      <span id="job-poll" class="hint"></span>
+      <ul id="platform-nav" class="plat-nav" hidden></ul>
+      <p id="platform-nav-empty" class="empty" hidden></p>
     </div>
-    <p id="job-empty" class="empty">暂无进行中的任务。用上面的触发区跑一次。</p>
-    <div id="job-body" hidden>
-      <dl class="kv-grid">
-        <div><dt>job_id</dt><dd id="job-id" class="mono">—</dd></div>
-        <div><dt>平台</dt><dd id="job-platform" class="mono">—</dd></div>
-        <div><dt>模式</dt><dd id="job-live">—</dd></div>
-        <div><dt>状态</dt><dd id="job-status">—</dd></div>
-        <div><dt>开始</dt><dd id="job-started" class="mono">—</dd></div>
-        <div><dt>结束</dt><dd id="job-finished" class="mono">—</dd></div>
-        <div><dt>已耗时</dt><dd id="job-elapsed" class="mono">—</dd></div>
+
+    <!-- ---------- 下段：功能 ---------- -->
+    <div class="side-block side-funcs">
+      <div class="side-head">
+        <h2 class="side-title">功能</h2>
+        <span id="func-scope" class="hint">当前平台</span>
+      </div>
+      <nav aria-label="功能导航">
+        <ul id="func-nav" class="func-nav">
+          <li><a class="nav-item" data-page="overview"    href="#/overview">概览</a></li>
+          <li><a class="nav-item" data-page="courses"     href="#/courses">课程</a></li>
+          <li><a class="nav-item" data-page="assignments" href="#/assignments">作业</a></li>
+          <li><a class="nav-item" data-page="bank"        href="#/bank">题库</a></li>
+          <li><a class="nav-item" data-page="tools"       href="#/tools">工具</a></li>
+          <li><a class="nav-item" data-page="logs"        href="#/logs">运行日志</a></li>
+          <li><a class="nav-item" data-page="stats"       href="#/stats">统计</a></li>
+          <li><a class="nav-item" data-page="account"     href="#/account">账号</a></li>
+        </ul>
+      </nav>
+    </div>
+
+    <div class="side-foot">
+      <div class="side-status">
+        <span id="conn-state" class="conn conn-idle">未连接</span>
+        <button id="refresh-btn" class="btn btn-ghost btn-sm" type="button"
+                title="重新拉取平台列表与当前页数据">刷新</button>
+      </div>
+      <dl id="side-meta" class="side-meta">
+        <div><dt>版本</dt><dd id="meta-version" class="mono">—</dd></div>
+        <div><dt>环境</dt><dd id="meta-env" class="mono">—</dd></div>
+        <div><dt>Python</dt><dd id="meta-python" class="mono">—</dd></div>
+        <div><dt>数据库</dt><dd id="meta-db" class="mono">—</dd></div>
       </dl>
-      <p id="job-summary" class="job-summary" hidden></p>
-      <p id="job-error" class="job-error" hidden></p>
-      <div id="job-counts" class="counts"></div>
-      <div class="panel-head sub-head">
-        <h3>任务记录</h3>
-        <span id="job-records-count" class="hint"></span>
-      </div>
-      <p id="job-records-empty" class="empty" hidden>该任务还没有产生记录。</p>
-      <div class="table-wrap">
-        <table id="job-records-table" hidden>
-          <thead>
-            <tr><th>assignment_id</th><th>状态</th><th>备注</th></tr>
-          </thead>
-          <tbody id="job-records-body"></tbody>
-        </table>
-      </div>
     </div>
-  </section>
+  </aside>
 
-  <!-- 历史任务 -->
-  <section class="panel" aria-labelledby="h-jobs">
-    <details open>
-      <summary><h2 id="h-jobs" class="inline-h2">任务历史</h2><span id="jobs-count" class="hint"></span></summary>
-      <p id="jobs-empty" class="empty" hidden>还没有任务记录。</p>
-      <div class="table-wrap">
-        <table id="jobs-table" hidden>
-          <thead>
-            <tr>
-              <th>job_id</th><th>平台</th><th>模式</th><th>状态</th>
-              <th>开始</th><th>结束</th><th>摘要</th><th>错误</th><th class="ctr">操作</th>
-            </tr>
-          </thead>
-          <tbody id="jobs-body"></tbody>
-        </table>
+  <div class="content">
+
+    <!-- ============================ 顶栏：只放当前平台 + 跑批模式 ============================ -->
+    <header class="topbar">
+      <span class="top-scope">
+        <span class="hint">当前平台</span>
+        <b id="cur-platform">全部平台</b>
+      </span>
+      <div class="topbar-right">
+        <span id="top-env" class="badge badge-idle" title="尚未取到配置">—</span>
+        <span id="top-live" class="badge badge-live" hidden>本次：真提交</span>
       </div>
-    </details>
-  </section>
+    </header>
 
-  <!-- 跑批历史 -->
-  <section class="panel" aria-labelledby="h-runs">
-    <details>
-      <summary><h2 id="h-runs" class="inline-h2">跑批历史</h2><span id="runs-count" class="hint"></span></summary>
-      <p id="runs-empty" class="empty" hidden>还没有跑批记录。用上面的触发区跑一次干跑试试。</p>
-      <div class="table-wrap">
-        <table id="runs-table" hidden>
-          <thead>
-            <tr>
-              <th>id</th><th>平台</th><th>assignment_id</th><th>状态</th>
-              <th class="num">尝试</th><th>开始</th><th>结束</th><th>错误</th><th>detail</th>
-            </tr>
-          </thead>
-          <tbody id="runs-body"></tbody>
-        </table>
-      </div>
-    </details>
-  </section>
+    <div id="boot-note" class="banner banner-boot" role="alert" hidden></div>
+    <div id="banner" class="banner" role="alert" hidden></div>
+    <div id="toast" class="toast" role="status" hidden></div>
 
-  <!-- 题库 -->
-  <section class="panel" aria-labelledby="h-bank">
-    <details>
-      <summary><h2 id="h-bank" class="inline-h2">题库</h2><span id="bank-hint" class="hint"></span></summary>
-      <p id="bank-empty" class="empty" hidden>题库为空。跑批命中题目后会自动入库。</p>
-      <div id="bank-body" hidden>
-        <div class="stat-row">
-          <span class="stat"><span class="stat-label">总量</span><span id="bank-total" class="stat-value mono">—</span></span>
-          <span class="stat"><span class="stat-label">已判分</span><span id="bank-graded" class="stat-value mono">—</span></span>
-          <span class="stat"><span class="stat-label">正确</span><span id="bank-correct" class="stat-value mono">—</span></span>
-          <span class="stat"><span class="stat-label">准确率</span><span id="bank-accuracy" class="stat-value mono">—</span></span>
-          <span class="stat"><span class="stat-label">未判分</span><span id="bank-ungraded" class="stat-value mono">—</span></span>
+    <main id="main">
+
+      <!-- ==================================================================
+           页面 1/8：概览
+           ================================================================== -->
+      <section id="page-overview" class="page" hidden aria-labelledby="h-overview">
+        <div class="page-head">
+          <h1 id="h-overview">概览</h1>
+          <span id="ov-scope" class="hint">—</span>
         </div>
-        <div class="panel-head sub-head"><h3>按来源</h3></div>
-        <p id="bank-source-empty" class="empty" hidden>没有来源统计。</p>
-        <div class="table-wrap">
-          <table id="bank-source-table" hidden>
-            <thead><tr><th>来源</th><th class="num">数量</th></tr></thead>
-            <tbody id="bank-source-body"></tbody>
-          </table>
+
+        <div class="cards">
+          <div class="card">
+            <div class="card-label">当前平台</div>
+            <div id="ov-plat" class="card-value">—</div>
+            <div id="ov-plat-sub" class="card-sub">—</div>
+          </div>
+          <div class="card">
+            <div class="card-label" id="ov-bank-label">题库</div>
+            <div id="ov-bank" class="card-value mono">—</div>
+            <div id="ov-bank-sub" class="card-sub">—</div>
+          </div>
+          <div class="card">
+            <div class="card-label" id="ov-runs-label">跑批记录</div>
+            <div id="ov-runs" class="card-value mono">—</div>
+            <div id="ov-runs-sub" class="card-sub">—</div>
+          </div>
+          <div class="card">
+            <div class="card-label">运行参数</div>
+            <div id="ov-runtime" class="card-value mono">—</div>
+            <div id="ov-runtime-sub" class="card-sub">—</div>
+          </div>
         </div>
-        <p class="note">数据库：<span id="bank-dbpath" class="mono">—</span></p>
-      </div>
-    </details>
-  </section>
+        <dl id="env-list" class="env-list" hidden></dl>
 
-  <!-- 提交记录 -->
-  <section class="panel" aria-labelledby="h-subs">
-    <details>
-      <summary><h2 id="h-subs" class="inline-h2">提交记录</h2><span id="subs-count" class="hint"></span></summary>
-      <p id="subs-empty" class="empty" hidden>还没有提交记录。干跑不会产生提交。</p>
-      <div class="table-wrap">
-        <table id="subs-table" hidden>
-          <thead>
-            <tr>
-              <th>id</th><th>平台</th><th>assignment_id</th><th>结果</th>
-              <th class="num">得分</th><th>说明</th><th>时间</th>
-            </tr>
-          </thead>
-          <tbody id="subs-body"></tbody>
-        </table>
-      </div>
-    </details>
-  </section>
+        <!-- 当前平台的能力（只看这一个平台；跨平台对比在「统计」） -->
+        <div class="panel">
+          <div class="panel-head">
+            <h2>平台能力</h2>
+            <span id="ov-cap-hint" class="hint"></span>
+          </div>
+          <p id="ov-cap-empty" class="empty" hidden></p>
+          <div id="ov-cap-list" class="caps caps-lg" hidden></div>
+          <p id="ov-cap-note" class="note">
+            能力由适配器自己声明；这里只显示<strong>当前平台</strong>的能力。
+            跨平台对比只在「统计」页。
+          </p>
+        </div>
 
-  <!-- 事件流 -->
-  <section class="panel" aria-labelledby="h-events">
-    <details>
-      <summary><h2 id="h-events" class="inline-h2">事件流</h2><span id="events-hint" class="hint">每 1 秒轮询</span></summary>
-      <p id="events-empty" class="empty" hidden>暂无事件。</p>
-      <ul id="events-list" class="events"></ul>
-    </details>
-  </section>
+        <!-- 触发跑批：平台必须在下拉里明确选 -->
+        <div class="panel">
+          <div class="panel-head">
+            <h2>触发跑批</h2>
+            <span class="hint">同一时刻只允许一个任务；默认干跑，只规划不提交</span>
+          </div>
+          <form id="run-form" class="run-form" autocomplete="off">
+            <div class="field">
+              <label for="run-platform">目标平台</label>
+              <select id="run-platform" class="mono"></select>
+              <span class="field-hint">必须明确指定平台；「全部平台」不能跑批</span>
+            </div>
 
-  <footer class="footer">
-    <span>本地控制台 · 仅绑定回环地址 · 页面不外发任何数据</span>
-    <span class="footer-sep">|</span>
-    <span>接口契约：<span class="mono">docs/web-console-api.md</span></span>
-  </footer>
+            <div class="field">
+              <label for="run-limit">limit</label>
+              <input id="run-limit" class="mono" type="number" min="0" step="1" value="0" inputmode="numeric">
+              <span class="field-hint">0 = 不限；首次试跑建议设小值</span>
+            </div>
 
-</main>
+            <fieldset class="field field-wide">
+              <legend>kinds（不勾选 = 全部）</legend>
+              <div class="checks">
+                <label class="check"><input type="checkbox" name="kind" value="course"> 课程 course</label>
+                <label class="check"><input type="checkbox" name="kind" value="homework"> 作业 homework</label>
+                <label class="check"><input type="checkbox" name="kind" value="exam"> 考试 exam</label>
+                <label class="check"><input type="checkbox" name="kind" value="practice"> 练习 practice</label>
+              </div>
+            </fieldset>
+
+            <div class="field field-wide live-field">
+              <label class="switch" for="run-live">
+                <input id="run-live" type="checkbox">
+                <span class="switch-text">真提交（live）</span>
+              </label>
+              <span id="live-badge" class="badge badge-dry">当前：干跑</span>
+              <span id="run-live-hint" class="field-hint" hidden></span>
+            </div>
+
+            <div class="field field-wide field-actions">
+              <button id="run-submit" class="btn btn-run" type="submit">开始跑批（干跑）</button>
+              <span id="run-state" class="field-hint"></span>
+            </div>
+          </form>
+          <p class="note">
+            干跑（live=false）只读取与规划，不向平台提交任何内容。打开「真提交」需要二次确认，
+            <strong>这会真的提交作业，不可撤销</strong>。
+          </p>
+        </div>
+
+        <!-- 当前任务 -->
+        <div class="panel">
+          <div class="panel-head">
+            <h2>当前任务</h2>
+            <span id="job-poll" class="hint"></span>
+          </div>
+          <p id="job-empty" class="empty">暂无进行中的任务。用上面的触发区发起一次跑批。</p>
+          <div id="job-body" hidden>
+            <dl class="kv-grid">
+              <div><dt>job_id</dt><dd id="job-id" class="mono">—</dd></div>
+              <div><dt>平台</dt><dd id="job-platform" class="mono">—</dd></div>
+              <div><dt>模式</dt><dd id="job-live">—</dd></div>
+              <div><dt>状态</dt><dd id="job-status">—</dd></div>
+              <div><dt>开始</dt><dd id="job-started" class="mono">—</dd></div>
+              <div><dt>结束</dt><dd id="job-finished" class="mono">—</dd></div>
+              <div><dt>已耗时</dt><dd id="job-elapsed" class="mono">—</dd></div>
+            </dl>
+            <p id="job-summary" class="job-summary" hidden></p>
+            <p id="job-error" class="job-error" hidden></p>
+            <div id="job-counts" class="counts"></div>
+            <div class="panel-head sub-head">
+              <h3>任务记录</h3>
+              <span id="job-records-count" class="hint"></span>
+            </div>
+            <p id="job-records-empty" class="empty" hidden></p>
+            <div class="table-wrap">
+              <table id="job-records-table" hidden>
+                <thead>
+                  <tr><th>assignment_id</th><th>状态</th><th>备注</th></tr>
+                </thead>
+                <tbody id="job-records-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           页面 2/8：课程（通用动作 courses，只读，会真的登录平台）
+           ================================================================== -->
+      <section id="page-courses" class="page" hidden aria-labelledby="h-courses">
+        <div class="page-head">
+          <h1 id="h-courses">课程</h1>
+          <span class="badge badge-ro">只读</span>
+          <span id="courses-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>课程 / 班级</h2>
+            <span id="courses-hint" class="hint"></span>
+          </div>
+          <p id="courses-gate" class="empty" hidden></p>
+          <div id="courses-body" hidden>
+            <div class="action-submit">
+              <button id="courses-reload" class="btn btn-run" type="button">重新加载</button>
+              <span id="courses-state" class="field-hint"></span>
+            </div>
+            <div id="courses-error" class="err-box" hidden></div>
+            <div id="courses-result" class="action-result" hidden></div>
+          </div>
+        </div>
+
+        <p class="note">
+          调平台只读动作 <span class="mono">courses</span>（<span class="mono">list_courses()</span>）：
+          会<strong>真的登录平台</strong>并读取课程 / 班级列表（只读 GET），不会改动平台上任何内容。
+          失败时显示后端返回的中文错误。
+        </p>
+      </section>
+
+      <!-- ==================================================================
+           页面 3/8：作业（通用动作 assignments，只读，会真的登录平台）
+           ================================================================== -->
+      <section id="page-assignments" class="page" hidden aria-labelledby="h-assignments">
+        <div class="page-head">
+          <h1 id="h-assignments">作业</h1>
+          <span class="badge badge-ro">只读</span>
+          <span id="assignments-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>作业 / 任务</h2>
+            <span id="assignments-hint" class="hint"></span>
+          </div>
+          <p id="assignments-gate" class="empty" hidden></p>
+          <div id="assignments-body" hidden>
+            <form id="assignments-form" class="action-form" autocomplete="off">
+              <div class="action-params">
+                <label class="field" for="assign-course">
+                  <span class="field-label">course（可选）</span>
+                  <input id="assign-course" class="mono" type="text" autocomplete="off"
+                         placeholder="留空 = 遍历全部课程">
+                  <span class="field-hint">course · string · 可选</span>
+                </label>
+              </div>
+              <div class="action-submit">
+                <button id="assignments-submit" class="btn btn-run" type="submit">加载作业</button>
+                <button id="assignments-reload" class="btn" type="button">清空并重新加载全部</button>
+                <span id="assignments-state" class="field-hint"></span>
+              </div>
+            </form>
+            <div id="assignments-error" class="err-box" hidden></div>
+            <div id="assignments-result" class="action-result" hidden></div>
+          </div>
+        </div>
+
+        <p class="note">
+          调平台只读动作 <span class="mono">assignments</span>（<span class="mono">list_assignments()</span>）：
+          会<strong>真的登录平台</strong>并读取各课程下的作业 / 任务（只读 GET）。
+          <span class="mono">course</span> 留空 = 遍历全部课程。
+        </p>
+      </section>
+
+      <!-- ==================================================================
+           页面 4/8：题库（/api/bank?platform=）
+           ================================================================== -->
+      <section id="page-bank" class="page" hidden aria-labelledby="h-bank">
+        <div class="page-head">
+          <h1 id="h-bank">题库</h1>
+          <span id="bank-scope" class="hint">—</span>
+        </div>
+
+        <p id="bank-gate" class="empty" hidden></p>
+
+        <div id="bank-body" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>判分准确率</h2>
+              <span id="bank-hint" class="hint"></span>
+            </div>
+            <p id="bank-empty" class="empty" hidden></p>
+            <div id="bank-stats" hidden>
+              <div class="stat-row">
+                <span class="stat"><span class="stat-label">题目总数</span><span id="bank-total" class="stat-value mono">—</span></span>
+                <span class="stat"><span class="stat-label">已判分</span><span id="bank-graded" class="stat-value mono">—</span></span>
+                <span class="stat"><span class="stat-label">正确</span><span id="bank-correct" class="stat-value mono">—</span></span>
+                <span class="stat"><span class="stat-label">准确率</span><span id="bank-accuracy" class="stat-value mono">—</span></span>
+                <span class="stat"><span class="stat-label">未判分</span><span id="bank-ungraded" class="stat-value mono">—</span></span>
+              </div>
+              <div class="meter" id="bank-acc-meter" hidden>
+                <div class="meter-bar"><span id="bank-acc-fill" class="meter-fill"></span></div>
+                <span id="bank-acc-note" class="hint"></span>
+              </div>
+              <p class="note">数据库：<span id="bank-dbpath" class="mono">—</span></p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>按来源构成</h2>
+              <span id="bank-source-hint" class="hint"></span>
+            </div>
+            <p id="bank-source-empty" class="empty" hidden></p>
+            <div class="table-wrap">
+              <table id="bank-source-table" hidden>
+                <thead><tr><th>来源</th><th class="num">数量</th><th class="num">占比</th><th>分布</th></tr></thead>
+                <tbody id="bank-source-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <p id="bank-error" class="err-box" hidden></p>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           页面 5/8：工具（平台只读动作，通用渲染，不为平台写专属页面）
+           ================================================================== -->
+      <section id="page-tools" class="page" hidden aria-labelledby="h-tools">
+        <div class="page-head">
+          <h1 id="h-tools">工具</h1>
+          <span class="badge badge-ro">只读</span>
+          <span id="tools-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>平台只读动作</h2>
+            <span class="hint">动作清单 / 参数表单 / kind 视图全部通用渲染</span>
+          </div>
+          <p id="tools-gate" class="empty" hidden></p>
+          <div id="tools-body" hidden>
+            <p id="actions-note" class="empty" hidden></p>
+            <div id="actions-nav" class="actions-nav" hidden></div>
+            <form id="action-form" class="action-form" autocomplete="off" hidden></form>
+            <div id="action-result" class="action-result" hidden></div>
+            <div id="action-error" class="err-box" hidden></div>
+          </div>
+        </div>
+
+        <p class="note">
+          只读动作只读取平台数据，不提交任何内容。详情里的正文与批注属于个人内容：
+          仅在本页展示，不缓存、不外发、不做导出。
+        </p>
+      </section>
+
+      <!-- ==================================================================
+           页面 6/8：运行日志
+           ================================================================== -->
+      <section id="page-logs" class="page" hidden aria-labelledby="h-logs">
+        <div class="page-head">
+          <h1 id="h-logs">运行日志</h1>
+          <span id="logs-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>跑批历史</h2>
+            <span id="runs-count" class="hint"></span>
+          </div>
+          <p id="runs-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="runs-table" hidden>
+              <thead>
+                <tr>
+                  <th>id</th><th data-col="platform">平台</th><th>assignment_id</th><th>状态</th>
+                  <th class="num">尝试</th><th>开始</th><th>结束</th><th>错误</th><th>detail</th>
+                </tr>
+              </thead>
+              <tbody id="runs-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>提交记录</h2>
+            <span id="subs-count" class="hint"></span>
+          </div>
+          <p id="subs-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="subs-table" hidden>
+              <thead>
+                <tr>
+                  <th>id</th><th data-col="platform">平台</th><th>assignment_id</th><th>结果</th>
+                  <th class="num">得分</th><th>说明</th><th>时间</th>
+                </tr>
+              </thead>
+              <tbody id="subs-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>任务历史</h2>
+            <span id="jobs-filter" class="hint"></span>
+            <span id="jobs-count" class="hint"></span>
+          </div>
+          <p id="jobs-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="jobs-table" hidden>
+              <thead>
+                <tr>
+                  <th>job_id</th><th data-col="platform">平台</th><th>模式</th><th>状态</th>
+                  <th>开始</th><th>结束</th><th>摘要</th><th>错误</th><th class="ctr">操作</th>
+                </tr>
+              </thead>
+              <tbody id="jobs-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>事件流</h2>
+            <span id="events-hint" class="hint">任务运行中每 1 秒刷新</span>
+          </div>
+          <p id="events-empty" class="empty" hidden></p>
+          <ul id="events-list" class="events" hidden></ul>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           页面 7/8：统计（跨平台对比，唯一允许横向看全平台的地方）
+           ================================================================== -->
+      <section id="page-stats" class="page" hidden aria-labelledby="h-stats">
+        <div class="page-head">
+          <h1 id="h-stats">统计</h1>
+          <span id="stats-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>各平台成败对比</h2>
+            <span class="hint">跨平台对比 · 唯一横向视图（不传 platform）</span>
+          </div>
+          <p id="stats-cmp-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="stats-cmp-table" hidden>
+              <thead>
+                <tr>
+                  <th>平台</th><th class="num">跑批</th><th class="num">成功</th><th class="num">失败</th>
+                  <th class="num">跳过</th><th class="num">成功率</th>
+                  <th class="num">提交</th><th class="num">提交成功</th>
+                  <th class="num">题目</th><th class="num">准确率</th>
+                </tr>
+              </thead>
+              <tbody id="stats-cmp-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>题库总览（全部平台）</h2>
+            <span id="stats-bank-hint" class="hint"></span>
+          </div>
+          <p id="stats-bank-empty" class="empty" hidden></p>
+          <div id="stats-bank-body" hidden>
+            <div class="stat-row">
+              <span class="stat"><span class="stat-label">题库总量</span><span id="stats-total" class="stat-value mono">—</span></span>
+              <span class="stat"><span class="stat-label">已判分</span><span id="stats-graded" class="stat-value mono">—</span></span>
+              <span class="stat"><span class="stat-label">正确</span><span id="stats-correct" class="stat-value mono">—</span></span>
+              <span class="stat"><span class="stat-label">准确率</span><span id="stats-accuracy" class="stat-value mono">—</span></span>
+              <span class="stat"><span class="stat-label">未判分</span><span id="stats-ungraded" class="stat-value mono">—</span></span>
+            </div>
+            <div class="panel-head sub-head">
+              <h3>按来源</h3>
+              <span id="stats-source-hint" class="hint"></span>
+            </div>
+            <p id="stats-source-empty" class="empty" hidden></p>
+            <div class="table-wrap">
+              <table id="stats-source-table" hidden>
+                <thead><tr><th>来源</th><th class="num">数量</th><th class="num">占比</th><th>分布</th></tr></thead>
+                <tbody id="stats-source-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>最近趋势（全部平台）</h2>
+            <span id="stats-trend-hint" class="hint"></span>
+          </div>
+          <p id="stats-trend-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="stats-trend-table" hidden>
+              <thead>
+                <tr>
+                  <th>日期</th><th class="num">总计</th><th class="num">成功</th>
+                  <th class="num">失败</th><th class="num">跳过</th><th>分布</th>
+                </tr>
+              </thead>
+              <tbody id="stats-trend-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           页面 8/8：账号（配置现状 + 各平台凭据状态 + 可选依赖）
+           ================================================================== -->
+      <section id="page-account" class="page" hidden aria-labelledby="h-account">
+        <div class="page-head">
+          <h1 id="h-account">账号</h1>
+          <span class="hint">只读展示；凭据值后端不会返回，界面也不显示</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>配置现状</h2>
+            <span id="set-hint" class="hint"></span>
+          </div>
+          <p id="settings-empty" class="empty" hidden></p>
+          <dl id="settings-grid" class="env-list" hidden></dl>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>环境变量键名</h2>
+            <span class="hint">只列键名、不列值 —— 用来确认 .env 到底被读到没有</span>
+          </div>
+          <p id="settings-keys-empty" class="empty" hidden></p>
+          <ul id="settings-keys" class="key-list" hidden></ul>
+          <p class="note">.env 文件：<span id="settings-dotenv" class="mono">—</span></p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>平台凭据状态</h2>
+            <span id="settings-plat-hint" class="hint"></span>
+          </div>
+          <p id="settings-plat-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="settings-plat-table" hidden>
+              <thead>
+                <tr>
+                  <th>平台</th><th>显示名</th><th>凭据</th>
+                  <th>期望环境变量键名</th><th>该平台能力</th>
+                </tr>
+              </thead>
+              <tbody id="settings-plat-body"></tbody>
+            </table>
+          </div>
+          <p class="note">
+            能力按平台各自显示（不横向铺矩阵）：每行是那个平台自己声明的能力。
+            跨平台对比在「统计」页。
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>可选依赖</h2>
+            <span class="hint">控制台本体零第三方依赖，这些只是可选能力</span>
+          </div>
+          <p id="settings-deps-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="settings-deps-table" hidden>
+              <thead><tr><th>依赖</th><th>状态</th><th>用途</th></tr></thead>
+              <tbody id="settings-deps-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span>本地控制台 · 仅绑定回环地址 · 页面不外发任何数据</span>
+        <span class="footer-sep">|</span>
+        <span>接口契约：<span class="mono">docs/web-console-api.md</span></span>
+        <span class="footer-sep">|</span>
+        <span>导航状态存在 URL hash 里（<span class="mono">#/功能/平台</span>），刷新后仍在同一页同一平台</span>
+      </footer>
+
+    </main>
+  </div>
+</div>
 
 <!-- 仅用于 file:// 直开 / 脚本未加载时给人话提示；业务逻辑在 /static/app.js -->
 <script>
