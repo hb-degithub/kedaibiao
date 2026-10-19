@@ -441,9 +441,105 @@ def _register_pigai() -> None:
     )
 
 
+
+
+# --------------------------------------------------------------------------
+# iTEST（考试平台）
+# --------------------------------------------------------------------------
+
+
+async def _itest_exams(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """考试列表（比通用 assignments 多带起止/时长/考试码）。"""
+    name = getattr(adapter, "name", "itest")
+    exams = await adapter.client().list_exams()
+    rows = [
+        {
+            "exam_id": e.exam_id,
+            "title": e.title or "—",
+            "start": e.start_at or "—",
+            "end": e.end_at or "—",
+            "duration": e.duration or "—",
+        }
+        for e in exams
+    ]
+    return table(
+        platform=name,
+        action="exams",
+        label="考试",
+        title=f"考试列表（{len(rows)} 场）",
+        note="只读。取卷需要进答题窗口（会开始计时），本工具不代为进入。",
+        columns=[
+            column("exam_id", "考试号", mono=True),
+            column("title", "名称"),
+            column("start", "开始"),
+            column("end", "结束"),
+            column("duration", "时长"),
+        ],
+        rows=rows,
+        empty_hint="当前没有可参加的考试。",
+    )
+
+
+async def _itest_entry(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """换答题窗口 URL。
+
+    这个调用**只签发令牌，不会开始考试**（调研已核验）。给出 URL 由人决定
+    要不要打开 —— 一旦打开就开始计时，属于不可逆操作。
+    """
+    name = getattr(adapter, "name", "itest")
+    exam_id = str(params.get("exam_id") or "").strip()
+    if not exam_id:
+        raise ActionInputError("缺少考试号（exam_id）")
+    entry = await adapter.exam_meta(exam_id)
+    url = await adapter.answer_window_url(exam_id, entry.code if entry else "")
+    return detail(
+        platform=name,
+        action="entry",
+        label="答题入口",
+        title=f"答题窗口 · {entry.title if entry else exam_id}",
+        note=(
+            "这个链接**只签发令牌，不会开始考试**。打开它并点「开始考试」后开始计时，"
+            "属于不可逆操作 —— 本工具只提供入口，不替你进入。"
+        ),
+        fields=[
+            {"label": "考试号", "value": exam_id},
+            {"label": "名称", "value": entry.title if entry else "—"},
+            {"label": "开始", "value": entry.start_at if entry else "—"},
+            {"label": "结束", "value": entry.end_at if entry else "—"},
+            {"label": "时长", "value": entry.duration if entry else "—"},
+        ],
+        sections=[
+            {"label": "答题窗口 URL（点击打开前请确认）", "kind": "text", "text": url},
+        ],
+    )
+
+
+def _register_itest() -> None:
+    register(
+        ActionSpec(
+            platform="itest",
+            name="exams",
+            label="考试列表",
+            description="当前账号可参加的考试（只读）",
+        ),
+        _itest_exams,
+    )
+    register(
+        ActionSpec(
+            platform="itest",
+            name="entry",
+            label="答题入口",
+            description="换答题窗口 URL —— 只签发令牌，不会开始考试",
+            params=(ActionParam("exam_id", "考试号", required=True),),
+        ),
+        _itest_entry,
+    )
+
+
 def load_builtin_actions() -> int:
     """登记所有内置动作。新增平台在这里加一行注册函数即可。"""
     _register_pigai()
+    _register_itest()
     return len(_HANDLERS)
 
 

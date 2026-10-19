@@ -425,6 +425,7 @@ CAPTURE_URLS = {
     "pinco": "https://pinco.seewo.com/student/workbench",
     "pigai": "https://www.pigai.org/",
     "unipus": "https://ucontent.unipus.cn/",
+    "itest": "https://itestcloud.unipus.cn/utest/itest/s/exam",
 }
 #: 各平台的关键 cookie 名（缺了就等于没登录到应用层）
 CAPTURE_REQUIRED = {
