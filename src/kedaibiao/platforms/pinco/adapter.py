@@ -19,6 +19,7 @@ from __future__ import annotations
 import http.cookiejar
 import logging
 import os
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -38,7 +39,7 @@ from kedaibiao.platforms.base import (
     PlatformAdapter,
 )
 from kedaibiao.platforms.pinco import endpoints as ep
-from kedaibiao.platforms.pinco import guard, parsing, solving, sso
+from kedaibiao.platforms.pinco import guard, parsing, progress, solving, sso
 from kedaibiao.platforms.pinco.client import PincoClient
 from kedaibiao.platforms.pinco.errors import PincoError, PincoNotLoggedIn
 from kedaibiao.platforms.pinco.models import (
@@ -51,6 +52,11 @@ from kedaibiao.platforms.pinco.plan import (
     PincoAssignmentPlan,
     PincoPlan,
     submission_digest,
+)
+from kedaibiao.platforms.pinco.progress import (
+    ProgressPolicy,
+    ProgressReport,
+    ProgressTick,
 )
 from kedaibiao.platforms.pinco.solving import PlanBuilder, build_answerer
 from kedaibiao.tasks.answerer import Answerer
@@ -479,6 +485,39 @@ class PincoAdapter(PlatformAdapter):
             },
         )
         return parsing.parse_material_detail(data, material_id=material_id)
+
+    async def report_learning(
+        self,
+        course: Course,
+        material_id: str,
+        *,
+        dry_run: bool = True,
+        policy: ProgressPolicy | None = None,
+        target_ratio: float = 1.0,
+        on_tick: Callable[[ProgressTick], None] | None = None,
+    ) -> ProgressReport:
+        """提升某份课程材料的学习进度（「刷课」）—— **写操作**。
+
+        行为、证据边界与熔断见 :mod:`kedaibiao.platforms.pinco.progress`。
+        默认 ``dry_run=True``：只算计划、不发请求；要真的上报必须显式传
+        ``dry_run=False``。只发学习时长上报这一个 action，绝不碰提交。
+
+        ⚠️ 实测「接口接受」但进度没动（详见
+        ``docs/verification/pinco-progress.md``）；所以返回值里的
+        ``ratio_delta`` 比「发了多少秒」更值得看 —— 熔断会在进度不动时自己停。
+        """
+        self._require_session()
+        initial = await self.fetch_material_detail(course, material_id)
+        reporter = progress.LearningReporter(self.client(), policy=policy)
+        return await reporter.run(
+            course_id=course.remote_id,
+            material_id=material_id,
+            initial=initial,
+            fetch_detail=lambda: self.fetch_material_detail(course, material_id),
+            dry_run=dry_run,
+            target_ratio=target_ratio,
+            on_tick=on_tick,
+        )
 
     async def fetch_questions(self, assignment: Assignment) -> list[Question]:
         """作业题目。学习任务（课程材料）没有题目 —— 对它调用会直接报错。

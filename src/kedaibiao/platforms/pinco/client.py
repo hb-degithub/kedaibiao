@@ -158,8 +158,8 @@ class PincoClient:
     def _check_dangerous(self, action: str, dangerous: bool) -> None:
         if action in ep.DANGEROUS_ACTIONS and not dangerous:
             raise PincoProtocolError(
-                f"{action} 是写操作（提交类 action），必须显式传 dangerous=True 才允许发送。"
-                "抓取路径不该走到这里 —— 这是防止误触提交的第二道闸门。"
+                f"{action} 是写操作（提交 / 学习进度上报），必须显式传 dangerous=True "
+                "才允许发送。抓取路径不该走到这里 —— 这是防止误触写操作的第二道闸门。"
             )
 
     def _json_body(self, resp: Any, *, action: str) -> Any:

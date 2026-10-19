@@ -219,12 +219,33 @@ EVIDENCE["ACTION_SUBMIT_HOMEWORK"] = Evidence.STATIC
 EVIDENCE["ACTION_SUBMIT_CHAPTER_TASK"] = Evidence.STATIC
 EVIDENCE["ACTION_SUBMIT_COURSE_GROUP_TASK"] = Evidence.STATIC
 
+#: ⚠️ 学习时长上报（「刷课」）—— 写操作，但不属于提交流程。
+#:
+#: 形态**双重确认**：
+#: 1. 官方学生端 bundle（``material.js``）里，材料页在详情返回
+#:    ``countLearningProgress === true`` 时 ``setInterval(5000)`` 发它：
+#:    ``materialId`` 取列表里的 ``materialId``（= ``chapterDirectoryMaterialId``），
+#:    ``learningDuration`` 写死 5；
+#: 2. 真实会话直接调用返回 ``{"statusCode":0,"message":"ok"}``。
+#:
+#: ⚠️ **但进度是否真的累加尚未确认**：实测 60s / 1200s 上报后
+#: ``learningRatio`` 仍为 0、``viewed`` 仍为 ``false``（见
+#: ``docs/verification/pinco-progress.md``）。所以这里只登记「接口形态确认」，
+#: 不登记「刷课有效」—— 实现默认 dry-run，并带「进度不动就停」的熔断。
+ACTION_LEARNING_DURATION_REPORT = (
+    "PostV1CourseByCourseIdMaterialStudentLearningDurationReport"
+)
+EVIDENCE["ACTION_LEARNING_DURATION_REPORT"] = Evidence.MEASURED
+
 #: 危险动作名单。客户端对这些 action 要求显式 ``dangerous=True`` 才肯发。
+#: 进度上报语义上「无害」，但它同样是写操作 —— 和提交一样必须显式放行，
+#: 抓取/计划路径不可能顺手把它发出去。
 DANGEROUS_ACTIONS = frozenset(
     {
         ACTION_SUBMIT_HOMEWORK,
         ACTION_SUBMIT_CHAPTER_TASK,
         ACTION_SUBMIT_COURSE_GROUP_TASK,
+        ACTION_LEARNING_DURATION_REPORT,
     }
 )
 
@@ -475,6 +496,12 @@ FIELD_DOWNLOAD_URL = "downloadUrl"
 FIELD_CHAPTER_DIRECTORY_MATERIAL_ID = "chapterDirectoryMaterialId"
 FIELD_RESOURCE_TYPE_DOWNLOADABLE = "resourceTypeDownloadable"
 FIELD_VIEWED = "viewed"
+#: 材料是否参与学习进度统计。官方 bundle 里材料页**只有它为 true 才启动**
+#: 5 秒一次的学习时长上报（实测本账号的材料都为 true）。
+FIELD_COUNT_LEARNING_PROGRESS = "countLearningProgress"
+#: 学习时长上报的入参：本次上报的秒数。bundle 里写死 5；实测发 5/300/1200
+#: 都被接受（``statusCode 0``），但进度没动 —— 见 :data:`ACTION_LEARNING_DURATION_REPORT`。
+FIELD_LEARNING_DURATION = "learningDuration"
 #: 课程里的学习进度对象（``learnInfo.learningProgress``）。
 FIELD_LEARN_INFO = "learnInfo"
 FIELD_LEARNING_PROGRESS = "learningProgress"
@@ -494,6 +521,8 @@ for _name in (
     "FIELD_CHAPTER_DIRECTORY_MATERIAL_ID",
     "FIELD_RESOURCE_TYPE_DOWNLOADABLE",
     "FIELD_VIEWED",
+    "FIELD_COUNT_LEARNING_PROGRESS",
+    "FIELD_LEARNING_DURATION",
     "FIELD_LEARN_INFO",
     "FIELD_LEARNING_PROGRESS",
     "FIELD_TOTAL",
