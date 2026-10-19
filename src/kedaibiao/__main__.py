@@ -90,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
         "param",
         nargs="*",
         metavar="key=value",
-        help="动作参数，例如 rid=200000004 eid=1000006",
+        help="动作参数，例如 rid=200000001 eid=1000002",
     )
 
     stats = sub.add_parser("bank-stats", parents=[root_parent], help="题库与跑批统计")

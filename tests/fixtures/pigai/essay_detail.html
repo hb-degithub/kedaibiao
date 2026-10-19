@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<!--
+  脱敏 fixture —— 批改网「作文评分详情」GET /index.php?c=v2&a=view&eid=&rid=（pigai.md §6.3~§6.6）。
+
+  来源：基于 data/recon/pigai/raw/b_index_php_c_v2_a_view_eid_200000004_rid_1000006.html
+  的真实 DOM **重写**（该样本含该学生作文正文，绝不能进版本库）。
+
+    * 保留（结构保真）：
+        - `#rescoreTxt` 的 title/content 属性与文本三段分离（§6.3 陷阱）；
+        - 四维的 `tr > td > (.tbL 标签 + 宽度容器 + table 进度条 + td[title])` 嵌套，
+          容器 154px / 条宽 / `td title`（8 位有效数字）全部按实测原值保留 →
+          可同时验证「优先 title」与「宽度比只是渲染近似」；
+        - `ul.stu_info_item` 的 6 条元信息（含 ASCII/全角两种冒号、空值的「批改公式」）；
+        - `.yaoqiu_info > h3`、`#yaoqiuW > .yq_itme`（含 `#yq_more` 要排除）；
+        - `#allpingyu_txt`、按句点评 `li[sid]` 的 `snt/class/content/cate/short_msg`；
+        - `var fb_js= "";` 之后又被真正的对象**二次赋值**（§6.6，按 JS 语义后者胜）；
+        - 页面里的非法写法：`<li class="tdianping">` 无 sid、`<br>` 不闭合、
+          `snt_info` 里的 `<a .../>` 自闭合、以及一处**被注释掉的 `li[sid]`**。
+    * 替换（个人信息 / 正文，必须）：
+        - 作文正文句子（`snt`、`.sentTxt`、`goanswer` 链接里的 URL 编码正文）
+          → 「Placeholder sentence …」占位；
+        - 总评正文 → 占位；`fb_js` 的 txt → 占位；用户 id 变量一律不写入本文件；
+        - 出题人/班级等个人信息本页没有。
+    * 保留：rid=1000006 / eid=200000004 与时长/分数（非个人信息，便于与 §6.4 逐字对照）。
+    * task-6 增补：`#contents`（正文容器）。⚠ 实测它在**详情页是 `<div>`**，
+      正文在其内的 `#parahtml` 中；写作页里同名 id 却是大写 `<TEXTAREA>`。
+      这里的两段占位正文与 `write_with_draft.html` 的正文**逐字相同**
+      （真实页面上本就是同一篇稿子），供交叉印证。
+-->
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>作文评分详情</title></head>
+<body>
+<div id="sponeLeftT" style="width:100%">
+  <div id="contentsW">
+    <div  id="contents">
+      <div id="parahtml" style="white-space:pre-wrap"><span class="snt">Placeholder paragraph one.</span>
+
+<span class="snt">Placeholder paragraph two.</span></div>
+    </div>
+  </div>
+</div>
+
+<div id="dfScorew">
+  <div class="dfScore" id="stuScore">
+    <div class="sf_l">
+      <b id="rescoreTxt" title="满分:100" content="100" style="font-size:60px;">85.5</b>
+      <span class="sf_r score_xs" id="score_xs2">
+        <!--<a href="/?c=wx_t&a=img&scene=200000004,00000000" target="_blank">相似详情</a>-->
+        <a href="/res/zhenduan/xs.html?eid=200000004" target="_blank" class="wx_qrcode" title="点击查看相似详情"></a>
+      </span>
+    </div>
+    <span class="sf_r" id="sf_r_student">
+      <a href="/index.php?c=v2&a=write&eid=200000004&rid=1000006"><img src="https://cdn.pigai.org//res/images/ws.gif" title="还可以继续修改完善"></a>
+    </span>
+    <div id="score_line"></div>
+  </div>
+</div>
+
+<div class="xingxing" id="stuXingxing">
+  <table width="100%" style="background-color:#ffffff">
+    <tr>
+      <td>
+        <div style="float:left;font-size:12px;" class="tbL" title="">词汇: </div>
+        <div style="float:left;width:154px;background:none repeat scroll 0 0 #EFEFEF;height:10px;margin-top:8px;text-align:left">
+          <table border="0" cellspacing="0" cellpadding="0" style="width:138.26512px;float:left;margin:0px;padding:0px">
+            <tr>
+              <td style="height: 10px; line-height: 10px; width: 2px;"><img src="https://cdn.pigai.org//res/vote/v1.gif" border="0"></td>
+              <td style="height: 10px; line-height: 10px;width: 134.26512px;background:url('https://cdn.pigai.org//res/vote/vbg1.gif');" title="0.8951008"></td>
+              <td style="height: 10px; line-height: 10px; width: 2px;"><img src="https://cdn.pigai.org//res/vote/v1b.gif" border="0"></td>
+            </tr>
+          </table>
+        </div>
+        <div style="clear:both"></div>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <div style="float:left;font-size:12px;" class="tbL" title="">句子: </div>
+        <div style="float:left;width:154px;background:none repeat scroll 0 0 #EFEFEF;height:10px;margin-top:8px;text-align:left">
+          <table border="0" cellspacing="0" cellpadding="0" style="width:133.9465525px;float:left;margin:0px;padding:0px">
+            <tr>
+              <td style="height: 10px; line-height: 10px; width: 2px;"><img src="https://cdn.pigai.org//res/vote/v2.gif" border="0"></td>
+              <td style="height: 10px; line-height: 10px;width: 129.9465525px;background:url('https://cdn.pigai.org//res/vote/vbg2.gif');" title="0.86631035"></td>
+              <td style="height: 10px; line-height: 10px; width: 2px;"><img src="https://cdn.pigai.org//res/vote/v2b.gif" border="0"></td>
+            </tr>
+          </table>
+        </div>
+        <div style="clear:both"></div>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <div style="float:left;font-size:12px;" class="tbL" title="">篇章结构: </div>
+        <div style="float:left;width:154px;background:none repeat scroll 0 0 #EFEFEF;height:10px;margin-top:8px;text-align:left">
+          <table border="0" cellspacing="0" cellpadding="0" style="width:121.4797825px;float:left;margin:0px;padding:0px">
+            <tr>
+              <td style="height: 10px; line-height: 10px; width: 2px;"><img src="https://cdn.pigai.org//res/vote/v3.gif" border="0"></td>
+              <td style="height: 10px; line-height: 10px;width: 117.4797825px;background:url('https://cdn.pigai.org//res/vote/vbg3.gif');" title="0.78319855"></td>
+              <td style="height: 10px; line-height: 10px; width: 2px;"><img src="https://cdn.pigai.org//res/vote/v3b.gif" border="0"></td>
+            </tr>
+          </table>
+        </div>
+        <div style="clear:both"></div>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <div style="float:left;font-size:12px;" class="tbL" title="指的是本篇文章内容上的内敛性，即文章内部词与词之间，句与句之间，段与段之间的内容连贯性；对话，诗歌，小说类作文的内容相关分数可能偏低" >内容相关: </div>
+        <div style="float:left;width:154px;background:none repeat scroll 0 0 #EFEFEF;height:10px;margin-top:8px;text-align:left">
+          <table border="0" cellspacing="0" cellpadding="0" style="width:121.303051px;float:left;margin:0px;padding:0px">
+            <tr>
+              <td style="height: 10px; line-height: 10px; width: 2px;"><img src="https://cdn.pigai.org//res/vote/v4.gif" border="0"></td>
+              <td style="height: 10px; line-height: 10px;width: 117.303051px;background:url('https://cdn.pigai.org//res/vote/vbg4.gif');" title="0.78202034"></td>
+              <td style="height: 10px; line-height: 10px; width: 2px;"><img src="https://cdn.pigai.org//res/vote/v4b.gif" border="0"></td>
+            </tr>
+          </table>
+        </div>
+        <div style="clear:both"></div>
+      </td>
+    </tr>
+  </table>
+</div>
+
+<div class="pingyu" date="2026/09/21">
+  <div class="pingyuW">
+    <span style="font-size:12px;" content="" id="allpingyu_txt">
+    占位总评：句式较丰富，建议增加衔接成分（此为脱敏占位文本）。    </span>
+  </div>
+</div>
+
+<div id="yaoqiu" class="myItem">
+  <div id="yaoqiuW">
+    <div class="yq_itme">满分: 100</div>
+    <div class="yq_itme">字数: 100~200</div>
+    <div class="yq_itme">
+    要求：示例题目要求文本（占位）。
+    </div>
+    <div id="yq_more" class="yq_itme"><a href="/index.php?c=v2&a=viewrequest&rid=1000006">更多</a></div>
+  </div>
+</div>
+
+<div id="V2dianping">
+  <div class="ttabw">
+    <ul class="ttab">
+      <li class="ttselect" content="i_snt">按句点评</li>
+      <li content="pigai_yaoqiu">要求</li>
+    </ul>
+  </div>
+  <div id="i_snt" class="tabtext" style="display:block;">
+    <div id="view3" content="2">
+
+      <div class="view3Item">
+        <i class="view3xh">1.1 </i>
+        <div class="view3Sent" content="0"><span class="sentTxt">Placeholder sentence zero.</span>
+          [<i class="sent_zan" id="zan_0">0</i>]
+          [<a href="javascript:;" content="0" class="snt_modify">修改</a>]
+          <a href="http://rengong.pigai.org/?c=acorrect&amp;a=myask&amp;con=Placeholder%20sentence%20zero." class="goanswer" style="color:#FE9134">去提问</a>
+        </div>
+        <div class="view3Error vSentError">
+          <ul>
+            <li class="tdianping teacher" style="display:none"><span class="lab">[教师点评]</span> <span class="ts"></span></li>
+            <!-- 被注释掉的点评：解析器必须忽略（否则条数会多 1）
+            <li sid="99" snt="Commented out sentence." class="error" content="dead" cate="confusion" short_msg="不该被解析。">x</li>
+            -->
+            <li sid="0" snt="Placeholder sentence zero." class="error_trp snt_hx" content="_placeholder" cate="confusion" short_msg="示例提示：占位批注，含 &lt;b&gt;加粗&lt;/b&gt; 标记。">[学习提示]示例提示：占位批注，含 <b>加粗</b> 标记。
+              <span class="stips">&nbsp;&nbsp;</span>
+              <div class="snt_info"><a href="http://example.invalid/search.php?q=a"/>a</a>: 占位释义一。<br><a href="http://example.invalid/search.php?q=b"/>b</a>: 占位释义二。
+                <div class="stips_fb">
+                  <span class="tipsGood">好评</span>
+                  <span class="tipsBad">报错</span>
+                </div>
+              </div>
+            </li>
+            <li sid="0" snt="Placeholder sentence zero." class="error_trp snt_hx" content="or@4" cate="i_suggest.word" short_msg="示例推荐表达：占位批注。">[推荐表达]示例推荐表达：占位批注。
+            </li>
+          </ul>
+        </div>
+        <div style="clear:both;"></div>
+      </div>
+
+      <div class="view3Item view3duan" content="1">
+        <div class="view3dx">第1段</div>
+        <div class="view3Sent" content="1" style="text-align:right;"></div>
+        <div class="view3Error vSentError">
+          <ul>
+            <li class="tdianping" style="display:none">段评:<span class="ts"></span></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="view3Item even">
+        <i class="view3xh">2.1 </i>
+        <div class="view3Sent" content="1"><span class="sentTxt">
+Placeholder sentence one.</span>
+          [<i class="sent_zan" id="zan_1">0</i>]
+        </div>
+        <div class="view3Error vSentError">
+          <ul>
+            <li class="tdianping teacher" style="display:none"><span class="lab">[教师点评]</span> <span class="ts"></span></li>
+            <!-- 未知 class / 未知 cate：必须原样保留字符串，不许映射失败 -->
+            <li sid="1" snt="Placeholder sentence one." class="error snt_hx" content="k2" cate="i_suggest.phrase" short_msg="示例批注二：占位。">[推荐表达]示例批注二：占位。
+            </li>
+            <li sid="2" snt="Placeholder sentence two." class="mystery_level snt_hx" content="k3" cate="brand.new.cate" short_msg="未知等级与未知类别：占位。">[未知]未知等级与未知类别：占位。
+            </li>
+            <li sid="3" snt="Placeholder sentence three." class="great snt_hx" content="k4" cate="i_tip" short_msg="示例好评：占位。">[好评]示例好评：占位。
+            </li>
+          </ul>
+        </div>
+        <div style="clear:both;"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="pigai_yaoqiu" class="tabtext">
+  <div id="pigai_yaoqiuw">
+    <ul class="stu_info_item">
+      <li>开始时间：2026-09-21 08:00:00</li>
+      <li>截止时间：2026-10-19 23:59:00</li>
+      <li>满分: 100</li>
+      <li>字数: 100~200</li>
+      <li>批改方式：系统多次性+教师一次性批改</li>
+      <li>批改公式：</li>
+    </ul>
+    <div class="yaoqiu_info">
+      <h3>题目：示例课程（三）- Unit 5（占位）</h3>
+      <div style="line-height:220%"><b>要求：</b><br><p>示例题目要求文本（占位）。</p> </div>
+    </div>
+  </div>
+</div>
+
+<script>
+ var _self='/index.php';
+ var _eid='200000004';
+ var _request_id= '1000006';
+ var _version='3';
+ var _ttype = '0';
+ var fb_js= "";
+ var _snt_is_change= false;
+ var _no_paste="1";
+ var _school_opt= '2';
+ var fb_js = {" placeholder_keyword":{"kp":"_placeholder","sid":[0,2],"txt":"\u793a\u4f8b\u6279\u6ce8\u5360\u4f4d\u8bf4\u660e\u3002<div  class=\"long_msg\" ><a href='http:\/\/example.invalid\/q\/a'\/>a<\/a>: \u793a\u4f8b\u91ca\u4e49\u5360\u4f4d\u3002<\/div>","category":"\u5b66\u4e60\u63d0\u793a"},"or@4":{"kp":"or@4","sid":[1],"txt":"\u793a\u4f8b\u63a8\u8350\u8868\u8fbe\u5360\u4f4d\u3002","category":"\u63a8\u8350\u8868\u8fbe"},"k2":{"kp":"k2","sid":[2,3],"txt":"\u793a\u4f8b\u8bcd\u6027\u9519\u8bef\u5360\u4f4d\u3002","category":"\u8bcd\u6027\u9519\u8bef"}};
+</script>
+</body>
+</html>

@@ -12,13 +12,51 @@
 </head>
 <body>
 
-<div class="layout">
+<!-- ==================================================================
+     登录门：未登录（任意 /api/* 返回 401 kind=unauthorized）时全屏显示。
+     令牌由 HttpOnly Cookie（kdb_session）承载，本页不写 localStorage。
+     ================================================================== -->
+<div id="login-screen" class="login-screen" hidden>
+  <div class="login-card">
+    <div class="login-brand">
+      <span class="brand-name">课代表</span>
+      <span class="brand-slug mono">kedaibiao</span>
+    </div>
+    <p class="login-sub">控制台需要登录。会话由 <span class="mono">HttpOnly Cookie</span> 承载，
+      本页不读取也不保存任何令牌。</p>
+
+    <form id="login-form" class="login-form" autocomplete="off">
+      <label class="field" for="login-username">
+        <span class="field-label">用户名</span>
+        <input id="login-username" class="mono" type="text" autocomplete="username"
+               spellcheck="false" required>
+      </label>
+      <label class="field" for="login-password">
+        <span class="field-label">密码</span>
+        <input id="login-password" class="mono" type="password" autocomplete="current-password" required>
+      </label>
+      <div class="login-actions">
+        <button id="login-submit" class="btn btn-run" type="submit">登录</button>
+        <button id="login-retry" class="btn btn-ghost btn-sm" type="button" hidden>重试连接</button>
+        <span id="login-state" class="field-hint"></span>
+      </div>
+    </form>
+
+    <div id="login-error" class="err-box" hidden></div>
+    <p id="login-note" class="note">登录后所有数据按当前用户隔离；超管可以切换「用户」筛选查看某个用户的数据。</p>
+  </div>
+</div>
+
+<!-- 脚本未加载 / file:// 直开时的人话提示（放在最外层，登录页与主界面都能看到） -->
+<div id="boot-note" class="banner banner-boot" role="alert" hidden></div>
+
+<div class="layout" id="app" hidden>
 
   <!-- ==================================================================
        左侧栏：一列两段
          上段 = 平台切换（全部平台 / 批改网 / 希沃品课 / U校园 …）
          下段 = 当前平台的功能切换（概览 / 课程 / 作业 / 题库 / 工具 /
-                运行日志 / 统计 / 账号）
+                运行日志 / 统计 / 账号 /〔仅超管〕用户）
        底部 = 连接状态 + 刷新 + 版本信息
        ================================================================== -->
   <aside class="sidebar">
@@ -53,6 +91,10 @@
           <li><a class="nav-item" data-page="logs"        href="#/logs">运行日志</a></li>
           <li><a class="nav-item" data-page="stats"       href="#/stats">统计</a></li>
           <li><a class="nav-item" data-page="account"     href="#/account">账号</a></li>
+          <!-- 仅超管可见；普通用户即使手改 hash 走到 #/users，后端也会 403，页面给中文说明 -->
+          <li id="nav-users" data-admin="1" hidden>
+            <a class="nav-item" data-page="users" href="#/users">用户<span class="nav-tag">超管</span></a>
+          </li>
         </ul>
       </nav>
     </div>
@@ -74,26 +116,37 @@
 
   <div class="content">
 
-    <!-- ============================ 顶栏：只放当前平台 + 跑批模式 ============================ -->
+    <!-- ============================ 顶栏 ============================ -->
     <header class="topbar">
       <span class="top-scope">
         <span class="hint">当前平台</span>
         <b id="cur-platform">全部平台</b>
       </span>
       <div class="topbar-right">
+        <!-- 超管专属：归属用户筛选（选中后所有数据请求带 ?owner_id=<id>） -->
+        <label id="owner-filter-wrap" class="owner-filter" for="owner-filter" hidden>
+          <span class="hint">用户</span>
+          <select id="owner-filter" class="mono"
+                  title="超管：按归属用户过滤所有数据接口；留空 = 看全部（不传 owner_id）"></select>
+        </label>
         <span id="top-env" class="badge badge-idle" title="尚未取到配置">—</span>
         <span id="top-live" class="badge badge-live" hidden>本次：真提交</span>
+        <span id="top-user" class="top-user">
+          <span id="top-username" class="mono">—</span>
+          <span id="top-role" class="badge badge-idle">—</span>
+        </span>
+        <button id="logout-btn" class="btn btn-ghost btn-sm" type="button"
+                title="清掉会话 cookie（POST /api/auth/logout）">退出</button>
       </div>
     </header>
 
-    <div id="boot-note" class="banner banner-boot" role="alert" hidden></div>
     <div id="banner" class="banner" role="alert" hidden></div>
     <div id="toast" class="toast" role="status" hidden></div>
 
     <main id="main">
 
       <!-- ==================================================================
-           页面 1/8：概览
+           页面 1/9：概览
            ================================================================== -->
       <section id="page-overview" class="page" hidden aria-labelledby="h-overview">
         <div class="page-head">
@@ -226,7 +279,7 @@
       </section>
 
       <!-- ==================================================================
-           页面 2/8：课程（通用动作 courses，只读，会真的登录平台）
+           页面 2/9：课程（通用动作 courses，只读，会真的登录平台）
            ================================================================== -->
       <section id="page-courses" class="page" hidden aria-labelledby="h-courses">
         <div class="page-head">
@@ -259,7 +312,7 @@
       </section>
 
       <!-- ==================================================================
-           页面 3/8：作业（通用动作 assignments，只读，会真的登录平台）
+           页面 3/9：作业（通用动作 assignments，只读，会真的登录平台）
            ================================================================== -->
       <section id="page-assignments" class="page" hidden aria-labelledby="h-assignments">
         <div class="page-head">
@@ -299,11 +352,13 @@
           调平台只读动作 <span class="mono">assignments</span>（<span class="mono">list_assignments()</span>）：
           会<strong>真的登录平台</strong>并读取各课程下的作业 / 任务（只读 GET）。
           <span class="mono">course</span> 留空 = 遍历全部课程。
+          已完成的历史作业 / 课程与详细作答在「工具」页的平台专属动作里（如批改网的
+          <span class="mono">finished</span> 历史作文、<span class="mono">essay</span> 作文详情）。
         </p>
       </section>
 
       <!-- ==================================================================
-           页面 4/8：题库（/api/bank?platform=）
+           页面 4/9：题库（/api/bank?platform=）
            ================================================================== -->
       <section id="page-bank" class="page" hidden aria-labelledby="h-bank">
         <div class="page-head">
@@ -355,7 +410,7 @@
       </section>
 
       <!-- ==================================================================
-           页面 5/8：工具（平台只读动作，通用渲染，不为平台写专属页面）
+           页面 5/9：工具（平台只读动作，通用渲染，不为平台写专属页面）
            ================================================================== -->
       <section id="page-tools" class="page" hidden aria-labelledby="h-tools">
         <div class="page-head">
@@ -380,13 +435,15 @@
         </div>
 
         <p class="note">
-          只读动作只读取平台数据，不提交任何内容。详情里的正文与批注属于个人内容：
-          仅在本页展示，不缓存、不外发、不做导出。
+          只读动作只读取平台数据，不提交任何内容。列表类结果（如批改网
+          <span class="mono">finished</span> 历史作文）若有「查看详情」按钮，是按动作声明的必填参数
+          从该行自动填好参数 —— 点「执行」即可看详细作答（<span class="mono">kind: detail</span> 的
+          fields + sections 通用渲染）。详情里的正文与批注属于个人内容：仅在本页展示，不缓存、不外发、不做导出。
         </p>
       </section>
 
       <!-- ==================================================================
-           页面 6/8：运行日志
+           页面 6/9：运行日志
            ================================================================== -->
       <section id="page-logs" class="page" hidden aria-labelledby="h-logs">
         <div class="page-head">
@@ -404,7 +461,8 @@
             <table id="runs-table" hidden>
               <thead>
                 <tr>
-                  <th>id</th><th data-col="platform">平台</th><th>assignment_id</th><th>状态</th>
+                  <th>id</th><th data-col="platform">平台</th><th data-col="owner">归属</th>
+                  <th>assignment_id</th><th>状态</th>
                   <th class="num">尝试</th><th>开始</th><th>结束</th><th>错误</th><th>detail</th>
                 </tr>
               </thead>
@@ -423,7 +481,8 @@
             <table id="subs-table" hidden>
               <thead>
                 <tr>
-                  <th>id</th><th data-col="platform">平台</th><th>assignment_id</th><th>结果</th>
+                  <th>id</th><th data-col="platform">平台</th><th data-col="owner">归属</th>
+                  <th>assignment_id</th><th>结果</th>
                   <th class="num">得分</th><th>说明</th><th>时间</th>
                 </tr>
               </thead>
@@ -443,7 +502,8 @@
             <table id="jobs-table" hidden>
               <thead>
                 <tr>
-                  <th>job_id</th><th data-col="platform">平台</th><th>模式</th><th>状态</th>
+                  <th>job_id</th><th data-col="platform">平台</th><th data-col="owner">归属</th>
+                  <th>模式</th><th>状态</th>
                   <th>开始</th><th>结束</th><th>摘要</th><th>错误</th><th class="ctr">操作</th>
                 </tr>
               </thead>
@@ -463,7 +523,7 @@
       </section>
 
       <!-- ==================================================================
-           页面 7/8：统计（跨平台对比，唯一允许横向看全平台的地方）
+           页面 7/9：统计（跨平台对比，唯一允许横向看全平台的地方）
            ================================================================== -->
       <section id="page-stats" class="page" hidden aria-labelledby="h-stats">
         <div class="page-head">
@@ -541,12 +601,71 @@
       </section>
 
       <!-- ==================================================================
-           页面 8/8：账号（配置现状 + 各平台凭据状态 + 可选依赖）
+           页面 8/9：账号
+             上半 = 平台多账号（/api/accounts）：每个平台下多个号、当前号切换、
+                    重新登录、增删改；详细信息系统一律用 <details> 折叠。
+             下半 = 配置现状（/api/settings）：凭据状态与可选依赖，凭据值后端不返回。
            ================================================================== -->
       <section id="page-account" class="page" hidden aria-labelledby="h-account">
         <div class="page-head">
           <h1 id="h-account">账号</h1>
-          <span class="hint">只读展示；凭据值后端不会返回，界面也不显示</span>
+          <span id="account-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>平台账号</h2>
+            <span id="account-hint" class="hint"></span>
+          </div>
+          <!-- 会话失效（last_login_ok === false）的显眼提示 + 重新登录入口 -->
+          <div id="account-needrelogin" class="alert-box" hidden></div>
+          <div id="account-error" class="err-box" hidden></div>
+          <p id="account-empty" class="empty" hidden></p>
+          <div id="account-groups" class="acct-groups" hidden></div>
+          <p class="note">
+            平台密码<strong>不落盘</strong>：只在登录那一刻用来换 cookie，换完就丢；每个账号的 cookie
+            存在自己的文件里，切换当前号 = 切换 cookie，互不影响。所以会话过期后要重新输一次密码 ——
+            「上次登录」列会显眼地标出来。
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>新增账号</h2>
+            <span class="hint">平台 + 标签 + 用户名 + 密码（可选立即登录）</span>
+          </div>
+          <form id="account-create-form" class="run-form" autocomplete="off">
+            <div class="field">
+              <label for="na-platform">平台</label>
+              <select id="na-platform" class="mono"></select>
+              <span class="field-hint">平台机器名，必填</span>
+            </div>
+            <div class="field">
+              <label for="na-label">标签 label</label>
+              <input id="na-label" type="text" autocomplete="off" placeholder="例如：我的号">
+              <span class="field-hint">给人看的名字，可留空</span>
+            </div>
+            <div class="field">
+              <label for="na-username">平台用户名</label>
+              <input id="na-username" class="mono" type="text" autocomplete="off" spellcheck="false" required>
+            </div>
+            <div class="field">
+              <label for="na-password">平台密码</label>
+              <input id="na-password" class="mono" type="password" autocomplete="new-password" required>
+              <span class="field-hint">不落盘、不回显；只在登录时使用</span>
+            </div>
+            <div class="field field-wide live-field">
+              <label class="switch" for="na-login">
+                <input id="na-login" type="checkbox" checked>
+                <span class="switch-text">创建后立即登录</span>
+              </label>
+              <span class="field-hint">取消勾选则只记账号、暂不登录（<span class="mono">login: false</span>）</span>
+            </div>
+            <div class="field field-wide field-actions">
+              <button id="na-submit" class="btn btn-run" type="submit">新增账号</button>
+              <span id="na-state" class="field-hint"></span>
+            </div>
+          </form>
         </div>
 
         <div class="panel">
@@ -606,10 +725,84 @@
         </div>
       </section>
 
+      <!-- ==================================================================
+           页面 9/9：用户（仅超管；非超管后端一律 403，页面给人话说明）
+           ================================================================== -->
+      <section id="page-users" class="page" hidden aria-labelledby="h-users">
+        <div class="page-head">
+          <h1 id="h-users">用户</h1>
+          <span class="badge badge-admin">仅超管</span>
+          <span id="users-scope" class="hint">—</span>
+        </div>
+
+        <p id="users-gate" class="empty" hidden></p>
+
+        <div id="users-body" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>新建用户</h2>
+              <span class="hint">密码至少 8 位（前端先校验，后端也会拦）</span>
+            </div>
+            <form id="user-create-form" class="run-form" autocomplete="off">
+              <div class="field">
+                <label for="nu-username">用户名</label>
+                <input id="nu-username" class="mono" type="text" autocomplete="off" spellcheck="false" required>
+              </div>
+              <div class="field">
+                <label for="nu-password">密码</label>
+                <input id="nu-password" class="mono" type="password" autocomplete="new-password" required>
+                <span class="field-hint">至少 8 位</span>
+              </div>
+              <div class="field">
+                <label for="nu-role">角色</label>
+                <select id="nu-role" class="mono">
+                  <option value="user">user（普通用户）</option>
+                  <option value="superadmin">superadmin（超管）</option>
+                </select>
+              </div>
+              <div class="field field-wide">
+                <label for="nu-note">备注（可选）</label>
+                <input id="nu-note" type="text" autocomplete="off">
+              </div>
+              <div class="field field-wide field-actions">
+                <button id="nu-submit" class="btn btn-run" type="submit">创建用户</button>
+                <span id="nu-state" class="field-hint"></span>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>用户列表</h2>
+              <span id="users-count" class="hint"></span>
+            </div>
+            <div id="users-error" class="err-box" hidden></div>
+            <p id="users-empty" class="empty" hidden></p>
+            <div class="table-wrap">
+              <table id="users-table" hidden>
+                <thead>
+                  <tr>
+                    <th>用户</th><th>角色</th><th>状态</th><th>创建时间</th>
+                    <th class="num">账号数</th><th>备注</th><th class="ctr">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="users-rows"></tbody>
+              </table>
+            </div>
+            <p class="note">
+              增删改由后端校验：删除最后一个超管会被拒绝（400），中文错误原样显示在上面的错误框里。
+              响应永远不返回密码或哈希，本页也不回显任何密码。
+            </p>
+          </div>
+        </div>
+      </section>
+
       <footer class="footer">
         <span>本地控制台 · 仅绑定回环地址 · 页面不外发任何数据</span>
         <span class="footer-sep">|</span>
         <span>接口契约：<span class="mono">docs/web-console-api.md</span></span>
+        <span class="footer-sep">|</span>
+        <span>会话在 <span class="mono">HttpOnly Cookie</span> 里，页面不碰 localStorage</span>
         <span class="footer-sep">|</span>
         <span>导航状态存在 URL hash 里（<span class="mono">#/功能/平台</span>），刷新后仍在同一页同一平台</span>
       </footer>
@@ -629,8 +822,8 @@
   }
   window.__kedaibiaoNote = note;
   if (location.protocol === 'file:') {
-    note('当前以 file:// 直接打开，浏览器不允许读取本地接口数据，页面无法加载任何状态。' +
-         '请先启动控制台服务，再通过 http://127.0.0.1:<端口> 访问本页。');
+    note('当前以 file:// 直接打开，浏览器不允许读取本地接口数据，页面无法加载任何状态，' +
+         '也无法登录。请先启动控制台服务，再通过 http://127.0.0.1:<端口> 访问本页。');
   }
   window.addEventListener('load', function () {
     setTimeout(function () {

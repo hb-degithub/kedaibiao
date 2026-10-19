@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<!--
+  脱敏 fixture —— 批改网「未完成作业列表」GET /index.php?c=write&a=waitComplete 的**数据行**。
+
+  来源：基于 data/recon/pigai/raw/ 里那份 waitComplete 原始样本中**真实数据行**（作业号 1000005）
+  重写。⚠ 该样本存在本身与 pigai.md §6.1「本轮只有表头、0 行」不一致，证据以样本为准（已报 lead）。
+
+    * 保留（实测结构）：`ul.reItemS` 的 7 个 `<li>`、列序与 PENDING_HEADERS 逐字一致、
+      各列的行内宽度、行尾 `<div style="clear:both"></div>`（ul 内嵌 div）。
+      另保留两个实测细节：标题锚点 `title="查看作文:"` 是**空标题**；
+      href 是 `?c=v2&a=write&rid=1000005`（无前导 `/`、无 eid、指向写作页）；
+      第 4 列「指定班级」的单元格文本与它的 `title` 属性内容相同，
+      且文本**以英文逗号结尾**（真实样本就带这个尾逗号）。
+    * 替换（个人信息，必须）：出题人真实姓名 →「张老师」；
+      真实的长串班级列表（可识别到具体年级/班级）→ 3 个示例班级；
+      真实课程名 → 中性占位「示例课程（三）- Unit 6」。
+      （此处刻意**不抄录**被替换掉的原值，避免 grep 时产生歧义。）
+    * 保留：作业号 1000005 与截止时间（非个人信息，便于与实测逐字对照）。
+-->
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>未完成的作业</title>
+<style>#essayList .select{background-color:#ebf3f5}</style>
+</head>
+<body>
+<div id="essayList" class="ydTable">
+  <ul class="reItemM">
+    <li style="width:80px;" class="ft">作业号</li>
+    <li style="width:448px;">作业标题</li>
+    <li style="width:50px;">类型</li>
+    <li style="width:80px;">出题人</li>
+    <li style="width:100px;">指定班级</li>
+    <li style="width:80px;">截止时间</li>
+    <li style="width:110px;">操作</li>
+    <div style="clear:both"></div>
+  </ul>
+  <div class="line" style="background-color:#d9d9d9;height:1px;"></div>
+  <ul class="reItemS">
+    <li style="width:80px;">1000005</li>
+    <li style="width:448px;" class="stu_title">
+      <a href="?c=v2&a=write&rid=1000005" title="查看作文:">示例课程（三）- Unit 6</a>
+    </li>
+    <li style="width:50px;">作文</li>
+    <li style="width:80px;">张老师</li>
+    <li style="width:100px;" title="示例1班,示例2班,示例3班,">示例1班,示例2班,示例3班,</li>
+    <li style="width:80px;">2026-11-16 23:59</li>
+    <li style="width:110px;" class="stu_index">
+      <a href="?c=v2&a=write&rid=1000005" title="查看作文">查看</a>
+    </li>
+    <div style="clear:both"></div>
+  </ul>
+  <div class="line" style="background-color:#d9d9d9;height:1px;"></div>
+</div>
+</body>
+</html>

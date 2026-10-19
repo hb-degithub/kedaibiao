@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<!--
+  脱敏 fixture —— 批改网「未完成作业列表」GET /index.php?c=write&a=waitComplete 的**空态**。
+
+  来源：基于 data/recon/pigai/raw/ 里那份 waitComplete 原始样本的 DOM 重写。
+    * 保留：`#essayList > ul.reItemM` 表头（7 列，含 `class="ft"`）、表头里那处
+      `<div style="clear:both"></div>`（ul 内嵌 div 的非法 HTML，§6.1）、
+      `.line` 分隔线；**没有 `ul.reItemS`** ← 这就是空态。
+    * 替换：无个人信息（本 fixture 只有表头）。
+    * 缩减：真实页面该页**有 1 条数据行**（见 assignments_pending_row.html，
+      与 §6.1「本轮只有表头」的旧结论不一致），此处按空态构造，用于验证返回 []。
+-->
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>未完成的作业</title>
+<style>#essayList .select{background-color:#ebf3f5}</style>
+</head>
+<body>
+<div id="essayList" class="ydTable">
+  <ul class="reItemM">
+    <li style="width:80px;" class="ft">作业号</li>
+    <li style="width:448px;">作业标题</li>
+    <li style="width:50px;">类型</li>
+    <li style="width:80px;">出题人</li>
+    <li style="width:100px;">指定班级</li>
+    <li style="width:80px;">截止时间</li>
+    <li style="width:110px;">操作</li>
+    <div style="clear:both"></div>
+  </ul>
+  <div class="line" style="background-color:#d9d9d9;height:1px;"></div>
+  <div class="line" style="background-color:#d9d9d9;height:1px;"></div>
+</div>
+</body>
+</html>

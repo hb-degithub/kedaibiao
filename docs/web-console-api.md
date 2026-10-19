@@ -421,7 +421,7 @@ run 是「一个作业的处理结果」，job 是「一次跑批的整体结果
 **请求**（必须 `Content-Type: application/json`）：
 
 ```json
-{ "rid": "200000004", "eid": "1000006" }
+{ "rid": "200000001", "eid": "1000002" }
 ```
 
 **响应**：统一的「展示信封」，前端按 `kind` 渲染，不需要认识平台细节。
@@ -441,7 +441,7 @@ run 是「一个作业的处理结果」，job 是「一次跑批的整体结果
     { "key": "status",  "label": "状态" }
   ],
   "rows": [
-    { "rid": "200000004", "title": "My Campus Life",
+    { "rid": "200000001", "title": "My Campus Life",
       "deadline": "2026-10-25 23:59", "status": "未提交" }
   ]
 }
@@ -460,7 +460,7 @@ run 是「一个作业的处理结果」，job 是「一次跑批的整体结果
 ```json
 {
   "kind": "detail",
-  "title": "作文详情 · 200000004 / 1000006",
+  "title": "作文详情 · 200000001 / 1000002",
   "fields": [ { "label": "总分", "value": "88.5" },
               { "label": "语言", "value": "85" } ],
   "sections": [

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<!--
+  脱敏 fixture —— 批改网「已完成作文列表」GET /index.php?c=write（pigai.md §6.2）。
+
+  来源：基于 data/recon/pigai/raw/b_index_php_c_write.html 的真实 DOM **重写**，不是拷贝。
+    * 保留（结构保真）：全部标签 / class / 行内样式 / 列序 / 嵌套；包括
+      `ul.reItemM` 内嵌 `<div style="clear:both"></div>` 这处非法 HTML（§6.2 的陷阱）、
+      操作列里被 HTML 注释掉的旧「查看」锚点、行尾的 `<div style="clear:both"></div>`。
+    * 替换：本页原本就只有系统生成的「第N号 作文」与日期，无正文/姓名/手机/邮箱/cookie。
+    * 缩减：真实样本 10 行 → 这里 3 行，覆盖三种成绩列形态：
+        未截止（文字）/ 整数分 / 小数分，且提交次数覆盖 1 与 2。
+    * rid / eid 是系统分配的不透明编号（非个人信息，recon 报告本身亦已记录），保留原值
+      以便与 §6.2 的实测表逐字对照。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>我的作文</title>
+<style>#essayList .select{background-color:#ebf3f5}</style>
+</head>
+<body>
+<div id="essayList" class="ydTable">
+  <ul class="reItemM">
+    <li style="width:80px;" class="ft">作文ID</li>
+    <li style="width:448px;">作文标题</li>
+    <li style="width:50px;">体裁</li>
+    <li>提交时间</li>
+    <li>截止日期</li>
+    <li style="width:50px;">成绩</li>
+    <li style="width:60px;">提交次数</li>
+    <li style="width:110px;">操作</li>
+    <div style="clear:both"></div>
+  </ul>
+  <div class="line" style="background-color:#d9d9d9;height:1px;"></div>
+
+  <!-- 行 1：成绩列未公布（截止日期之前）→ score_raw="未截止"，score is None -->
+  <ul class="reItemS">
+    <li style="width:80px;"  >1000006</li>
+    <li  class="stu_title ">
+      <div class="stu_title_link">
+        <a href="/index.php?c=v2&a=view&eid=200000004&rid=1000006" title="查看作文:第1000006号 作文">第1000006号 作文</a>
+      </div>
+      <div class="title_tag"></div>
+    </li>
+    <li style="width:50px;">作文</li>
+    <li>2026-10-16</li>
+    <li>2026-10-19</li>
+    <li style="width:50px;">
+      <span title="未到截止日期，暂不公布最终成绩"> 未截止 </span>
+    </li>
+    <li style="width:60px;"><a href="/index.php?c=write&a=history&eid=200000004" target="_blank">2</a></li>
+    <li style="width:110px;" class="stu_index">
+      <!-- 注释里的入口不算内容：解析器丢弃注释（pigai.md §6.2） -->
+      <!--
+      <a href="/index.php?c=write&eid=200000004&a=view2" title="查看作文">查看</a>  -->
+      <a href="/index.php?c=v2&a=view&eid=200000004&rid=1000006" title="查看作文">查看</a>
+       |
+      <a href="/index.php?c=write&eid=200000004&a=writeFrom&rid=1000006" title="继续完善">完善</a>
+       |
+      <a href="/index.php?c=write&eid=200000004&a=del" onclick="javascript:return confirm('您确定要删除？');" title="删除作文">删除</a>
+    </li>
+    <div style="clear:both"></div>
+  </ul>
+  <div class="line spv4line"></div>
+
+  <!-- 行 2：成绩列为整数分 -->
+  <ul class="reItemS">
+    <li style="width:80px;"  >1000003</li>
+    <li  class="stu_title ">
+      <div class="stu_title_link">
+        <a href="/index.php?c=v2&a=view&eid=234022144&rid=1000003" title="查看作文:第1000003号 作文">第1000003号 作文</a>
+      </div>
+      <div class="title_tag"></div>
+    </li>
+    <li style="width:50px;">作文</li>
+    <li>2026-09-09</li>
+    <li>2026-09-21</li>
+    <li style="width:50px;">
+      89
+    </li>
+    <li style="width:60px;"><a href="/index.php?c=write&a=history&eid=234022144" target="_blank">2</a></li>
+    <li style="width:110px;" class="stu_index">
+      <a href="/index.php?c=v2&a=view&eid=234022144&rid=1000003" title="查看作文">查看</a>
+       |
+      <span title="老师已评阅或已到截止日期,不能再完善" >完善</span>
+       |
+      <span title="老师已评阅或已到截止日期,不能删除" >删除</span>
+    </li>
+    <div style="clear:both"></div>
+  </ul>
+  <div class="line spv4line"></div>
+
+  <!-- 行 3：成绩列为小数分，提交次数 1 -->
+  <ul class="reItemS">
+    <li style="width:80px;"  >1000004</li>
+    <li  class="stu_title ">
+      <div class="stu_title_link">
+        <a href="/index.php?c=v2&a=view&eid=200000003&rid=1000004" title="查看作文:第1000004号 作文">第1000004号 作文</a>
+      </div>
+      <div class="title_tag"></div>
+    </li>
+    <li style="width:50px;">作文</li>
+    <li>2026-05-31</li>
+    <li>2026-06-01</li>
+    <li style="width:50px;">
+      85.5
+    </li>
+    <li style="width:60px;"><a href="/index.php?c=write&a=history&eid=200000003" target="_blank">1</a></li>
+    <li style="width:110px;" class="stu_index">
+      <a href="/index.php?c=v2&a=view&eid=200000003&rid=1000004" title="查看作文">查看</a>
+       |
+      <span title="老师已评阅或已到截止日期,不能再完善" >完善</span>
+       |
+      <span title="老师已评阅或已到截止日期,不能删除" >删除</span>
+    </li>
+    <div style="clear:both"></div>
+  </ul>
+  <div class="line" style="background-color:#d9d9d9;height:1px;"></div>
+
+  <div style="margin:10px">
+    <div class="fr pagelinks"><B>1</B> <a title="第2页" href="/index.php?c=write&pageno=2">[2]</a></div>
+    <div style="clear:both"></div>
+  </div>
+</div>
+</body>
+</html>

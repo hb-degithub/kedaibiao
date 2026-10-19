@@ -348,7 +348,7 @@ td.err { color: #e79b93; max-width: 260px; word-break: break-word; }
 fieldset { margin: 0; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 3px; }
 .field-hint { color: var(--fg-mute); font-size: 11.5px; }
 
-select, input[type="number"], input[type="text"] {
+select, input[type="number"], input[type="text"], input[type="password"] {
   padding: 5px 8px;
   border: 1px solid var(--line);
   border-radius: 3px;
@@ -360,6 +360,7 @@ select, input[type="number"], input[type="text"] {
 }
 select { width: 100%; }
 input[type="text"] { width: 100%; }
+input[type="password"] { width: 100%; }
 input[type="number"] { width: 120px; }
 select:focus-visible, input:focus-visible, button:focus-visible, a:focus-visible {
   outline: 1px solid var(--blue);
@@ -533,6 +534,124 @@ details > summary { cursor: pointer; list-style: none; color: var(--fg-dim); }
 details > summary::-webkit-details-marker { display: none; }
 details > summary::before { content: "▸ "; color: var(--fg-mute); font-size: 11px; }
 details[open] > summary::before { content: "▾ "; }
+
+/* ============================ 登录门 ============================ */
+
+/* 未登录时全屏：控制台整体隐藏，标题栏与内容都不渲染（权限仍由后端强制）。 */
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: radial-gradient(1100px 520px at 50% -12%, #16202b 0%, var(--bg) 62%);
+}
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  padding: 22px 22px 18px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
+}
+.login-brand { display: flex; align-items: baseline; gap: 8px; }
+.login-brand .brand-name { font-size: 17px; font-weight: 600; letter-spacing: .06em; }
+.login-sub { margin: 8px 0 16px; color: var(--fg-mute); font-size: 11.5px; line-height: 1.7; }
+.login-form { display: flex; flex-direction: column; gap: 12px; }
+.login-form .field > .field-label { color: var(--fg-dim); font-size: 12px; }
+.login-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.login-card .err-box { margin-top: 12px; }
+.login-card .note { line-height: 1.7; }
+
+/* ============================ 顶栏：当前用户 / 归属筛选 ============================ */
+
+.top-user { display: inline-flex; align-items: baseline; gap: 6px; }
+.top-user .mono { font-size: 12.5px; color: var(--fg); }
+.owner-filter { display: inline-flex; align-items: center; gap: 6px; }
+.owner-filter select { width: auto; min-width: 132px; max-width: 220px; padding: 3px 6px; font-size: 11.5px; }
+.badge-admin { color: #c9a7f0; border-color: #46325e; background: #1e1628; }
+.nav-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid #46325e;
+  border-radius: 3px;
+  color: #c9a7f0;
+  font-size: 10px;
+  letter-spacing: .04em;
+}
+
+/* ============================ 用户页 ============================ */
+
+.user-id { margin-left: 6px; color: var(--fg-mute); font-size: 11px; }
+.role-sel { width: auto; min-width: 150px; padding: 3px 6px; font-size: 12px; }
+.sub-row > td { background: #12171d; border-bottom: 1px solid var(--line); padding: 10px 12px; }
+.nowrap { white-space: nowrap; }
+td.ctr .btn + .btn, td.ctr .btn + .act-flag { margin-left: 6px; }
+td.ctr select + .btn { margin-left: 6px; }
+
+.acct-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.acct-form .acct-input { width: auto; min-width: 150px; padding: 3px 7px; font-size: 12px; }
+.hint-warn { color: var(--yellow); }
+
+.btn-warn { border-color: #4a3c1c; background: var(--warn-bg); color: #e6d6a8; }
+.btn-warn:hover:not(:disabled) { background: #332a15; border-color: #5d4a20; }
+.btn-danger { border-color: #5c2a24; background: var(--red-bg); color: #f0c3be; }
+.btn-danger:hover:not(:disabled) { background: #3a1d19; border-color: #7a3830; }
+
+/* ============================ 账号页：多账号折叠 ============================ */
+
+.acct-groups { display: flex; flex-direction: column; gap: 14px; }
+.acct-group { border: 1px solid var(--line-soft); border-radius: 4px; background: #12171d; }
+.acct-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel-2);
+}
+.acct-group-head b { font-size: 12.5px; }
+.acct-list { display: flex; flex-direction: column; }
+
+details.acct { border-bottom: 1px solid var(--line-soft); }
+details.acct:last-child { border-bottom: 0; }
+.acct-sum {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 12px 7px 6px;
+  cursor: pointer;
+}
+.acct-sum:hover { background: #171e26; }
+details.acct[open] > .acct-sum { background: #16202b; }
+.acct-label { font-size: 12.5px; font-weight: 600; }
+.acct-user { color: var(--fg-dim); font-size: 12px; }
+.acct-id { margin-left: auto; color: var(--fg-mute); font-size: 11px; }
+.acct-owner { font-size: 11px; }
+.acct-body { padding: 2px 12px 12px 22px; }
+.acct-kv { margin-top: 0; padding-top: 0; border-top: 0; }
+.acct-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+
+/* 会话失效提示：比普通 err-box 更显眼，但不带「错误：」前缀 */
+.alert-box {
+  margin: 0 0 10px;
+  padding: 9px 12px;
+  border: 1px solid #5c2a24;
+  border-left-width: 3px;
+  border-radius: 3px;
+  background: var(--red-bg);
+  color: #f0c3be;
+  font-size: 12.5px;
+}
+.alert-box .banner-title { font-weight: 600; margin-bottom: 3px; }
+.alert-box p { margin: 0 0 6px; }
+.alert-box ul { margin: 0; padding-left: 18px; }
+.alert-box li + li { margin-top: 4px; }
 
 /* ============================ 页脚 ============================ */
 

@@ -422,8 +422,8 @@ def _register_pigai() -> None:
             label="作文详情",
             description="按作文号 + 稿件号取分数、分项、正文与逐句批注",
             params=(
-                ActionParam("rid", "作文号", required=True, hint="例如 200000004"),
-                ActionParam("eid", "稿件号", required=True, hint="例如 1000006"),
+                ActionParam("rid", "作文号", required=True, hint="例如 200000001"),
+                ActionParam("eid", "稿件号", required=True, hint="例如 1000002"),
             ),
         ),
         _pigai_essay,

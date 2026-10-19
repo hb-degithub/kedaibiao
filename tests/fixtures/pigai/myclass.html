@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<!--
+  脱敏 fixture —— 批改网「班级页」GET /index.php?c=write&a=myclass 的作业条目（pigai.md §6.8）。
+
+  来源：基于 data/recon/pigai/raw/b_index_php_c_write_a_myclass.html 的真实 DOM 重写。
+    * 保留（结构保真）：`.card > .baseinfo > .flexbox > div#<rid>` 条目容器、
+      `ul.detail > li`（类型 / ID / 提交人数 / 截止日期）、状态区 `.m-score > .text`
+      （可见文案「交作业」/「已截止」）、条目里那个数字 id 属性；
+      以及 `<!-- 指定班级… -->` 那条被注释掉的 `<ul class="detail">`（注释必须被忽略，
+      否则条目会被数重/解析错位）。
+    * 替换（个人信息，必须）：创建人真实姓名 →「张老师」；真实学校名 →「示例大学」；
+      真实班级名 →「示例班级（三）」；真实班级号 → C0000001。
+      （真实样本里这些都在同一个 `.navtab` 里；此处刻意**不抄录**被替换掉的原值，
+      避免 grep 时产生歧义。）
+    * 保留：作业 ID 1000005/1000006/3431453 与提交人数/截止日期（非个人信息，
+      便于与 §6.8 的实测正文「ID：3431453 提交人数：43 截止日期：2026-09-19 23:59 已截止」
+      逐字对照）。
+-->
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>我的班级</title></head>
+<body>
+<main>
+  <div class="card flexbox" style="padding: 10px 30px 10px 20px;">
+    <div class="navtab">
+      <div class="level1">
+        <ul class="flexbox level1__nav" style="padding:15px 0">
+          <li style="line-height:20px;"><a href="javascript:;" style="font-weight:bold">示例班级（三）</a></li>
+          <li style="line-height:20px;"><b>班级号：</b>C0000001&nbsp;&nbsp;&nbsp;&nbsp;<b>创建人：</b>张老师 &nbsp;&nbsp;&nbsp;&nbsp; <b>学校：</b>示例大学&nbsp;&nbsp;&nbsp;&nbsp;<b>创建时间：</b>2026-08-27</li>
+          <li>
+            <div class="m-score" style="background:#0af;cursor: pointer" onclick="joinClass('0000001')">
+              <span class="text" style="color:#fff;">加入</span>
+            </div>
+          </li>
+        </ul>
+      </div>
+      <div class="level2 flexbox">
+        <div class="flex">
+          <ul class="flexbox level2__nav">
+            <li><a class="active" href="/index.php?c=write&a=myclass&cid=0000001&type=1">班级作业</a></li>
+            <li><a href="/index.php?c=write&a=myclass&cid=0000001&type=5">新题型作业</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card flexbox">
+    <div class="baseinfo flex">
+      <div class="flexbox">
+        <div class="flex" id="1000005">
+          <div class="title ck">
+            <a href="?c=v2&a=write&rid=1000005" title="查看学生作文作业:未到开始时间">未到开始时间</a>
+          </div>
+          <!-- <ul class="detail flexbox" style="line-height:30px;">指定班级：<span
+               class="className">无</span></ul>  （注释：解析器必须忽略它） -->
+          <ul class="detail flexbox">
+            <li>类型：作文</li>
+            <li>ID：1000005</li>
+            <li>提交人数：
+              0
+            </li>
+            <li>截止日期：2026-11-16 23:59</li>
+          </ul>
+        </div>
+        <div>
+          <div class="m-score" style="background:#0af;">
+            <a href="?c=v2&a=write&rid=1000005"><span class="text" style="color:#fff;">交作业</span></a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card flexbox">
+    <div class="baseinfo flex">
+      <div class="flexbox">
+        <div class="flex" id="1000006">
+          <div class="title ck">
+            <a href="?c=v2&a=write&rid=1000006" title="查看学生作文作业:示例课程（三）- Unit 5">示例课程（三）- Unit 5</a>
+          </div>
+          <!-- <ul class="detail flexbox" style="line-height:30px;">指定班级：<span
+               class="className">无</span></ul> -->
+          <ul class="detail flexbox">
+            <li>类型：作文</li>
+            <li>ID：1000006</li>
+            <li>提交人数：
+              1367
+            </li>
+            <li>截止日期：2026-10-19 23:59</li>
+          </ul>
+        </div>
+        <div>
+          <div class="m-score" style="background:#0af;">
+            <a href="?c=v2&a=write&rid=1000006"><span class="text" style="color:#fff;">交作业</span></a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card flexbox">
+    <div class="baseinfo flex">
+      <div class="flexbox">
+        <div class="flex" id="3431453">
+          <div class="title ck">
+            <a href="?c=v2&a=write&rid=3431453" title="查看学生作文作业:示例课程（三）- Unit 4">示例课程（三）- Unit 4</a>
+          </div>
+          <!-- <ul class="detail flexbox" style="line-height:30px;">指定班级：<span
+               class="className">无</span></ul> -->
+          <ul class="detail flexbox">
+            <li>类型：作文</li>
+            <li>ID：3431453</li>
+            <li>提交人数：
+              43
+            </li>
+            <li>截止日期：2026-09-19 23:59</li>
+          </ul>
+        </div>
+        <div>
+          <div class="m-score">
+            <span class="text">已截止</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="page__wrap">&nbsp;</div>
+</main>
+</body>
+</html>

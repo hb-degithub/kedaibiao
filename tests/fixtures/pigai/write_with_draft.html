@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<!--
+  脱敏 fixture —— 批改网「按作业号定位 / 写作页」**已写过**的作业
+  （GET /index.php?c=write&a=searchReq&rid=… ，即 protocol.Endpoints.lookup_by_rid）。
+
+  来源：基于 data/recon/pigai/raw/ 里的 `b_write_with_draft.html` 重写。
+  ⚠ 真实样本含该学生的**作文正文**（1070 字符），本文件里的正文已整体替换为占位文本。
+
+    * 保留（结构保真）：与 write_fresh.html 完全同形；
+      **大写** `<TEXTAREA NAME="contents" id="contents">`、`.draft-wrapper` 下
+      3 个 `draft-top|main|tail` 模板 textarea、`#beizhu`、`#init_wc` 的「字数:123 词」、
+      `#nowme`/`#contentsW_bar` 的两个时间、`#v2_request_titlex` 四个 span、
+      内嵌 JS（`var _eid='200000004'` / `var _rid='1000006'`）。
+    * 替换（个人信息/正文，必须）：教师真实姓名 →「张老师」；真实班级名 →「示例1班」；
+      真实课程名 →「示例课程（三）- Unit 5」；真实题目要求 → 占位；
+      **作文正文 → 两段占位**（与 essay_detail.html 里的正文**逐字相同**，
+      以便单测断言「详情页读到的正文 == 写作页读到的正文」，见 §6.3 与 lookup_by_rid）。
+    * 刻意偏差：真实样本里 3 个模板 textarea 与 `#beizhu` 是空的，这里填入短占位内容，
+      用来锁住「解析器不得误取模板/备注当正文」。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>写作第1000006号作文</title>
+<style>
+  .draft-wrapper { display: none; }
+  .section-content { width: 100%; resize: none; }
+</style>
+</head>
+<body>
+<div id="user_nav">
+  <div id="user_navW">
+    <span style="color:#999999">当前位置：</span>
+    <a href="/">我的作文</a>
+    <span class="nav_split">-></span>
+    <span>写作第1000006号作文</span>
+    <div class="cl"></div>
+  </div>
+</div>
+
+<!--写作助手浮窗开始-->
+<div id="writeHelper" class="writeHelper">
+  <div id="helperHeader" class="helperHeader">
+    <p>写作助手</p>
+    <p id="closeHelper" class="fr">✕</p>
+  </div>
+  <div class="helperContent">
+    <div class="tabWrapper">
+      <div id="tabContent" onclick="changeTab(this)" class="helperTab tabActive">内容写作</div>
+    </div>
+    <div class="contentHeader"><p>作文开头常见表达</p></div>
+    <div class="contentMain"></div>
+  </div>
+</div>
+<!--写作助手浮窗结束-->
+
+<div id="pigaiV4" style="position: relative;">
+  <div class="tbMenu2010">
+    <div class="supLeft" id="timu">
+      题目：<b>[1000006]</b> 示例课程（三）- Unit 5
+    </div>
+  </div>
+
+  <div id="sponeLeftS">
+    <div id="sponeLeftSN">
+      <div id="requestW" class="ydTable">
+        <div id="v2_request_rq" class="v2_rq_itme">
+          <b class="fl">要求</b><div style="padding-left:10px;" class="fl" id="request_y"><p>示例题目要求文本（占位）。</p>
+          </div>
+          <div style="clear:both;"></div>
+        </div>
+
+        <div id="v2_request_title" style="padding-top:10px;">
+          <div id="v2_request_titlex">
+            <span class="fl">作文号:1000006</span>
+            <span class="fl">教师:张老师</span>
+            <span class="fl">字数:100~200
+            </span>
+            <span class="fl">满分:100</span>
+            <!--
+            <div class="fr">答题时间:2026-09-21 08:00~2026-10-19 23:59</div>
+            -->
+            <div style="clear:both;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="requestWForm">
+    <div class="tips2">注意:<ul>
+      <li>作文正文禁止粘贴</li>
+      <li>老师已开启AI生成检测，请独立完成本次写作任务</li>
+    </ul></div>
+
+    <div id="titleW"><span style="height:30px;" class="fl">标题：</span><span class="fl"><INPUT TYPE="text" NAME="title" id="title" value="第1000006号 作文" class="class_title"></span><div style="clear:both;"></div></div>
+
+    <div id="contentsW" style="position: relative;">
+      <div id="contentsW_bar">
+        <div class="contentsW_bar_left">请在下方写入正文</div>
+        <div class="contentsW_bar_txt">截止时间：2026-10-19 23:59</div>
+        <div class="contentsW_bar_txt" id="now_time">当前时间：<span content="1792379766">2026-10-19 11:16:06</span></div>
+        <div class="contentsW_bar_ctime fr">用时：<span content="0">00:00</span></div>
+        <div style="clear:both;"></div>
+      </div>
+
+      <div class="draft-wrapper">
+        <div class="draft-section section-top">
+          <div class="draft-title"><p>作文开头</p></div>
+          <textarea section-title="作文开头常见表达" pos="top" class="section-content draft-top" spellcheck="false">DRAFT-TOP-TEMPLATE</textarea>
+        </div>
+        <div class="draft-section section-main">
+          <div class="draft-title"><p>作文主体</p></div>
+          <textarea section-title="作文主体常见表达" pos="main" class="section-content draft-main" spellcheck="false">DRAFT-MAIN-TEMPLATE</textarea>
+        </div>
+        <div class="draft-section section-tail">
+          <div class="draft-title"><p>作文结尾</p></div>
+          <textarea section-title="作文结尾常见表达" pos="tail" class="section-content draft-tail" spellcheck="false">DRAFT-TAIL-TEMPLATE</textarea>
+        </div>
+      </div>
+
+      <!-- 正文（已脱敏）。⚠ 标签是大写 TEXTAREA；三个 draft-* 模板在它上面，绝不能误取。 -->
+      <TEXTAREA NAME="contents" id="contents" style="border-top:0px; " class="from_contents " spellcheck="false">Placeholder paragraph one.
+
+Placeholder paragraph two.</TEXTAREA>
+
+      <div class="from_bar">
+        <div class="fl">&nbsp;<span id="save_dilog"></span></div>
+        <div class="fr">
+          &nbsp;<a href="javascript:void(0);" id="save_bt">保存数据</a> | <a href="javascript:void(0);" id="save_re">恢复数据</a>
+          &nbsp;<span>字数:<span id="init_wc">123</span> 词</span> &nbsp;
+        </div>
+        <div style="clear:both"></div>
+      </div>
+    </div>
+
+    <div>
+      <div id="beizhuw" style="display:none;">
+        <div class="fl"><span style="font-size:12px;">备注是填写一些不参与打分的资料、说明等</span>
+        </div>
+        <div style="clear:both"></div>
+        <div><TEXTAREA NAME="beizhu" id="beizhu" spellcheck="false">BEIZHU-PLACEHOLDER</TEXTAREA></div>
+      </div>
+    </div>
+
+    <div style="padding:10px 0; ">
+      <div style="float:left;font-size:12px">班级:
+        <select id="stu_class" onchange='javascript:msg2("为了老师查看您的作业不丢失，请确认勿选错班级");'>
+          <option value="">请选择班级</option>
+          <option value="示例1班" selected>示例1班</option>
+          <option value="">其他</option>
+        </select>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="text/javascript">
+ var _self='/index.php';
+ var _utype='user';
+ var _rid= '1000006';
+ var _eid='200000004';
+ var _version="3";
+ var _c_time = 0 ;
+ var _no_paste="1";
+ var _time_limit = 0;
+</script>
+</body>
+</html>

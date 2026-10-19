@@ -2,10 +2,23 @@
  *
  * 约束（见 docs/web-console-api.md，本文件唯一的接口契约来源）：
  *   - 零构建、零依赖、零 CDN：只用原生 DOM API 与同源 fetch，页面不外发任何数据。
+ *   - 认证（契约 §1.5）：令牌由 HttpOnly Cookie（kdb_session）承载，前端**不碰 localStorage**；
+ *     所有请求带 credentials: 'same-origin'。任意 /api/* 返回 401 kind=unauthorized 就切到
+ *     全屏登录页；登录成功后回到登录前所在的 hash 位置。
+ *   - 角色：superadmin 能管理用户、能看所有人的数据（?owner_id=<id>）；user 只看得到自己的。
+ *     「用户」入口只对超管显示，但**不只靠隐藏**：普通用户手改 hash 走到 #/users 时后端会
+ *     403，页面把后端的中文 error 与 kind 原样显示出来。
+ *   - 归属：数据接口按当前用户自动过滤，前端不传参；超管在顶栏选「用户」后数据请求带
+ *     ?owner_id=<id>，聚合视图下列表多一列「归属」（响应每行带 owner_id）。
  *   - 导航：左侧栏一列两段 —— 上段切平台（全部平台 / pigai / pinco / unipus …），
  *           下段切「当前平台的功能」：概览 / 课程 / 作业 / 题库 / 工具 / 运行日志 /
- *           统计 / 账号。顶栏只放项目名与「当前平台 + 干跑/真提交」徽标。
+ *           统计 / 账号 /〔仅超管〕用户。顶栏放「当前平台 + 归属筛选 + 干跑/真提交 + 当前用户」。
  *           当前页 + 当前平台存在 URL hash（#/功能/平台）里，刷新后仍停在同一处。
+ *   - 「账号」页 = 平台多账号（/api/accounts）：一个平台下多个号、当前号切换、重新登录、
+ *     增删改；每个账号的详细信息用 <details> 折叠（摘要行：标签 / 用户名 / 当前号 / 登录状态）。
+ *   - 已完成历史与详细作答：工具页的平台专属动作（如批改网的 finished / essay），
+ *     一律按响应 kind（table / detail / message）通用渲染，不为任何平台写专属页面；
+ *     列表结果若有能对上的详情动作，按声明的必填参数从该行自动填好参数。
  *   - 没有横跨所有平台的能力对比表：当前选哪个平台，就只看那个平台的能力
  *     （概览页的能力摘要、账号页该平台那一行）。跨平台对比只在「统计」页。
  *   - 没有任何行内快捷跑批按钮：跑批一律在概览页的触发区，且必须明确选择平台。
@@ -24,16 +37,40 @@
   var EVENT_LIMIT = 100;     // 契约：events 默认 100
   var TREND_DAYS = 14;       // 「最近趋势」最多展示多少天
 
-  /* 功能页（顺序即左侧栏下段的顺序） */
-  var PAGES = ['overview', 'courses', 'assignments', 'bank', 'tools', 'logs', 'stats', 'account'];
+  /* 功能页（顺序即左侧栏下段的顺序）；users 仅超管可见。 */
+  var PAGES = ['overview', 'courses', 'assignments', 'bank', 'tools', 'logs',
+               'stats', 'account', 'users'];
   var PAGE_LABEL = {
     overview: '概览', courses: '课程', assignments: '作业', bank: '题库',
-    tools: '工具', logs: '运行日志', stats: '统计', account: '账号'
+    tools: '工具', logs: '运行日志', stats: '统计', account: '账号', users: '用户'
   };
+  /* 仅超管可见的功能页（入口隐藏，但后端 403 前端照样要处理）。 */
+  var ADMIN_PAGES = { users: 1 };
   /* 这些功能必须有具体平台才有意义；「全部平台」下给提示而不是空表。 */
   var NEEDS_PLATFORM = { courses: 1, assignments: 1, bank: 1, tools: 1 };
   /* 旧 hash 名（上一版导航）→ 新名字，老书签不失效。 */
   var PAGE_ALIAS = { records: 'logs', settings: 'account' };
+
+  /* 角色展示名（契约 §1.5：superadmin / user）。未知角色原样显示。 */
+  var ROLE_LABEL = { superadmin: '超管', user: '普通用户' };
+  var ROLE_HINT = {
+    superadmin: '超管：能管理用户，能看所有人的数据（可切「用户」筛选）',
+    user: '普通用户：只能看自己的数据，不能进「用户」管理'
+  };
+
+  /* 密码规则（契约 §1.5：至少 8 位，否则 400）—— 前端先校验。 */
+  var MIN_PASSWORD = 8;
+
+  /* 认证相关路径：这些接口自身的 401 不算「会话过期」，不要切登录页。 */
+  var AUTH_PATHS = { '/api/auth/login': 1, '/api/auth/logout': 1, '/api/auth/me': 1 };
+
+  /* 归属（owner_id）只发给「按用户归属过滤有意义」的数据接口；
+     /api/settings、/api/platforms、/api/platforms/<n>/actions/* 是全局或平台级，
+     不按 owner 过滤，也不要带 owner_id。 */
+  var OWNER_SCOPED = {
+    '/api/overview': 1, '/api/runs': 1, '/api/submissions': 1, '/api/bank': 1,
+    '/api/statistics': 1, '/api/jobs': 1, '/api/events': 1, '/api/accounts': 1
+  };
 
   var LIVE_CONFIRM =
     '这会真的提交作业，不可撤销。\n\n' +
@@ -81,12 +118,39 @@
     eventsOff: false,
     submitting: false,
     runOptionsSig: '',       // 跑批下拉的选项指纹（变了才重建，避免打断用户选择）
-    actions: { platform: null, list: null, active: null, result: null, busy: false },
+    actions: { platform: null, list: null, active: null, result: null, busy: false, prefill: null },
     actionPages: {
       courses: { busy: false, loaded: false, error: '', result: null, params: {}, seq: 0 },
       assignments: { busy: false, loaded: false, error: '', result: null, params: {}, seq: 0 }
     },
-    problems: {}             // key -> { message, level }
+    problems: {},            // key -> { message, level }
+
+    /* --- 认证 / 身份（契约 §1.5）--- */
+    authed: false,
+    authChecked: false,      // 已经成功确认过一次身份（用于区分「尚未登录」与「会话过期」）
+    user: null,              // /api/auth/me 的 user 对象
+    isSuper: false,
+    ownerId: null,           // 超管专用：null = 不传 owner_id（看全部）
+    users: [],               // /api/users 列表（超管；也用于 owner 下拉与「归属」列显示用户名）
+    usersLoaded: false,
+    usersError: '',
+    usersLoading: false,
+    usersPwOpen: null,       // 正在改密的用户 id
+    loginBusy: false,
+    returnHash: '',          // 登录前的位置（登录后回到原页）
+    authNotice: '',
+
+    /* --- 平台多账号（契约 §1.5）--- */
+    acct: {
+      list: null,            // null = 还没取到；[] = 确实没有
+      busy: false,
+      error: '',
+      seq: 0,
+      open: {},              // account id -> <details> 是否展开（重绘后保留）
+      panel: {},             // account id -> 'relogin' | 'rename'
+      err: {},               // account id -> 行内错误
+      actId: null            // 正在执行操作的 account id
+    }
   };
 
   /* ------------------------------------------------------------------ 基础工具 */
@@ -272,9 +336,18 @@
     this.detail = detail || '';
   }
 
+  /* 只取路径部分（去掉 query），用于判断是不是 auth 接口。 */
+  function pathOnly(path) {
+    var s = String(path || '');
+    var i = s.indexOf('?');
+    return i >= 0 ? s.slice(0, i) : s;
+  }
+
   function api(path, options) {
     var opts = options || {};
     opts.cache = 'no-store';
+    /* 契约 §1.5：令牌是 HttpOnly Cookie，浏览器自动带上；前端不存令牌。 */
+    opts.credentials = 'same-origin';
     return fetch(path, opts).then(function (res) {
       var ct = res.headers.get('content-type') || '';
       var bodyPromise = ct.indexOf('json') >= 0
@@ -286,7 +359,13 @@
           var kind = (body && body.kind) || ('http_' + res.status);
           var msg = (body && body.error) || '';
           var detail = (body && body.detail) || '';
-          throw new HttpError(kind, msg, res.status, path, detail);
+          var err = new HttpError(kind, msg, res.status, path, detail);
+          /* 契约 §1.5：未登录访问任何 /api/*（除 auth/*）→ 401 + kind unauthorized，
+             前端收到就切登录页。auth 接口自身的 401 由登录表单处理。 */
+          if (res.status === 401 && !AUTH_PATHS[pathOnly(path)]) {
+            onUnauthorized();
+          }
+          throw err;
         }
         return body;
       });
@@ -305,13 +384,22 @@
 
   /* 契约：失败响应的 error 字段就是可直接展示的中文，前端不重写它；
      只在后面补一句「接下来能做什么」。认不出的 kind 就原样显示 error。 */
+  var FORBIDDEN_HINT =
+    '这可能是权限不足（「用户」管理只对超管开放，普通用户带 ?owner_id= 指向别人也会被拒），' +
+    '也可能是 Host / Origin 被安全策略拒绝 —— 请通过 http://127.0.0.1:<端口> 访问本页，' +
+    '不要用别的域名或 file:// 打开。';
+
   var ERROR_HINTS = {
+    unauthorized: '未登录或会话已过期（401）：请重新登录。',
     no_credentials: '请在 .env 里补全该平台的账号配置（error 里写了期望的键名），重启服务后再试。',
     unknown_platform: '平台没注册或名字不对。点「刷新」重读平台列表。',
     unknown_action: '该平台没有声明这个只读动作。「刷新」会重读动作清单。',
     busy: '同一时刻只允许一个跑批任务，请等当前任务结束后再触发。',
-    bad_request: '请检查请求参数（platform / live / limit / kinds 或动作参数）。',
-    forbidden: 'Host 或 Origin 被安全策略拒绝：请通过 http://127.0.0.1:<端口> 访问本页，不要用别的域名或 file:// 打开。',
+    bad_request: '请检查请求参数（platform / live / limit / kinds 或动作参数；密码至少 8 位）。',
+    forbidden: FORBIDDEN_HINT,
+    /* 后端若给 403 另起 kind 名，这里一并认掉，别让用户看到光秃秃的状态码。 */
+    permission_denied: FORBIDDEN_HINT,
+    not_allowed: FORBIDDEN_HINT,
     not_found: '目标不存在或已被清理。',
     platform_error: '平台侧失败（未登录 / 找不到内容 / 网络异常）。先确认凭据与参数，再重试。',
     internal: '服务端自身异常，请查看服务端日志。'
@@ -334,9 +422,339 @@
     if (kind === 'platform_error' && e && e.detail && base.indexOf(e.detail) === -1) {
       base += '（平台异常：' + e.detail + '）';
     }
+    /* 403：无论 kind 叫什么，都按「权限 / 安全策略」给人话（后端原文优先）。 */
+    if (e && e.status === 403 && base.indexOf(FORBIDDEN_HINT) === -1) {
+      base += '（kind: ' + dash(kind) + '。' + FORBIDDEN_HINT + '）';
+      return base;
+    }
     var hint = ERROR_HINTS[kind];
     if (hint && base.indexOf(hint) === -1) { base += '（' + hint + '）'; }
     return base;
+  }
+
+  /* ==================================================================
+     认证 / 身份 / 归属（契约 §1.5）
+     令牌在 HttpOnly Cookie 里 —— 这里只跟 /api/auth/* 与身份状态打交道，
+     不读也不写 localStorage。
+     ================================================================== */
+
+  function isSuperadmin() { return state.isSuper === true; }
+
+  function roleText(role) { return ROLE_LABEL[role] || role || '—'; }
+
+  function stopAllTimers() { cancelTimer(); }
+
+  /* 登录页：全屏接管。控制台整体隐藏只是 UI 状态，权限由后端强制。 */
+  function showLogin(reason, message) {
+    $('app').hidden = true;
+    $('login-screen').hidden = false;
+    setBoxError('login-error', message || '');
+    $('login-state').textContent = '';
+    $('login-retry').hidden = (reason !== 'offline');
+    $('login-note').textContent = loginNote(reason);
+    var u = $('login-username');
+    if (u && !u.value) { u.focus(); }
+    else if (u) { $('login-password').focus(); }
+  }
+
+  function loginNote(reason) {
+    if (reason === 'expired') {
+      return '会话已过期（后端返回 401 unauthorized）：请重新登录。' +
+             '你的位置（' + (state.returnHash || location.hash || '#/overview') + '）会保留。';
+    }
+    if (reason === 'logout') { return '已退出登录。换账号登录后，数据会按新用户重新加载。'; }
+    if (reason === 'offline') {
+      return '取不到会话状态：请确认控制台服务已启动，然后点「重试连接」或直接登录。';
+    }
+    return '登录后所有数据按当前用户隔离；超管可以切换「用户」筛选查看某个用户的数据。';
+  }
+
+  function hideLogin() {
+    $('login-screen').hidden = true;
+    $('app').hidden = false;
+    setBoxError('login-error', '');
+    $('login-password').value = '';
+    $('login-state').textContent = '';
+  }
+
+  function isOnLoginScreen() { return !$('login-screen').hidden; }
+
+  /* 任意 /api/*（auth 除外）返回 401：停轮询、清状态、切登录页。 */
+  function onUnauthorized() {
+    if (isOnLoginScreen()) { return; }   // 已经在登录页，别重复处理并发 401
+    stopAllTimers();
+    state.authed = false;
+    state.isSuper = false;
+    state.ownerId = null;
+    state.users = [];
+    state.usersLoaded = false;
+    state.usersError = '';
+    state.acct = {
+      list: null, busy: false, error: '', seq: state.acct.seq + 1,
+      open: {}, panel: {}, err: {}, actId: null
+    };
+    state.currentId = null;
+    state.currentJob = null;
+    state.problems = {};
+    renderProblems();
+    if (!state.returnHash) { state.returnHash = location.hash || ''; }
+    renderChrome();
+    showLogin(state.authChecked ? 'expired' : 'boot');
+  }
+
+  /* 采纳身份：/api/auth/me 给 {user, is_superadmin}；登录只保证 {user}。
+     角色以 is_superadmin 为准，缺字段时退回 user.role。 */
+  function adoptIdentity(body) {
+    var u = body && body.user;
+    if (isObj(u)) { state.user = u; }
+    var flag = body ? body.is_superadmin : undefined;
+    if (flag !== true && flag !== false) {
+      flag = !!(state.user && state.user.role === 'superadmin');
+    }
+    state.isSuper = flag === true;
+    if (!state.isSuper) { state.ownerId = null; }
+    state.authChecked = true;
+  }
+
+  function fetchIdentity() {
+    return api('/api/auth/me').then(function (body) {
+      adoptIdentity(body);
+      return body;
+    });
+  }
+
+  /* 启动时的会话探测：401 = 未登录（登录页），网络错误 = 服务没起来。 */
+  function startSession() {
+    return api('/api/auth/me').then(function (body) {
+      adoptIdentity(body);
+      enterConsole();
+    }).catch(function (e) {
+      if (e && e.status === 401) {
+        state.authChecked = false;
+        showLogin('boot');
+        return;
+      }
+      showLogin('offline', describeError(e));
+    });
+  }
+
+  /* 身份确认后进入控制台：回到登录前的位置，再按当前页取数。 */
+  function enterConsole() {
+    state.authed = true;
+    hideLogin();
+    /* 登录期间 hash 没被改过就是原位置；万一被改过，回到登录前那个位置。 */
+    var back = state.returnHash;
+    state.returnHash = '';
+    if (back && back !== location.hash && window.history && window.history.replaceState) {
+      window.history.replaceState(null, '', back);
+    }
+    var r = parseHash();
+    state.page = r.page;
+    state.platform = r.platform;
+    renderChrome();
+    showPage();
+    if (isSuperadmin()) { loadUsers({ silent: true }); }
+    return loadPlatforms().then(function () {
+      var r2 = parseHash();
+      var plt = sanitizePlatform(r2.platform);
+      if (plt !== state.platform) {
+        state.platform = plt;
+        replaceHash(state.page, plt);
+        renderChrome();
+      }
+      syncRunPlatformOptions(true);
+      applyRunConstraints();
+      return loadPageData(true);
+    });
+  }
+
+  function doLogin(ev) {
+    if (ev) { ev.preventDefault(); }
+    if (state.loginBusy) { return; }
+    var username = String($('login-username').value || '').trim();
+    var password = String($('login-password').value || '');
+    if (!username || !password) {
+      setBoxError('login-error', '请填写用户名和密码。');
+      return;
+    }
+    state.loginBusy = true;
+    setBoxError('login-error', '');
+    $('login-state').textContent = '正在登录 POST /api/auth/login …';
+    $('login-submit').disabled = true;
+
+    postJson('/api/auth/login', { username: username, password: password }).then(function (body) {
+      var u = body && body.user;
+      if (!isObj(u) || !u.role) {
+        /* 登录响应里没带角色：补一次 /api/auth/me 再进控制台。 */
+        return fetchIdentity().then(function () { enterConsole(); });
+      }
+      adoptIdentity(body);
+      enterConsole();
+    }).catch(function (e) {
+      if (e && e.status === 401) {
+        setBoxError('login-error', '账号或密码不对（401 unauthorized）。请检查大小写后重试。');
+      } else if (e && e.kind === 'network') {
+        setBoxError('login-error', describeError(e));
+        $('login-retry').hidden = false;
+      } else {
+        setBoxError('login-error', '登录失败：' + describeError(e));
+      }
+    }).then(function () {
+      state.loginBusy = false;
+      $('login-submit').disabled = false;
+      $('login-state').textContent = '';
+    });
+  }
+
+  function doLogout() {
+    var btn = $('logout-btn');
+    btn.disabled = true;
+    postJson('/api/auth/logout', {}).catch(function () {
+      /* 退出请求失败也照样切回登录页：cookie 可能已经清掉了。 */
+    }).then(function () {
+      btn.disabled = false;
+      stopAllTimers();
+      state.authed = false;
+      state.user = null;
+      state.isSuper = false;
+      state.ownerId = null;
+      state.users = [];
+      state.usersLoaded = false;
+      state.usersError = '';
+      state.usersPwOpen = null;
+      state.acct = {
+        list: null, busy: false, error: '', seq: state.acct.seq + 1,
+        open: {}, panel: {}, err: {}, actId: null
+      };
+      state.overview = null;
+      state.bank = null;
+      state.statistics = null;
+      state.settings = null;
+      state.runs = [];
+      state.statRuns = [];
+      state.submissions = [];
+      state.jobs = [];
+      state.currentId = null;
+      state.currentJob = null;
+      state.returnHash = location.hash || '';
+      clearProblemsWithPrefix('scope:');
+      state.problems = {};
+      renderProblems();
+      resetTools();
+      resetActionPage('courses');
+      resetActionPage('assignments');
+      renderChrome();
+      showPage();
+      showLogin('logout');
+    });
+  }
+
+  /* ---- 超管的归属筛选（?owner_id=）---- */
+
+  function ownerQuery() {
+    if (!isSuperadmin()) { return ''; }
+    if (state.ownerId === null || state.ownerId === undefined || state.ownerId === '') { return ''; }
+    return 'owner_id=' + encodeURIComponent(state.ownerId);
+  }
+
+  /* 只给「按归属过滤有意义」的接口带 owner_id；其它 URL 原样返回。 */
+  function withOwner(url) {
+    if (!OWNER_SCOPED[pathOnly(url)]) { return url; }
+    var oq = ownerQuery();
+    if (!oq) { return url; }
+    return url + (url.indexOf('?') >= 0 ? '&' : '?') + oq;
+  }
+
+  function ownerLabel(id) {
+    if (id === null || id === undefined || id === '') { return '—'; }
+    for (var i = 0; i < state.users.length; i++) {
+      if (String(state.users[i].id) === String(id)) {
+        return state.users[i].username ? String(state.users[i].username) : ('#' + id);
+      }
+    }
+    return '#' + id;
+  }
+
+  /* 归属列：超管 + 「全部用户」时才有信息量。 */
+  function showOwnerColumn() { return isSuperadmin() && state.ownerId === null; }
+
+  function renderOwnerFilter() {
+    var wrap = $('owner-filter-wrap');
+    if (!wrap) { return; }
+    var sup = isSuperadmin();
+    wrap.hidden = !sup;
+    if (!sup) { return; }
+    var sel = $('owner-filter');
+    var kids = [el('option', '', '全部用户（不传 owner_id）')];
+    kids[0].value = '';
+    for (var i = 0; i < state.users.length; i++) {
+      var u = state.users[i] || {};
+      var o = el('option', '', String(u.username || ('#' + u.id)) + '（' + roleText(u.role) + '）');
+      o.value = String(u.id);
+      kids.push(o);
+    }
+    fill(sel, kids);
+    sel.value = (state.ownerId === null || state.ownerId === undefined) ? '' : String(state.ownerId);
+    sel.disabled = !state.usersLoaded;
+    sel.title = state.usersLoaded
+      ? '超管：按归属用户过滤所有数据接口；留空 = 看全部（不传 owner_id）'
+      : '用户列表还没取到，暂时只能看全部';
+  }
+
+  function onOwnerChange() {
+    var sel = $('owner-filter');
+    var v = String(sel.value || '');
+    state.ownerId = v === '' ? null : v;
+    /* 归属一换，所有归属维度的列表与缓存都失效。 */
+    state.runs = [];
+    state.submissions = [];
+    state.jobs = [];
+    state.statRuns = [];
+    state.statistics = null;
+    state.acct.list = null;
+    state.acct.open = {};
+    state.acct.panel = {};
+    state.acct.err = {};
+    state.acct.seq++;
+    clearProblemsWithPrefix('scope:');
+    showToast(v === '' ? '归属筛选：全部用户（不传 owner_id）' : ('归属筛选：' + ownerLabel(v)));
+    renderChrome();
+    loadOverview();
+    loadJobs();
+    loadEvents();
+    loadPageData(true);
+  }
+
+  /* 响应信封兜底：契约只写了「列表 + 每人账号数」，这里按常见键名兼容；
+     裸数组也认。字段名与契约不同时不影响功能。 */
+  function extractList(body, keys) {
+    if (Array.isArray(body)) { return body; }
+    if (!isObj(body)) { return []; }
+    for (var i = 0; i < keys.length; i++) {
+      if (Array.isArray(body[keys[i]])) { return body[keys[i]]; }
+    }
+    return [];
+  }
+
+  function accountCountOf(u) {
+    var keys = ['account_count', 'accounts_count', 'account_total', 'account_num', 'accounts'];
+    for (var i = 0; i < keys.length; i++) {
+      var v = u[keys[i]];
+      if (isNum(v)) { return v; }
+      if (Array.isArray(v)) { return v.length; }
+    }
+    return null;
+  }
+
+  function fmtDisabled(v) {
+    if (v === true) { return '停用'; }
+    if (v === false) { return '启用'; }
+    return '—';
+  }
+
+  /* 名单里「停用 / 启用」的徽标（用户页与账号页共用同一套措辞）。 */
+  function disabledBadge(v) {
+    return v === true ? badge(fmtDisabled(true), 'badge-fail') : badge(fmtDisabled(false), 'badge-ok');
   }
 
   /* ------------------------------------------------------------------ 顶部提示 */
@@ -484,13 +902,16 @@
     }
     if (SCOPED[path] && plt) { qs.push('platform=' + encodeURIComponent(plt)); }
     var url = path + (qs.length ? '?' + qs.join('&') : '');
+    url = withOwner(url);
     return api(url).then(function (body) {
-      return { platform: plt, body: body, url: url };
+      return { platform: plt, ownerId: state.ownerId, body: body, url: url };
     });
   }
 
-  /* 响应到达时平台是否还是同一个（切平台很快时丢弃过期响应）。 */
-  function stillCurrent(res) { return !!res && res.platform === state.platform; }
+  /* 响应到达时平台与归属是否还是同一个（切平台/切用户很快时丢弃过期响应）。 */
+  function stillCurrent(res) {
+    return !!res && res.platform === state.platform && res.ownerId === state.ownerId;
+  }
 
   /* 契约：响应回带 platform 用于确认作用域；不带该字段的响应不做校验。 */
   function scopeOk(body, plt) {
@@ -603,9 +1024,12 @@
     renderPlatformNav();
     renderFuncNav();
     renderTopbar();
+    renderUserBox();
+    renderOwnerFilter();
     renderSideMeta();
     renderScopeHints();
     syncRunPlatformOptions();
+    syncAccountPlatformOptions();
     applyRunConstraints();
   }
 
@@ -657,6 +1081,12 @@
     var needsPlat = !state.platform;
     for (var i = 0; i < nodes.length; i++) {
       var page = nodes[i].getAttribute('data-page');
+      /* 「用户」入口只对超管显示；普通用户即使手改 hash 进去，后端会 403，
+         页面（gate）显示后端的中文说明 —— 隐藏只是少一个入口，不是权限。 */
+      if (ADMIN_PAGES[page]) {
+        var li = nodes[i].parentNode;
+        if (li) { li.hidden = !isSuperadmin(); }
+      }
       nodes[i].href = hashFor(page, state.platform);
       var active = page === state.page;
       nodes[i].classList.toggle('is-active', active);
@@ -705,6 +1135,32 @@
     show($('top-live'), !!(live && live.checked && !live.disabled));
   }
 
+  /* 顶栏右上：当前用户（用户名 + 角色徽标）+ 退出按钮。 */
+  function renderUserBox() {
+    var u = state.user || {};
+    var name = u.username ? String(u.username) : null;
+    setText('top-username', name || '—');
+    var role = $('top-role');
+    if (name && isSuperadmin()) {
+      role.className = 'badge badge-admin';
+      role.textContent = roleText('superadmin');
+    } else if (name) {
+      role.className = 'badge badge-idle';
+      role.textContent = roleText(u.role);
+    } else {
+      role.className = 'badge badge-idle';
+      role.textContent = '—';
+    }
+    role.title = (ROLE_HINT[isSuperadmin() ? 'superadmin' : u.role] || '当前登录用户') +
+      (u.disabled === true ? ' · 该账号已被停用' : '');
+    var box = $('top-user');
+    if (box) {
+      box.title = name
+        ? ('当前登录：' + name + '（' + roleText(u.role) + '，user id ' + dash(u.id) + '）')
+        : '尚未登录';
+    }
+  }
+
   function renderSideMeta() {
     var o = state.overview || {};
     setText('meta-version', o.version);
@@ -716,8 +1172,11 @@
   /* 每个功能页头部的作用域提示（只依赖当前平台，路由一变就刷新）。 */
   function renderScopeHints() {
     var scope = scopeLabel();
+    var ownerNote = isSuperadmin()
+      ? (' · 归属：' + (state.ownerId === null ? '全部用户' : ownerLabel(state.ownerId)))
+      : ' · 归属：仅自己（后端强制）';
     setText('ov-scope', '作用域：' + scope +
-      (state.platform ? '' : ' · 概览 / 运行日志 / 统计 / 账号在聚合视图下仍可用'));
+      (state.platform ? '' : ' · 概览 / 运行日志 / 统计 / 账号在聚合视图下仍可用') + ownerNote);
 
     var platHint = state.platform
       ? ('平台：' + platformLabel(state.platform) + '（' + state.platform + '）')
@@ -727,8 +1186,12 @@
     setText('bank-scope', platHint);
     setText('tools-scope', platHint);
     setText('logs-scope', '作用域：' + scope +
-      ' · 跑批历史与提交记录按该作用域过滤，聚合视图下每行显示平台列');
-    setText('stats-scope', '跨平台对比：不受当前平台过滤（' + scope + ' 只是你刚才看的位置）');
+      ' · 跑批历史与提交记录按该作用域过滤，聚合视图下每行显示平台列' + ownerNote);
+    setText('stats-scope', '跨平台对比：不受当前平台过滤（' + scope + ' 只是你刚才看的位置）' + ownerNote);
+    setText('account-scope', '作用域：' + scope + ' · 每个平台下可以有多个号，随时切换当前号' + ownerNote);
+    setText('users-scope', isSuperadmin()
+      ? '超管视图：所有人 + 每人账号数；顶栏「用户」筛选可切到某个人看数据'
+      : '仅超管可用：非超管请求 /api/users* 会被后端拒绝（403）');
   }
 
   /* ------------------------------------------------------------------ 概览页 */
@@ -1060,6 +1523,8 @@
   function pollJob() {
     var id = state.currentId;
     if (!id) { return; }
+    /* 会话没了就别再每 1 秒打一次 401。 */
+    if (!state.authed) { stopPolling(); return; }
     var url = '/api/jobs/' + encodeURIComponent(id);
     api(url).then(function (body) {
       state.pollFails = 0;
@@ -1079,6 +1544,7 @@
         finishRefresh();
       }
     }).catch(function (e) {
+      if (!state.authed) { stopPolling(); return; }
       if (e.kind === 'not_found') {
         setProblem('job', '任务「' + id + '」不存在或已被清理（404），已停止轮询。', 'warn');
         stopPolling();
@@ -1419,7 +1885,7 @@
   /* ------------------------------------------------------------------ 工具页（平台只读动作通用渲染） */
 
   function resetTools() {
-    state.actions = { platform: null, list: null, active: null, result: null, busy: false };
+    state.actions = { platform: null, list: null, active: null, result: null, busy: false, prefill: null };
     clearToolsError();
     renderTools();
   }
@@ -1521,7 +1987,10 @@
     nav.hidden = false;
 
     renderActionForm();
-    renderEnvelope(result, state.actions.result, {});
+    renderEnvelope(result, state.actions.result, {
+      related: relatedActions(list, state.actions.result),
+      onRelated: pickRelated
+    });
   }
 
   function loadActions(keep) {
@@ -1545,14 +2014,15 @@
       }
       state.actions = {
         platform: plt, list: list, active: active,
-        result: keep ? state.actions.result : null, busy: false
+        result: keep ? state.actions.result : null, busy: false,
+        prefill: keep ? state.actions.prefill : null
       };
       if (!keep) { clearToolsError(); }
       renderTools();
       clearProblem('actions');
     }).catch(function (e) {
       if (plt !== state.platform) { return; }
-      state.actions = { platform: plt, list: [], active: null, result: null, busy: false };
+      state.actions = { platform: plt, list: [], active: null, result: null, busy: false, prefill: null };
       renderTools();
       setProblem('actions', '平台「' + plt + '」的只读动作清单加载失败：' +
         describeError(e, { platform: plt }), e.kind === 'unknown_platform' ? 'warn' : 'error');
@@ -1597,6 +2067,10 @@
           input.type = 'text';
         }
         if (spec.required) { input.required = true; }
+        /* 「查看详情」带过来的预填值（如 finished 行 → essay 的 rid/eid）。 */
+        if (state.actions.prefill && state.actions.prefill[spec.name] !== undefined) {
+          input.value = state.actions.prefill[spec.name];
+        }
         wrap.appendChild(input);
         var hintText = spec.name + ' · ' + (spec.type || 'string') +
           (spec.required ? ' · 必填' : ' · 可选');
@@ -1663,7 +2137,11 @@
       if (plt !== state.platform) { return; }
       state.actions.result = isObj(body) ? body : null;
       clearToolsError();
-      renderEnvelope($('action-result'), state.actions.result, {});
+      /* 结果里若还有能对上的详情动作（如 finished → essay），保留「查看详情」入口。 */
+      renderEnvelope($('action-result'), state.actions.result, {
+        related: relatedActions(state.actions.list, state.actions.result),
+        onRelated: pickRelated
+      });
       showToast('动作「' + (act.label || act.name) + '」执行完成（只读）');
     }).catch(function (e) {
       if (plt !== state.platform) { return; }
@@ -1712,7 +2190,7 @@
 
     var kind = env.kind;
     if (kind === 'table') {
-      box.appendChild(tableBlock(env.columns, env.rows, o.emptyText || '该动作返回 0 行。'));
+      box.appendChild(tableBlock(env.columns, env.rows, o.emptyText || '该动作返回 0 行。', o));
       return;
     }
     if (kind === 'detail') {
@@ -1725,7 +2203,7 @@
     }
     /* 没声明 kind（或声明了未知 kind）：按结构猜，再不行原样展示，绝不白屏。 */
     if (env.columns || env.rows) {
-      box.appendChild(tableBlock(env.columns, env.rows, o.emptyText || '该动作返回 0 行。'));
+      box.appendChild(tableBlock(env.columns, env.rows, o.emptyText || '该动作返回 0 行。', o));
       return;
     }
     if (env.fields || env.sections) {
@@ -1744,7 +2222,11 @@
     box.appendChild(d);
   }
 
-  function tableBlock(columns, rows, emptyText) {
+  /* 列表渲染。opts.related / opts.onRelated 可选：把「这一行的数据能填满其必填参数」
+     的详情动作做成一列按钮（如批改网 finished 行 → essay 详情），全程按动作声明推导。 */
+  function tableBlock(columns, rows, emptyText, opts) {
+    var o = opts || {};
+    var related = o.related || [];
     var cols = (columns || []).filter(isObj);
     var list = (rows || []).filter(isObj);
     var wrap = el('div', 'table-wrap');
@@ -1764,23 +2246,97 @@
       if (cols[i].key) { th.title = cols[i].key; }
       headRow.appendChild(th);
     }
+    if (related.length) { headRow.appendChild(el('th', 'ctr', '详情')); }
     thead.appendChild(headRow);
     table.appendChild(thead);
 
     var tbody = el('tbody');
     for (var r = 0; r < list.length; r++) {
+      var rowObj = list[r];
       var cells = [];
       for (var c = 0; c < cols.length; c++) {
-        var v = list[r][cols[c].key];
+        var v = rowObj[cols[c].key];
         var text = (v === null || v === undefined || v === '') ? '—'
           : (isObj(v) || Array.isArray(v) ? jsonText(v, 160) : String(v));
         cells.push(cell(text, cols[c].mono ? 'mono' : 'wrap'));
       }
+      if (related.length) { cells.push(relatedCell(rowObj, related, o.onRelated)); }
       tbody.appendChild(row(cells));
     }
     table.appendChild(tbody);
     wrap.appendChild(table);
     return wrap;
+  }
+
+  function requiredParamNames(act) {
+    var out = [];
+    var ps = (act && act.params) || [];
+    for (var i = 0; i < ps.length; i++) {
+      if (ps[i] && ps[i].required) { out.push(ps[i].name); }
+    }
+    return out;
+  }
+
+  function rowHasParams(rowObj, names) {
+    for (var i = 0; i < names.length; i++) {
+      var v = rowObj[names[i]];
+      if (v === null || v === undefined || v === '') { return false; }
+    }
+    return true;
+  }
+
+  function relatedCell(rowObj, related, onRelated) {
+    var c = el('td', 'ctr nowrap');
+    for (var i = 0; i < related.length; i++) {
+      (function (act) {
+        var names = requiredParamNames(act);
+        if (!names.length || !rowHasParams(rowObj, names)) { return; }
+        var b = el('button', 'btn btn-sm', '查看' + (act.label || act.name));
+        b.type = 'button';
+        b.title = (act.description || act.label || act.name) +
+          '（参数 ' + names.join(' / ') + ' 取自本行）';
+        b.addEventListener('click', function () { onRelated(rowObj, act); });
+        c.appendChild(b);
+      })(related[i]);
+    }
+    return c;
+  }
+
+  /* 从动作清单里挑「第一行的数据能填满其必填参数」的平台专属动作。 */
+  function relatedActions(list, env) {
+    var out = [];
+    if (!env || env.kind !== 'table') { return out; }
+    var rows = (env.rows || []).filter(isObj);
+    if (!rows.length) { return out; }
+    var sample = rows[0];
+    var acts = (list || []).filter(function (a) {
+      return a && !a.builtin && (a.params || []).length;
+    });
+    for (var i = 0; i < acts.length; i++) {
+      var names = requiredParamNames(acts[i]);
+      if (names.length && rowHasParams(sample, names)) { out.push(acts[i]); }
+    }
+    return out;
+  }
+
+  /* 点了「查看详情」：把该行的值预填进动作参数表单，不自动执行（让用户先确认参数）。 */
+  function pickRelated(rowObj, act) {
+    var prefill = {};
+    var names = requiredParamNames(act);
+    for (var i = 0; i < names.length; i++) {
+      var v = rowObj[names[i]];
+      if (v !== null && v !== undefined && v !== '') { prefill[names[i]] = String(v); }
+    }
+    state.actions.active = act;
+    state.actions.prefill = prefill;
+    state.actions.result = null;
+    clearToolsError();
+    renderTools();
+    var form = $('action-form');
+    var btn = form ? form.querySelector('button[type="submit"]') : null;
+    if (btn) { btn.focus(); }
+    showToast('已按这一行填好「' + (act.label || act.name) + '」的参数：' +
+      names.join(' / ') + '；点「执行」看详细内容');
   }
 
   function detailBlock(box, env) {
@@ -1824,7 +2380,7 @@
   function loadJobs() {
     /* 契约允许 ?platform=，但这里刻意拉全局：任务轮询与自动接管不该受平台切换影响，
        列表按当前平台在前端筛行。 */
-    return api('/api/jobs').then(function (body) {
+    return api(withOwner('/api/jobs')).then(function (body) {
       var list = (body && body.jobs) || [];
       list.sort(function (a, b) {
         var ta = parseTime(a.started_at), tb = parseTime(b.started_at);
@@ -1865,6 +2421,22 @@
     return c;
   }
 
+  /* 归属列：超管看「全部用户」时，每行显示这条是谁的（响应每行带 owner_id）。 */
+  function ownerCell(value) {
+    var c = cell(ownerLabel(value), 'mono');
+    if (value !== null && value !== undefined && value !== '') {
+      c.title = 'owner_id = ' + value + '（' + ownerLabel(value) + '）';
+    }
+    c.hidden = !showOwnerColumn();
+    return c;
+  }
+
+  function syncOwnerHeaders() {
+    setColumnVisible('runs-table', 'owner', showOwnerColumn());
+    setColumnVisible('subs-table', 'owner', showOwnerColumn());
+    setColumnVisible('jobs-table', 'owner', showOwnerColumn());
+  }
+
   function renderJobs() {
     var list = scopeRows(state.jobs);
     var rows = list.map(function (job) {
@@ -1877,6 +2449,7 @@
       return row([
         cell(job.job_id, 'mono'),
         platformCell(job.platform),
+        ownerCell(job.owner_id),
         tdLive(job.live === true),
         tdBadge(spec.text, spec.cls),
         cell(fmtTime(job.started_at), 'mono'),
@@ -1891,6 +2464,7 @@
       : '';
     $('jobs-count').textContent = list.length ? ('共 ' + list.length + ' 个') : '';
     setColumnVisible('jobs-table', 'platform', !state.platform);
+    syncOwnerHeaders();
     fillTable('jobs-table', 'jobs-body', 'jobs-empty', rows,
       state.platform
         ? '平台「' + state.platform + '」还没有任务记录。'
@@ -1946,6 +2520,7 @@
       return row([
         cell(r.id, 'mono'),
         platformCell(r.platform),
+        ownerCell(r.owner_id),
         cell(r.assignment_id, 'mono'),
         tdBadge(spec.text, spec.cls),
         cell(fmtNum(r.attempts), 'num mono'),
@@ -1959,6 +2534,7 @@
       ? ('共 ' + state.runs.length + ' 条（limit=' + LIST_LIMIT + '）')
       : '';
     setColumnVisible('runs-table', 'platform', !state.platform);
+    syncOwnerHeaders();
     fillTable('runs-table', 'runs-body', 'runs-empty', rows,
       state.platform
         ? '平台「' + platformLabel(state.platform) + '」还没有跑批记录。用「概览 · 触发跑批」发起一次干跑试试。'
@@ -1982,6 +2558,7 @@
       return row([
         cell(s.id, 'mono'),
         platformCell(s.platform),
+        ownerCell(s.owner_id),
         cell(s.assignment_id, 'mono'),
         tdBadge(s.ok === true ? '成功' : '失败', s.ok === true ? 'badge-ok' : 'badge-fail'),
         cell(fmtScore(s.score), 'num mono'),
@@ -1993,6 +2570,7 @@
       ? ('共 ' + state.submissions.length + ' 条（limit=' + LIST_LIMIT + '）')
       : '';
     setColumnVisible('subs-table', 'platform', !state.platform);
+    syncOwnerHeaders();
     fillTable('subs-table', 'subs-body', 'subs-empty', rows,
       '还没有提交记录。干跑不会产生提交，只有真提交（live=true）才会有。');
   }
@@ -2001,7 +2579,7 @@
 
   function loadEvents() {
     if (state.eventsOff) { return Promise.resolve(); }
-    return api('/api/events?limit=' + EVENT_LIMIT).then(function (body) {
+    return api(withOwner('/api/events?limit=' + EVENT_LIMIT)).then(function (body) {
       var events = (body && body.events) || [];
       renderEvents(events);
       clearProblem('events');
@@ -2046,7 +2624,7 @@
   /* ------------------------------------------------------------------ 统计页（跨平台） */
 
   function loadStatistics() {
-    return api('/api/statistics').then(function (body) {
+    return api(withOwner('/api/statistics')).then(function (body) {
       state.statistics = isObj(body) ? body : {};
       renderStatistics();
       renderStatBank();
@@ -2056,9 +2634,9 @@
     });
   }
 
-  /* 统计页的趋势刻意取「全部平台」口径：它本身就是横向视图。 */
+  /* 统计页的趋势刻意取「全部平台」口径：它本身就是横向视图（但仍受超管归属筛选影响）。 */
   function loadStatRuns() {
-    return api('/api/runs?limit=' + LIST_LIMIT).then(function (body) {
+    return api(withOwner('/api/runs?limit=' + LIST_LIMIT)).then(function (body) {
       var list = (body && body.runs) || [];
       state.statRuns = list;
       renderTrend();
@@ -2159,7 +2737,529 @@
       '没有带时间的跑批记录。');
   }
 
-  /* ------------------------------------------------------------------ 账号页 */
+  /* ==================================================================
+     账号页（上）：平台多账号（契约 §1.5）
+       GET  /api/accounts?platform=         自己的账号列表（超管可加 owner_id）
+       POST /api/accounts                   {platform, label, username, password, login?}
+       POST /api/accounts/<id>/activate     设为该平台的当前号 = 切 cookie
+       POST /api/accounts/<id>/login        {password} 会话过期时重新登录
+       POST /api/accounts/<id>/update       {label?, username?}
+       POST /api/accounts/<id>/delete
+     每个账号一行 <details>：摘要 = 标签 / 用户名 / 当前号 / 登录状态，
+     展开 = 创建时间、上次登录时间与结果、所属平台、操作按钮（用户要求的形式）。
+     ================================================================== */
+
+  function accountsUrl() {
+    var url = '/api/accounts';
+    if (state.platform) { url += '?platform=' + encodeURIComponent(state.platform); }
+    return withOwner(url);
+  }
+
+  function accountName(a) {
+    if (!a) { return '—'; }
+    return String(a.label || a.display || a.username || ('#' + a.id));
+  }
+
+  function accountLoginBadge(a) {
+    if (a.last_login_ok === true) { return badge('会话有效', 'badge-ok'); }
+    if (a.last_login_ok === false) { return badge('会话失效', 'badge-fail'); }
+    return badge('还没登录', 'badge-idle');
+  }
+
+  function setAcctError(id, message) {
+    if (message) { state.acct.err[id] = message; } else { delete state.acct.err[id]; }
+  }
+
+  function loadAccounts() {
+    var seq = ++state.acct.seq;
+    state.acct.busy = true;
+    renderAccounts();
+    return api(accountsUrl()).then(function (body) {
+      if (seq !== state.acct.seq) { return; }
+      state.acct.list = extractList(body, ['accounts', 'items', 'list']);
+      state.acct.busy = false;
+      state.acct.error = '';
+      renderAccounts();
+      clearProblem('accounts');
+    }).catch(function (e) {
+      if (seq !== state.acct.seq) { return; }
+      state.acct.busy = false;
+      state.acct.list = null;
+      state.acct.error = '账号列表加载失败：' + describeError(e, { platform: state.platform });
+      renderAccounts();
+    });
+  }
+
+  function renderAccounts() {
+    var groups = $('account-groups');
+    var empty = $('account-empty');
+    var hint = $('account-hint');
+    if (!groups || !empty) { return; }
+
+    var ownerNote = isSuperadmin()
+      ? (state.ownerId === null ? '全部用户' : ('只看 ' + ownerLabel(state.ownerId)))
+      : '仅自己';
+    if (hint) {
+      hint.textContent = (state.platform ? ('平台 ' + platformLabel(state.platform)) : '全部平台') +
+        ' · 归属：' + ownerNote +
+        (state.acct.busy ? ' · GET /api/accounts 加载中…' : ' · 来自 GET /api/accounts');
+    }
+    setBoxError('account-error', state.acct.error);
+    renderNeedRelogin();
+
+    if (state.acct.list === null) {
+      groups.hidden = true;
+      clear(groups);
+      empty.hidden = state.acct.busy;
+      empty.textContent = state.acct.busy
+        ? '正在读取账号列表…'
+        : '账号列表还没取到（服务未连接或加载失败），点「刷新」重试。';
+      return;
+    }
+    var list = state.acct.list;
+    if (!list.length) {
+      groups.hidden = true;
+      clear(groups);
+      empty.hidden = false;
+      empty.textContent = state.platform
+        ? ('平台「' + platformLabel(state.platform) +
+           '」下还没有账号。用下面的「新增账号」加一个（平台 + 标签 + 用户名 + 密码）。')
+        : '还没有任何平台账号。用下面的「新增账号」加一个（平台 + 标签 + 用户名 + 密码）。';
+      return;
+    }
+    empty.hidden = true;
+    groups.hidden = false;
+    fill(groups, accountGroups(list));
+  }
+
+  /* 按平台分组；平台顺序跟随左侧平台清单，未知平台排在后面。 */
+  function accountGroups(list) {
+    var order = [];
+    var byPlat = {};
+    for (var i = 0; i < list.length; i++) {
+      var a = isObj(list[i]) ? list[i] : {};
+      var p = (a.platform === undefined || a.platform === null) ? '—' : String(a.platform);
+      if (!byPlat[p]) { byPlat[p] = []; order.push(p); }
+      byPlat[p].push(a);
+    }
+    order.sort(function (x, y) {
+      var px = platformByName(x), py = platformByName(y);
+      var ix = px ? state.platforms.indexOf(px) : 999;
+      var iy = py ? state.platforms.indexOf(py) : 999;
+      if (ix !== iy) { return ix - iy; }
+      return x < y ? -1 : (x > y ? 1 : 0);
+    });
+    var out = [];
+    for (var j = 0; j < order.length; j++) {
+      out.push(accountGroup(order[j], byPlat[order[j]]));
+    }
+    return out;
+  }
+
+  function accountGroup(platform, list) {
+    var box = el('section', 'acct-group');
+    var head = el('div', 'acct-group-head');
+    head.appendChild(el('b', '', platform === '—' ? '未标明平台' : platformLabel(platform)));
+    head.appendChild(el('span', 'mono hint', platform));
+    var active = null, bad = 0;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].is_active === true) { active = list[i]; }
+      if (list[i].last_login_ok === false) { bad++; }
+    }
+    head.appendChild(el('span', 'hint', list.length + ' 个账号' +
+      (active ? (' · 当前号 ' + accountName(active)) : ' · 未设当前号（新号会默认成为当前号）')));
+    if (bad) { head.appendChild(badge(bad + ' 个会话失效', 'badge-fail')); }
+    box.appendChild(head);
+
+    var wrap = el('div', 'acct-list');
+    for (var k = 0; k < list.length; k++) { wrap.appendChild(accountDetails(list[k])); }
+    box.appendChild(wrap);
+    return box;
+  }
+
+  /* 一个账号 = 一个 <details>：摘要一行，展开是详情 + 操作。 */
+  function accountDetails(a) {
+    var id = String(a.id);
+    var d = el('details', 'acct');
+    d.open = !!state.acct.open[id];   // 重绘后保留展开状态
+    d.addEventListener('toggle', function () { state.acct.open[id] = d.open; });
+
+    var sum = el('summary', 'acct-sum');
+    sum.appendChild(el('span', 'acct-label', accountName(a)));
+    sum.appendChild(el('span', 'acct-user mono', a.username ? String(a.username) : '—'));
+    if (a.is_active === true) { sum.appendChild(badge('当前号', 'badge-run')); }
+    sum.appendChild(accountLoginBadge(a));
+    if (isSuperadmin() && state.ownerId === null && a.owner_id !== undefined && a.owner_id !== null) {
+      sum.appendChild(el('span', 'acct-owner hint', '归属 ' + ownerLabel(a.owner_id)));
+    }
+    sum.appendChild(el('span', 'acct-id mono', '#' + id));
+    sum.title = '点开看详细信息（创建时间 / 上次登录 / 操作）';
+    d.appendChild(sum);
+
+    var body = el('div', 'acct-body');
+    body.appendChild(accountFields(a));
+    body.appendChild(accountPanels(a));
+    var perr = state.acct.err[id];
+    if (perr) {
+      body.appendChild(el('div', 'err-box', perr));
+    }
+    d.appendChild(body);
+    return d;
+  }
+
+  function accountFields(a) {
+    var dl = el('dl', 'kv-grid acct-kv');
+    var pairs = [
+      ['所属平台', (a.platform === undefined || a.platform === null ? '—' : String(a.platform)) +
+        '（' + platformLabel(a.platform) + '）'],
+      ['账号 id', '#' + String(a.id)],
+      ['归属 owner_id', isSuperadmin()
+        ? (dash(a.owner_id) + '（' + ownerLabel(a.owner_id) + '）')
+        : dash(a.owner_id)],
+      ['是否当前号', a.is_active === true ? '是 —— 该平台当前用它' : '否'],
+      ['创建时间', fmtTime(a.created_at)],
+      ['上次登录时间', fmtTime(a.last_login_at)],
+      ['上次登录结果', a.last_login_ok === true ? '成功（会话有效）'
+        : (a.last_login_ok === false ? '失败 / 会话已失效，需要重新登录' : '还没登录过')],
+      ['上次登录说明', a.last_login_note]
+    ];
+    for (var i = 0; i < pairs.length; i++) {
+      var wrap = el('div');
+      wrap.appendChild(el('dt', '', pairs[i][0]));
+      wrap.appendChild(el('dd', monoish(pairs[i][1]) ? 'mono' : '', dash(pairs[i][1])));
+      dl.appendChild(wrap);
+    }
+    return dl;
+  }
+
+  function accountPanels(a) {
+    var id = String(a.id);
+    var busy = state.acct.actId !== null && String(state.acct.actId) === id;
+    var wrap = el('div', 'acct-actions');
+
+    var act = el('button', 'btn btn-sm', a.is_active === true ? '已是当前号' : '设为当前号');
+    act.type = 'button';
+    act.disabled = a.is_active === true || busy;
+    act.title = 'POST /api/accounts/' + id + '/activate：切换该平台的当前号（切 cookie）';
+    act.addEventListener('click', function () { activateAccount(a); });
+    wrap.appendChild(act);
+
+    var relog = el('button', 'btn btn-sm' + (a.last_login_ok === false ? ' btn-warn' : ''), '重新登录');
+    relog.type = 'button';
+    relog.disabled = busy;
+    relog.title = 'POST /api/accounts/' + id + '/login：会话过期时用，密码不落盘';
+    relog.addEventListener('click', function () { toggleAcctPanel(a, 'relogin'); });
+    wrap.appendChild(relog);
+
+    var ren = el('button', 'btn btn-sm', '改标签 / 用户名');
+    ren.type = 'button';
+    ren.disabled = busy;
+    ren.title = 'POST /api/accounts/' + id + '/update：只改本地记录，不动平台账号';
+    ren.addEventListener('click', function () { toggleAcctPanel(a, 'rename'); });
+    wrap.appendChild(ren);
+
+    var del = el('button', 'btn btn-sm btn-danger', '删除');
+    del.type = 'button';
+    del.disabled = busy;
+    del.title = 'POST /api/accounts/' + id + '/delete：只删本机记录与 cookie';
+    del.addEventListener('click', function () { deleteAccount(a); });
+    wrap.appendChild(del);
+
+    if (busy) { wrap.appendChild(el('span', 'field-hint', '正在执行…')); }
+
+    var panel = state.acct.panel[id];
+    if (panel === 'relogin') { wrap.appendChild(reloginForm(a)); }
+    if (panel === 'rename') { wrap.appendChild(renameForm(a)); }
+    return wrap;
+  }
+
+  function toggleAcctPanel(a, which) {
+    var id = String(a.id);
+    state.acct.panel[id] = state.acct.panel[id] === which ? null : which;
+    renderAccounts();
+    if (which === 'relogin') {
+      var input = $('relogin-pass-' + id);
+      if (input) { input.focus(); }
+    }
+  }
+
+  function focusEl(node) { if (node) { node.focus(); } }
+
+  function reloginForm(a) {
+    var id = String(a.id);
+    var f = el('div', 'acct-form');
+    f.appendChild(el('span', 'field-label',
+      '重新登录「' + accountName(a) + '」：输入平台密码（只在登录时用，不落盘、不回显）'));
+    var p = el('input', 'mono acct-input');
+    p.type = 'password';
+    p.id = 'relogin-pass-' + id;
+    p.autocomplete = 'new-password';
+    p.placeholder = '平台密码';
+    p.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); reloginAccount(a, p); }
+    });
+    var go = el('button', 'btn btn-sm btn-run', '登录');
+    go.type = 'button';
+    go.addEventListener('click', function () { reloginAccount(a, p); });
+    var cancel = el('button', 'btn btn-sm btn-ghost', '取消');
+    cancel.type = 'button';
+    cancel.addEventListener('click', function () {
+      state.acct.panel[id] = null;
+      renderAccounts();
+    });
+    f.appendChild(p);
+    f.appendChild(go);
+    f.appendChild(cancel);
+    if (a.last_login_ok === false) {
+      f.appendChild(el('span', 'field-hint hint-warn',
+        '这个号的会话已失效：重新登录成功后，当前号的数据会重新拉取。'));
+    }
+    return f;
+  }
+
+  function renameForm(a) {
+    var id = String(a.id);
+    var f = el('div', 'acct-form');
+    f.appendChild(el('span', 'field-label', '改本地标签 / 用户名（不动平台账号）'));
+    var label = el('input', 'acct-input');
+    label.type = 'text';
+    label.id = 'rename-label-' + id;
+    label.placeholder = '标签 label';
+    label.value = a.label ? String(a.label) : '';
+    var user = el('input', 'mono acct-input');
+    user.type = 'text';
+    user.id = 'rename-user-' + id;
+    user.placeholder = '平台用户名';
+    user.value = a.username ? String(a.username) : '';
+    user.autocomplete = 'off';
+    var save = el('button', 'btn btn-sm btn-run', '保存');
+    save.type = 'button';
+    save.addEventListener('click', function () { renameAccount(a, label, user); });
+    var cancel = el('button', 'btn btn-sm btn-ghost', '取消');
+    cancel.type = 'button';
+    cancel.addEventListener('click', function () {
+      state.acct.panel[id] = null;
+      renderAccounts();
+    });
+    f.appendChild(label);
+    f.appendChild(user);
+    f.appendChild(save);
+    f.appendChild(cancel);
+    return f;
+  }
+
+  /* 账号操作统一收口：成功回 body，失败把中文错误写进该账号的折叠区并返回 null。 */
+  function accountOp(a, path, payload, okText) {
+    var id = String(a.id);
+    state.acct.actId = id;
+    setAcctError(id, '');
+    renderAccounts();
+    return postJson(path, payload).then(function (body) {
+      state.acct.actId = null;
+      state.acct.panel[id] = null;
+      showToast(okText);
+      /* 成功响应体可能是 null / 空：这里统一回一个非 null 值给调用方判断成败。 */
+      return (body === undefined || body === null) ? {} : body;
+    }).catch(function (e) {
+      state.acct.actId = null;
+      setAcctError(id, describeError(e, { platform: a.platform }));
+      renderAccounts();
+      return null;
+    });
+  }
+
+  function activateAccount(a) {
+    if (a.is_active === true) { return; }
+    accountOp(a, '/api/accounts/' + encodeURIComponent(a.id) + '/activate', {},
+      '已把「' + accountName(a) + '」设为 ' + (a.platform || '') + ' 的当前号').then(function (ok) {
+      if (ok !== null) { reloadAfterAccountChange(a.platform); }
+    });
+  }
+
+  function reloginAccount(a, input) {
+    var id = String(a.id);
+    var pw = String(input && input.value ? input.value : '');
+    if (!pw) {
+      setAcctError(id, '请输入该账号的平台密码（后端不落盘，必须重新输一次）。');
+      renderAccounts();
+      focusEl($('relogin-pass-' + id));
+      return;
+    }
+    state.acct.actId = id;
+    setAcctError(id, '');
+    renderAccounts();
+    var again = $('relogin-pass-' + id);
+    if (again) { again.value = pw; again.focus(); }
+    postJson('/api/accounts/' + encodeURIComponent(a.id) + '/login', { password: pw })
+      .then(function () {
+        state.acct.actId = null;
+        state.acct.panel[id] = null;
+        showToast('「' + accountName(a) + '」重新登录成功，会话有效');
+        reloadAfterAccountChange(a.platform);
+      }).catch(function (e) {
+        state.acct.actId = null;
+        setAcctError(id, describeError(e, { platform: a.platform }));
+        renderAccounts();
+        focusEl($('relogin-pass-' + id));
+      });
+  }
+
+  function renameAccount(a, labelNode, userNode) {
+    var id = String(a.id);
+    var label = String(labelNode.value || '').trim();
+    var username = String(userNode.value || '').trim();
+    if (!username) {
+      setAcctError(id, '平台用户名不能为空。');
+      renderAccounts();
+      return;
+    }
+    accountOp(a, '/api/accounts/' + encodeURIComponent(a.id) + '/update',
+      { label: label, username: username },
+      '已更新账号记录：' + (label || username)).then(function (ok) {
+      if (ok !== null) { loadAccounts(); }
+    });
+  }
+
+  function deleteAccount(a) {
+    var what = accountName(a) + '（' + (a.platform || '') + ' / ' + (a.username || '') + '）';
+    if (!window.confirm('删除账号「' + what + '」？\n\n只删掉本机这个号的记录与 cookie，' +
+                        '不会动平台上的真实账号，不可撤销。')) { return; }
+    accountOp(a, '/api/accounts/' + encodeURIComponent(a.id) + '/delete', {},
+      '已删除账号记录「' + accountName(a) + '」').then(function (ok) {
+      if (ok === null) { return; }
+      delete state.acct.open[String(a.id)];
+      delete state.acct.panel[String(a.id)];
+      delete state.acct.err[String(a.id)];
+      loadAccounts();
+    });
+  }
+
+  /* 会话失效的显眼提示 + 一键「重新登录」入口（用户要求）。 */
+  function renderNeedRelogin() {
+    var box = $('account-needrelogin');
+    if (!box) { return; }
+    var list = state.acct.list || [];
+    var bad = [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].last_login_ok === false) { bad.push(list[i]); }
+    }
+    if (!bad.length) {
+      box.hidden = true;
+      clear(box);
+      return;
+    }
+    box.hidden = false;
+    clear(box);
+    box.appendChild(el('div', 'banner-title',
+      bad.length + ' 个账号的会话已失效（last_login_ok = false），需要重新登录'));
+    box.appendChild(el('p', '',
+      '后端不落盘平台密码：cookie 过期后必须重新输一次密码。点「重新登录」展开输入框。'));
+    var ul = el('ul');
+    for (var j = 0; j < bad.length; j++) {
+      ul.appendChild(reloginItem(bad[j]));
+    }
+    box.appendChild(ul);
+  }
+
+  function reloginItem(a) {
+    var li = el('li');
+    li.appendChild(el('span', 'mono',
+      (a.platform || '—') + ' · ' + accountName(a) + ' · ' + (a.username || '—') + ' '));
+    var b = el('button', 'btn btn-sm btn-warn', '重新登录');
+    b.type = 'button';
+    b.addEventListener('click', function () {
+      var id = String(a.id);
+      state.acct.open[id] = true;
+      state.acct.panel[id] = 'relogin';
+      renderAccounts();
+      focusEl($('relogin-pass-' + id));
+    });
+    li.appendChild(b);
+    return li;
+  }
+
+  /* 新增账号里的平台下拉（跟随左侧平台清单；当前平台默认选中）。 */
+  function syncAccountPlatformOptions(force) {
+    var sel = $('na-platform');
+    if (!sel) { return; }
+    var names = state.platforms.map(function (p) { return p.name; }).join(',');
+    var sig = names + '|' + (state.platform || '');
+    if (!force && sig === sel.getAttribute('data-sig')) { return; }
+    sel.setAttribute('data-sig', sig);
+    var current = String(sel.value || '');
+    var kids = [el('option', '', '— 请选择平台 —')];
+    kids[0].value = '';
+    for (var i = 0; i < state.platforms.length; i++) {
+      var p = state.platforms[i];
+      var o = el('option', '', (p.display_name || p.name) + ' · ' + p.name);
+      o.value = p.name;
+      kids.push(o);
+    }
+    fill(sel, kids);
+    var want = state.platform || current || '';
+    sel.value = want;
+    if (String(sel.value) !== want) { sel.value = ''; }
+  }
+
+  function onCreateAccount(ev) {
+    ev.preventDefault();
+    var platform = String($('na-platform').value || '');
+    var label = String($('na-label').value || '').trim();
+    var username = String($('na-username').value || '').trim();
+    var password = String($('na-password').value || '');
+    var login = $('na-login').checked === true;
+    setBoxError('account-error', '');
+    if (!platform) {
+      setBoxError('account-error', '请先在「平台」下拉里选择一个平台。');
+      return;
+    }
+    if (!username) {
+      setBoxError('account-error', '请填写平台用户名。');
+      focusEl($('na-username'));
+      return;
+    }
+    if (!password) {
+      setBoxError('account-error', '请填写平台密码（只在登录时用一次，后端不落盘）。');
+      focusEl($('na-password'));
+      return;
+    }
+    var payload = { platform: platform, label: label, username: username, login: login };
+    if (password) { payload.password = password; }
+
+    $('na-submit').disabled = true;
+    $('na-state').textContent = '正在 POST /api/accounts …' + (login ? '（会真的登录平台，只读）' : '');
+    postJson('/api/accounts', payload).then(function () {
+      showToast('已新增账号「' + (label || username) + '」' + (login ? '，并把登录结果记下来了' : '（未登录）'));
+      $('na-label').value = '';
+      $('na-username').value = '';
+      $('na-password').value = '';
+      reloadAfterAccountChange(platform);
+    }).catch(function (e) {
+      setBoxError('account-error', '新增账号失败：' + describeError(e, { platform: platform }));
+    }).then(function () {
+      $('na-submit').disabled = false;
+      $('na-state').textContent = '';
+    });
+  }
+
+  /* 切号 / 重新登录 / 新增 / 删除之后：账号列表与当前页数据都必须重取
+     （cookie 换了，课程 / 作业 / 题库的口径就跟着变）。 */
+  function reloadAfterAccountChange(platform) {
+    loadAccounts();
+    loadOverview();
+    if (state.page === 'courses') { loadActionPage('courses'); }
+    else if (state.page === 'assignments') { loadActionPage('assignments'); }
+    else if (state.page === 'bank') { loadBank(); }
+    else if (state.page === 'tools') { resetTools(); loadActions(); }
+    else if (state.page === 'logs') { loadRuns(); loadSubmissions(); loadJobs(); }
+    else if (state.page === 'stats') { loadStatistics(); loadStatRuns(); }
+    if (platform && state.platform && String(platform) !== String(state.platform)) {
+      showToast('注意：操作的是平台 ' + platform + '，当前平台是 ' + state.platform +
+                '；可在左侧「平台」里切过去。');
+    }
+  }
+
+  /* ------ 账号页（下）：配置现状 /api/settings（全局，不随平台与归属过滤） ------ */
 
   function loadSettings() {
     return api('/api/settings').then(function (body) {
@@ -2295,9 +3395,318 @@
       '没有可选依赖信息。');
   }
 
+  /* ==================================================================
+     用户页（仅超管；契约 §1.5）
+       GET  /api/users                  用户列表 + 每人账号数
+       POST /api/users                  {username, password, role, note}
+       POST /api/users/<id>/update      {username?, password?, role?, disabled?, note?}
+       POST /api/users/<id>/delete      不允许删掉最后一个超管（400）
+     入口只对超管显示，但**不只靠隐藏**：普通用户走到 #/users 时照样请求 /api/users，
+     页面把后端的 403 与中文 error 原样显示出来。
+     ================================================================== */
+
+  function setUsersError(message) {
+    state.usersError = message || '';
+    renderUsersError();
+  }
+
+  function renderUsersError() {
+    var box = $('users-error');
+    if (!box) { return; }
+    if (!state.usersError) { box.hidden = true; box.textContent = ''; return; }
+    box.hidden = false;
+    box.textContent = state.usersError;
+  }
+
+  /* 403 的人话：后端 error 优先，其次说明「用户管理只对超管开放」。 */
+  function permissionMessage(e) {
+    var base = ((e && e.error) || '').trim();
+    return '后端拒绝了这次请求（HTTP ' + ((e && e.status) || 403) + ' · kind: ' + dash(e && e.kind) + '）：' +
+      (base || '（后端没有给中文说明）') +
+      '。用户管理只对超管开放：普通用户（role = user）请求 /api/users* 会被后端直接拒绝，' +
+      '带 ?owner_id= 指向别人同样是 403。若你确实是超管，请确认是通过 ' +
+      'http://127.0.0.1:<端口> 访问本页（Host / Origin 被安全策略拒绝也返回 403）。';
+  }
+
+  var identityRefreshes = 0;
+  /* 403 可能意味着角色被改了：重问一次身份，别让界面卡在错的角色上。 */
+  function refreshIdentity() {
+    if (identityRefreshes >= 2) { return Promise.resolve(); }
+    identityRefreshes++;
+    return fetchIdentity().then(function () {
+      identityRefreshes = 0;
+      renderChrome();
+      showPage();
+      return loadPageData(true);
+    }).catch(function () { /* 401 会走 onUnauthorized */ });
+  }
+
+  function loadUsers(opts) {
+    var o = opts || {};
+    if (!o.silent) {
+      state.usersLoading = true;
+      renderUsers();
+    }
+    return api('/api/users').then(function (body) {
+      state.users = extractList(body, ['users', 'items', 'list']);
+      state.usersLoaded = true;
+      state.usersLoading = false;
+      state.usersError = '';
+      renderUsers();
+      renderOwnerFilter();
+      clearProblem('users');
+    }).catch(function (e) {
+      state.users = [];
+      state.usersLoaded = false;
+      state.usersLoading = false;
+      renderOwnerFilter();
+      if (e && e.status === 403) {
+        /* 不吞掉 403：页面显示后端原文（这可能就是「普通用户没有这个功能」）。 */
+        state.usersError = permissionMessage(e);
+        setProblem('users', state.usersError, 'error');
+        if (isSuperadmin()) { refreshIdentity(); }
+      } else {
+        setProblem('users', '用户列表加载失败：' + describeError(e), 'error');
+      }
+      renderUsers();
+    });
+  }
+
+  function renderUsers() {
+    var gate = $('users-gate');
+    var body = $('users-body');
+    if (!gate || !body) { return; }
+    if (!state.usersLoaded) {
+      gate.hidden = false;
+      body.hidden = true;
+      gate.textContent = state.usersLoading
+        ? '正在读取 GET /api/users …'
+        : (state.usersError || (isSuperadmin()
+            ? '还没取到用户列表，点「刷新」重试。'
+            : '「用户」是超管功能：普通用户看不到这个入口，后端对非超管请求 /api/users* 一律返回 403。'));
+      renderUsersError();
+      return;
+    }
+    gate.hidden = true;
+    gate.textContent = '';
+    body.hidden = false;
+    renderUsersError();
+    renderUserRows();
+  }
+
+  function renderUserRows() {
+    var list = state.users;
+    var rows = [];
+    for (var i = 0; i < list.length; i++) {
+      var u = isObj(list[i]) ? list[i] : {};
+      rows.push(userRow(u));
+      if (state.usersPwOpen !== null && String(state.usersPwOpen) === String(u.id)) {
+        rows.push(userPwRow(u));
+      }
+    }
+    $('users-count').textContent = list.length ? ('共 ' + list.length + ' 个用户') : '';
+    fillTable('users-table', 'users-rows', 'users-empty', rows,
+      '没有任何用户。用上面的「新建用户」加一个。');
+  }
+
+  function userRoleCell(u, id) {
+    var td = el('td', 'nowrap');
+    var sel = el('select', 'mono role-sel');
+    var roles = ['user', 'superadmin'];
+    var have = false;
+    for (var i = 0; i < roles.length; i++) {
+      var o = el('option', '', roles[i] + '（' + roleText(roles[i]) + '）');
+      o.value = roles[i];
+      if (u.role === roles[i]) { have = true; }
+      sel.appendChild(o);
+    }
+    /* 认不出的角色：原样列出来，别静默改写用户数据。 */
+    if (!have && u.role) {
+      var extra = el('option', '', String(u.role));
+      extra.value = String(u.role);
+      sel.appendChild(extra);
+    }
+    sel.value = u.role || 'user';
+    /* 改角色是敏感操作：先二次确认，取消则把下拉回退。 */
+    sel.addEventListener('change', function () {
+      var next = String(sel.value || '');
+      var prev = u.role || 'user';
+      if (next === prev) { return; }
+      if (!window.confirm('把用户「' + (u.username || ('#' + id)) + '」的角色从 ' + roleText(prev) +
+                          ' 改成 ' + roleText(next) + '？')) {
+        sel.value = prev;
+        return;
+      }
+      userUpdate(u, { role: next }, '已把「' + (u.username || id) + '」的角色改为 ' + roleText(next));
+    });
+    td.appendChild(sel);
+    return td;
+  }
+
+  function userRow(u) {
+    var id = String(u.id);
+    var name = u.username ? String(u.username) : ('#' + id);
+
+    var idCell = el('td');
+    idCell.appendChild(el('span', 'mono', name));
+    idCell.appendChild(el('span', 'user-id mono', '#' + id));
+    idCell.title = 'user id ' + id;
+
+    var stCell = el('td');
+    stCell.appendChild(disabledBadge(u.disabled === true));
+
+    var opCell = el('td', 'ctr nowrap');
+    var pw = el('button', 'btn btn-sm', '改密');
+    pw.type = 'button';
+    pw.title = 'POST /api/users/' + id + '/update {password}：密码至少 ' + MIN_PASSWORD + ' 位';
+    pw.addEventListener('click', function () {
+      state.usersPwOpen = (state.usersPwOpen !== null && String(state.usersPwOpen) === id) ? null : id;
+      renderUsers();
+      focusEl($('upw-1'));
+    });
+    opCell.appendChild(pw);
+
+    var next = !(u.disabled === true);
+    var tg = el('button', 'btn btn-sm', next ? '停用' : '启用');
+    tg.type = 'button';
+    tg.title = 'POST /api/users/' + id + '/update {disabled: ' + next + '}';
+    tg.addEventListener('click', function () {
+      if (next && !window.confirm('停用用户「' + name + '」？停用后该账号无法登录控制台。')) { return; }
+      userUpdate(u, { disabled: next }, next ? ('已停用「' + name + '」') : ('已启用「' + name + '」'));
+    });
+    opCell.appendChild(tg);
+
+    var del = el('button', 'btn btn-sm btn-danger', '删除');
+    del.type = 'button';
+    del.title = 'POST /api/users/' + id + '/delete：不允许删掉最后一个超管';
+    del.addEventListener('click', function () {
+      if (!window.confirm('删除用户「' + name + '」？不可撤销。\n' +
+                          '（最后一个超管会被后端拒绝，错误会显示在列表上方。）')) { return; }
+      postJson('/api/users/' + encodeURIComponent(u.id) + '/delete', {}).then(function () {
+        showToast('已删除用户「' + name + '」');
+        setUsersError('');
+        if (String(state.ownerId) === id) { state.ownerId = null; }
+        return loadUsers();
+      }).catch(function (e) {
+        setUsersError('删除用户失败：' + describeError(e));
+      });
+    });
+    opCell.appendChild(del);
+
+    var countCell = el('td', 'num mono');
+    var n = accountCountOf(u);
+    countCell.textContent = n === null ? '—' : String(n);
+    countCell.title = n === null ? '响应里没有账号数（后端契约只说「用户列表 + 每人账号数」）' : (n + ' 个平台账号');
+
+    return row([
+      idCell,
+      userRoleCell(u, id),
+      stCell,
+      cell(fmtTime(u.created_at), 'mono'),
+      countCell,
+      cell(u.note, 'wrap muted'),
+      opCell
+    ]);
+  }
+
+  function userPwRow(u) {
+    var id = String(u.id);
+    var tr = el('tr', 'sub-row');
+    var td = el('td');
+    td.colSpan = 7;
+    var form = el('div', 'acct-form');
+    form.appendChild(el('span', 'field-label',
+      '给「' + (u.username || ('#' + id)) + '」设置新密码（至少 ' + MIN_PASSWORD + ' 位，两次输入要一致）'));
+    var p1 = el('input', 'mono acct-input');
+    p1.type = 'password'; p1.id = 'upw-1'; p1.autocomplete = 'new-password'; p1.placeholder = '新密码';
+    var p2 = el('input', 'mono acct-input');
+    p2.type = 'password'; p2.id = 'upw-2'; p2.autocomplete = 'new-password'; p2.placeholder = '再输一次';
+    var save = el('button', 'btn btn-sm btn-run', '保存密码');
+    save.type = 'button';
+    save.addEventListener('click', function () { submitUserPassword(u); });
+    var cancel = el('button', 'btn btn-sm btn-ghost', '取消');
+    cancel.type = 'button';
+    cancel.addEventListener('click', function () { state.usersPwOpen = null; renderUsers(); });
+    form.appendChild(p1); form.appendChild(p2); form.appendChild(save); form.appendChild(cancel);
+    td.appendChild(form);
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function submitUserPassword(u) {
+    var p1 = $('upw-1'), p2 = $('upw-2');
+    var a = String(p1 && p1.value ? p1.value : '');
+    var b = String(p2 && p2.value ? p2.value : '');
+    if (a.length < MIN_PASSWORD) {
+      setUsersError('密码至少 ' + MIN_PASSWORD + ' 位（前端先拦一次，后端也会返回 400）。');
+      focusEl(p1);
+      return;
+    }
+    if (a !== b) {
+      setUsersError('两次输入的密码不一致。');
+      focusEl(p2);
+      return;
+    }
+    setUsersError('');
+    postJson('/api/users/' + encodeURIComponent(u.id) + '/update', { password: a }).then(function () {
+      state.usersPwOpen = null;
+      showToast('已更新用户「' + (u.username || u.id) + '」的密码');
+      return loadUsers();
+    }).catch(function (e) {
+      setUsersError('改密失败：' + describeError(e));
+    });
+  }
+
+  function userUpdate(u, payload, okText) {
+    return postJson('/api/users/' + encodeURIComponent(u.id) + '/update', payload).then(function () {
+      showToast(okText);
+      setUsersError('');
+      return loadUsers();
+    }).catch(function (e) {
+      setUsersError('修改用户失败：' + describeError(e));
+      return loadUsers();
+    });
+  }
+
+  function onCreateUser(ev) {
+    ev.preventDefault();
+    var username = String($('nu-username').value || '').trim();
+    var password = String($('nu-password').value || '');
+    var role = String($('nu-role').value || 'user');
+    var note = String($('nu-note').value || '').trim();
+    if (!username) {
+      setUsersError('请填写用户名。');
+      focusEl($('nu-username'));
+      return;
+    }
+    if (password.length < MIN_PASSWORD) {
+      setUsersError('密码至少 ' + MIN_PASSWORD + ' 位（前端先拦一次，后端也会返回 400）。');
+      focusEl($('nu-password'));
+      return;
+    }
+    $('nu-submit').disabled = true;
+    $('nu-state').textContent = '正在 POST /api/users …';
+    postJson('/api/users', { username: username, password: password, role: role, note: note })
+      .then(function () {
+        showToast('已创建用户「' + username + '」（' + roleText(role) + '）');
+        setUsersError('');
+        $('nu-username').value = '';
+        $('nu-password').value = '';
+        $('nu-note').value = '';
+        return loadUsers();
+      }).catch(function (e) {
+        setUsersError('创建用户失败：' + describeError(e));
+      }).then(function () {
+        $('nu-submit').disabled = false;
+        $('nu-state').textContent = '';
+      });
+  }
+
   /* ------------------------------------------------------------------ 启动 */
 
   function loadPageData(noPlatformRetry) {
+    /* 未登录不发任何数据请求：登录页由 /api/auth/* 驱动（否则一屏 401 噪音）。 */
+    if (!state.authed) { return Promise.resolve(); }
     /* 先保证平台清单在（左侧栏与跑批下拉要用），再按当前页取数。
        平台清单取失败时只重试一次，避免无限循环。 */
     if (!state.platformsLoaded && !noPlatformRetry) {
@@ -2318,7 +3727,11 @@
     } else if (state.page === 'stats') {
       jobs.push(loadStatistics(), loadStatRuns());
     } else if (state.page === 'account') {
-      jobs.push(loadSettings());
+      jobs.push(loadAccounts(), loadSettings());
+    } else if (state.page === 'users') {
+      /* 刻意不看角色就请求：普通用户走到这里必须拿到后端的 403 并显示出来，
+         这正是「不只靠隐藏」的那一半。 */
+      jobs.push(loadUsers());
     }
     return Promise.all(jobs);
   }
@@ -2339,13 +3752,24 @@
         clearProblemsWithPrefix('scope:');
       }
       syncRunPlatformOptions(true);
+      syncAccountPlatformOptions(true);
       renderChrome();
       return loadPageData(true);
     });
   }
 
   function bindEvents() {
-    $('refresh-btn').addEventListener('click', function () { refreshAll(); });
+    /* 登录 / 退出：401 由请求层切登录页，这里只管表单与手动退出。 */
+    $('login-form').addEventListener('submit', doLogin);
+    $('login-retry').addEventListener('click', function () { startSession(); });
+    $('logout-btn').addEventListener('click', function () { doLogout(); });
+    /* 超管的归属筛选：选中后所有数据请求带 ?owner_id=。 */
+    $('owner-filter').addEventListener('change', onOwnerChange);
+
+    $('refresh-btn').addEventListener('click', function () {
+      if (!state.authed) { startSession(); return; }
+      refreshAll();
+    });
 
     /* 左侧栏下段：功能导航，只用 hash，不触发整页刷新。 */
     $('func-nav').addEventListener('click', function (ev) {
@@ -2406,6 +3830,7 @@
       for (var i = 0; i < list.length; i++) {
         if (list[i].name === name) {
           state.actions.active = list[i];
+          state.actions.prefill = null;
           state.actions.result = null;
           clearToolsError();
           renderTools();
@@ -2416,6 +3841,11 @@
       }
     });
     $('action-form').addEventListener('submit', onActionSubmit);
+
+    /* 用户页（仅超管）：新建 + 行内操作都在渲染时挂好，这里只接表单提交。 */
+    $('user-create-form').addEventListener('submit', onCreateUser);
+    /* 账号页：新增账号表单；每行的操作按钮在渲染时挂好。 */
+    $('account-create-form').addEventListener('submit', onCreateAccount);
 
     /* 页面切走时暂停轮询，切回来再续；关闭/离开时立即清掉定时器，不留悬挂。 */
     document.addEventListener('visibilitychange', function () {
@@ -2443,10 +3873,18 @@
     renderActionPage('courses');
     renderActionPage('assignments');
     renderBank();
+    renderAccounts();
+    renderUsers();
     applyRunConstraints();
+
+    /* 默认停在登录页：有会话才由 enterConsole 打开控制台。 */
+    $('app').hidden = true;
+    $('login-screen').hidden = false;
 
     if (location.protocol === 'file:') {
       /* file:// 直开：不发任何请求，页面不崩，给出人话提示。 */
+      $('login-screen').hidden = true;
+      $('app').hidden = false;
       $('job-empty').textContent = '尚未连接服务：file:// 直开无法访问本地接口。';
       $('platform-nav-empty').hidden = false;
       $('platform-nav-empty').textContent = '尚未连接服务：file:// 直开读不到平台列表。';
@@ -2460,25 +3898,16 @@
       $('tools-gate').textContent = '尚未连接服务：file:// 直开读不到接口。';
       $('settings-empty').hidden = false;
       $('settings-empty').textContent = '尚未连接服务：file:// 直开读不到配置。';
+      $('account-empty').hidden = false;
+      $('account-empty').textContent = '尚未连接服务：file:// 直开读不到账号数据。';
       return;
     }
 
-    /* 先取平台清单（用于校验 hash 里的平台），再取概览与当前页数据。 */
-    loadPlatforms().then(function () {
-      var r2 = parseHash();
-      var plt = sanitizePlatform(r2.platform);
-      if (plt !== state.platform) {
-        state.platform = plt;
-        replaceHash(state.page, plt);
-        renderChrome();
-      }
-      renderPlatformNav();
-      syncRunPlatformOptions(true);
-      applyRunConstraints();
-      return loadPageData(true);
-    });
-    /* 此后只有「有任务在跑」时才存在定时器：每秒拉一次 /api/jobs/<id>，
-       顺带拉一次事件流，任务结束即全部停掉。 */
+    /* 会话探测：GET /api/auth/me —— 有 cookie 就进控制台，401 就停在登录页。
+       进控制台后：先取平台清单（用于校验 hash 里的平台），再取概览与当前页数据；
+       超管额外取一次 /api/users（owner 下拉 + 「归属」列要用户名）。 */
+    $('login-state').textContent = '正在检查登录状态 GET /api/auth/me …';
+    startSession();
   }
 
   if (document.readyState === 'loading') {

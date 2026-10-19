@@ -145,7 +145,7 @@ PYTHONPATH=src python3 -m kedaibiao web            # 默认绑 127.0.0.1:8765
 ```bash
 PYTHONPATH=src python3 -m kedaibiao actions pigai              # 看该平台有哪些动作
 PYTHONPATH=src python3 -m kedaibiao action pigai pending       # 待办作业
-PYTHONPATH=src python3 -m kedaibiao action pigai essay rid=200000004 eid=1000006
+PYTHONPATH=src python3 -m kedaibiao action pigai essay rid=200000001 eid=1000002
 ```
 
 > 这套机制的设计目标是**接入新平台不用改前端**：适配器能力 → 统一「展示信封」
