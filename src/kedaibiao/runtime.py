@@ -185,7 +185,11 @@ class Runtime:
             notifier=self.notifier,
             cookie_file=self.cookie_file,
         )
-        return cls(ctx)
+        adapter = cls(ctx)
+        # 支持「浏览器求解验证码」的适配器需要知道 cookie 落盘位置
+        if hasattr(adapter, "_cookie_file"):
+            adapter._cookie_file = str(self.cookie_file) if self.cookie_file else None
+        return adapter
 
     async def run(self, platform: str, *, credentials: Any = None) -> PipelineReport:
         # 先确认平台存在，再要凭据 —— 否则没注册的平台会先报「缺凭据」，误导排查方向

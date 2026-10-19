@@ -65,6 +65,20 @@ class ItestAuthError(ItestError):
     pass
 
 
+class CaptchaRequired(ItestAuthError):
+    """SSO 要求验证码（code 1506）。
+
+    这不是「密码错」，而是风控要求人机验证 —— 调用方可以退回浏览器求解，
+    不要把这种情况报成凭据问题。
+    """
+
+    def __init__(self, login_url: str = "") -> None:
+        super().__init__(
+            "SSO 要求图片/滑块验证码（code 1506）。需要走浏览器求解后重试。"
+        )
+        self.login_url = login_url
+
+
 @dataclass(slots=True)
 class ExamEntry:
     """考试列表里的一条。"""
@@ -187,6 +201,11 @@ class ItestClient:
         )
         service = _extract_service(resp.url or "")
         if not service:
+            # 没有跳 SSO，说明**已经是登录态**（旧 cookie 还有效）——
+            # 这不是错误，直接当成登录成功返回。
+            if await self.is_logged_in():
+                self.log.info("登录入口直接进了业务页 —— 会话仍然有效，跳过登录")
+                return True
             raise ItestAuthError(
                 f"登录页没有跳转到 SSO（拿到的是 {resp.url!r}）—— "
                 "平台改版或网络异常，无法继续。"
@@ -208,6 +227,9 @@ class ItestClient:
         data = sso_resp.json() if sso_resp.body else {}
         rs = data.get("rs") or {}
         ticket = rs.get("serviceTicket") if isinstance(rs, dict) else None
+        if str(data.get("code")) == "1506":
+            # 风控要验证码：交回上层用浏览器求解，不当作凭据错误
+            raise CaptchaRequired(resp.url or "")
         if str(data.get("code")) != "0" or not ticket:
             raise ItestAuthError(
                 f"SSO 登录失败：code={data.get('code')} msg={data.get('msg')!r}"

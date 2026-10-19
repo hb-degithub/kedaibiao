@@ -38,7 +38,7 @@ import json
 import logging
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -290,3 +290,173 @@ def save_session(session: CaptchaSolution, cookies: list[dict[str, Any]],
     except OSError:
         pass
     return out
+
+
+# --------------------------------------------------------------------------
+# 完整登录：密码 → （需要验证码就解）→ 会话 cookie
+# --------------------------------------------------------------------------
+
+#: 各平台的 SSO 登录入口（都跳到 sso.unipus.cn）
+PLATFORM_ENTRIES = {
+    "unipus": "https://ucontent.unipus.cn/",
+    "pinco": "https://pinco.seewo.com/",
+    "itest": "https://itestcloud.unipus.cn/utest/itest/login",
+}
+
+
+@dataclass(slots=True)
+class SsoLoginResult:
+    ok: bool
+    cookies: list[dict[str, Any]] = field(default_factory=list)
+    solution: CaptchaSolution | None = None
+    message: str = ""
+    needed_captcha: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "needed_captcha": self.needed_captcha,
+            "message": self.message,
+            "cookie_count": len(self.cookies),
+            "cookie_names": [c.get("name") for c in self.cookies],
+            "captcha": self.solution.to_dict() if self.solution else None,
+        }
+
+
+def login_via_browser(
+    *,
+    platform: str,
+    username: str,
+    password: str,
+    service: str = "",
+    cookie_file: str | Path | None = None,
+    on_event: Callable[[str], None] | None = None,
+    wait_after: float = 8.0,
+) -> SsoLoginResult:
+    """在浏览器里完成 SSO 登录，返回会话 cookie。
+
+    两条路径自动选择：
+
+    1. **风控已放行**（解过一次验证码之后常见）→ 直接填表登录，不弹验证码；
+    2. **弹了验证码** → 抓页面那一次 ``get.php`` → 求解 → 把
+       ``{challenge, validate, seccode}`` 注入 ``cip/login``。
+
+    步骤 2 的登录请求**不走浏览器**（纯 HTTP），因为字段含义已经实测确认；
+    浏览器只负责「触发验证码」和「把会话带起来」。
+    """
+    import asyncio
+    import json as _json
+
+    from kedaibiao.browser.cdp import Browser, CDPError, find_browser
+    from kedaibiao.net.http import HttpClient, UrllibTransport
+    from kedaibiao.platforms.unipus.crypto import encrypt_login_field
+
+    def emit(message: str) -> None:
+        if on_event is not None:
+            try:
+                on_event(message)
+            except Exception:  # noqa: BLE001
+                pass
+
+    entry = PLATFORM_ENTRIES.get(platform, "")
+    if not entry:
+        return SsoLoginResult(ok=False, message=f"未知平台 {platform!r}（没有登录入口）")
+    service = service or entry
+    executable = find_browser()
+    if not executable:
+        return SsoLoginResult(ok=False, message="找不到 Chrome/Chromium")
+
+    browser = Browser(executable=executable, timeout=40)
+    result = SsoLoginResult(ok=False)
+    try:
+        browser.start()
+        emit("打开 SSO 登录页…")
+        browser.enable_network()
+        browser.navigate(entry)
+        time.sleep(4.0)
+
+        # 先直接填表点登录：风控放行的话根本不会弹验证码
+        browser.evaluate(_FILL_AND_SUBMIT % (_json.dumps(username), _json.dumps(password)))
+        emit("已提交登录，等待结果…")
+        landed = ""
+        for _ in range(int(wait_after / 2) + 1):
+            time.sleep(2.0)
+            try:
+                landed = str(browser.evaluate("location.href"))
+            except CDPError:
+                break
+            if "sso/login" not in landed:
+                break
+
+        if "sso/login" not in landed:
+            emit(f"直接登录成功（{landed[:60]}）")
+            result.ok = True
+            result.cookies = [c.to_dict() for c in browser.cookies()]
+            if cookie_file:
+                save_session(None, result.cookies, cookie_file)  # type: ignore[arg-type]
+            return result
+
+        # 还停在登录页 → 大概率弹了验证码，抓素材解一次
+        emit("仍在登录页 —— 抓取验证码素材…")
+        captured = browser.capture_response("get.php", timeout=20, settle=4)
+        if not captured.get("body") or '"slice"' not in captured["body"]:
+            result.message = (
+                "停在登录页但没抓到极验素材。可能不是验证码问题"
+                "（账号密码错、或被限流），或页面结构变了。"
+            )
+            return result
+
+        result.needed_captcha = True
+        emit("求解中…")
+        solution = solution_from_capture(captured, referer=landed)
+        result.solution = solution
+        emit(f"求解成功（缺口 {solution.distance}px）")
+
+        # 纯 HTTP 登录（字段已实测确认）
+        async def do_login() -> Any:
+            transport = UrllibTransport()
+            http = HttpClient(transport, timeout=45)
+            payload = {
+                "service": service,
+                "username": encrypt_login_field(username),
+                "password": encrypt_login_field(password),
+                **solution.login_fields(),
+            }
+            response = await http.request(
+                "POST", "https://sso.unipus.cn/sso/0.1/sso/cip/login",
+                headers={"Content-Type": "application/json", "Referer": landed},
+                body=_json.dumps(payload).encode(),
+            )
+            return response, transport
+
+        response, transport = asyncio.run(do_login())
+        data = {}
+        try:
+            data = response.json()
+        except Exception:  # noqa: BLE001
+            pass
+        if str(data.get("code")) != "0":
+            result.message = f"注入验证码后登录仍被拒：{response.text()[:160]}"
+            return result
+
+        emit("登录成功，取会话 cookie…")
+        # 浏览器那边也把会话带起来（有些平台要额外跳一次）
+        try:
+            browser.navigate(service)
+            time.sleep(3.0)
+        except CDPError:
+            pass
+        result.ok = True
+        result.cookies = [c.to_dict() for c in browser.cookies()]
+        if cookie_file:
+            save_session(None, result.cookies, cookie_file)  # type: ignore[arg-type]
+        result.message = "登录成功（验证码已自动求解）"
+        return result
+    except (CDPError, CaptchaSolutionError, SsoLoginResult) as exc:
+        result.message = f"{type(exc).__name__}: {exc}"
+        return result
+    except Exception as exc:  # noqa: BLE001
+        result.message = f"{type(exc).__name__}: {exc}"
+        return result
+    finally:
+        browser.close()

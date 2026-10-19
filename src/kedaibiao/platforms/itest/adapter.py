@@ -63,6 +63,8 @@ class ItestAdapter(PlatformAdapter):
     def __init__(self, ctx: AdapterContext | None = None, *, timeout: float | None = None) -> None:
         super().__init__(ctx)
         self._client: ItestClient | None = None
+        #: 浏览器求解成功后把 cookie 落在这里（由运行时注入）
+        self._cookie_file: str | None = None
         self._timeout = timeout
         self._entry_cache: dict[str, ExamEntry] = {}
 
@@ -80,7 +82,47 @@ class ItestAdapter(PlatformAdapter):
     # -- 生命周期 ---------------------------------------------------------
 
     async def login(self, credentials: Credentials) -> bool:
-        return await self.client().login(credentials.username, credentials.password)
+        """登录。SSO 要验证码时自动退回浏览器求解。
+
+        分两种情况：
+        - 风控没触发 → 纯 HTTP 登录，快；
+        - 风控要验证码（code 1506）→ 用浏览器触发 + 求解 + 注入登录，
+          成功后把会话 cookie 落盘（与手动登录等价）。
+        """
+        from kedaibiao.platforms.itest.client import CaptchaRequired
+
+        try:
+            return await self.client().login(credentials.username, credentials.password)
+        except CaptchaRequired:
+            self.log.info("SSO 要求验证码，退回浏览器求解")
+
+        from kedaibiao.platforms.unipus.geetest.browser import login_via_browser
+
+        result = login_via_browser(
+            platform="itest",
+            username=credentials.username,
+            password=credentials.password,
+            cookie_file=self._cookie_file,
+            on_event=self.log.info,
+        )
+        if not result.ok:
+            self.log.warning("浏览器求解登录失败: %s", result.message)
+            return False
+        self._adopt_cookies(result.cookies)
+        return True
+
+    def _adopt_cookies(self, cookies: list[dict[str, Any]]) -> None:
+        """把浏览器拿到的 cookie 灌进当前 HTTP 会话，后续请求立刻可用。"""
+        jar = getattr(self.ctx.client(), "transport", None)
+        store = getattr(jar, "cookies", None)
+        if store is None:
+            return
+        for item in cookies:
+            try:
+                store.set(item["name"], item.get("value", ""),
+                          domain=item.get("domain", ""), path=item.get("path") or "/")
+            except Exception:  # noqa: BLE001 - 单个 cookie 失败不影响其它
+                continue
 
     async def is_logged_in(self) -> bool:
         return await self.client().is_logged_in()
