@@ -130,3 +130,81 @@ class TestResponse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAdapterSubmit(unittest.IsolatedAsyncioTestCase):
+    """适配器层 submit 的接线测试。
+
+    回归背景：这两个 bug 让第一次真实提交**发出去了但结果构造失败**——
+    ``client`` 是 property 却被当方法调（TypeError）、``SubmissionResult``
+    漏导入（NameError）。只测纯函数构造器抓不到这类问题，必须跑一遍方法本体。
+    """
+
+    def _adapter(self):
+        from kedaibiao.net.http import HttpClient
+        from kedaibiao.platforms.base import AdapterContext
+        from kedaibiao.platforms.pigai.adapter import PigaiAdapter
+
+        calls: list[dict] = []
+
+        class FakeTransport:
+            async def request(self, method, url, *, headers=None, body=None, timeout=15.0):
+                from kedaibiao.net.http import Response
+
+                calls.append({"method": method, "url": url, "body": body})
+                if "a=write" in url:
+                    # 写作页：带页面变量
+                    return Response(
+                        status=200, url=url,
+                        body=b"<script>_rid='1'; _eid=''; _fromCode='377778'; _engine='';</script>",
+                    )
+                if "a=postSave" in url:
+                    return Response(status=200, url=url, body=b"eid=999888")
+                return Response(status=200, url=url, body=b"{}")
+
+        adapter = PigaiAdapter(AdapterContext(http=HttpClient(FakeTransport())))
+        return adapter, calls
+
+    async def test_submit_happy_path(self) -> None:
+        from kedaibiao.core.models import Answer, Assignment
+
+        adapter, calls = self._adapter()
+        assignment = Assignment(remote_id="1000001", title="我的作文")
+        result = await adapter.submit(
+            assignment, [Answer(question=None, text="An essay about AI.", choices=[])]  # type: ignore[arg-type]
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.raw["eid"], "999888")
+
+        posts = [c for c in calls if c["method"] == "POST"]
+        self.assertEqual(len(posts), 1, "只应发一次提交请求")
+        self.assertIn("a=postSave", posts[0]["url"])
+        body = posts[0]["body"].decode()
+        self.assertIn("utContent", body)
+        self.assertIn("rid=1000001", body)
+        # 正文按单次编码：解码两次能还原
+        import urllib.parse
+        once = urllib.parse.parse_qs(body)["utContent"][0]
+        self.assertEqual(urllib.parse.unquote(once), "An essay about AI.")
+
+    async def test_submit_requires_text(self) -> None:
+        from kedaibiao.core.models import Assignment
+
+        adapter, calls = self._adapter()
+        with self.assertRaises(Exception):
+            await adapter.submit(Assignment(remote_id="1", title="t"), [])
+        self.assertEqual([c for c in calls if c["method"] == "POST"], [],
+                         "没正文时不该发任何写请求")
+
+    async def test_gate_closed_blocks_everything(self) -> None:
+        from kedaibiao.core.models import Answer, Assignment
+        from kedaibiao.platforms.base import NotSupportedError
+
+        adapter, calls = self._adapter()
+        adapter.submit_payload_confirmed = False
+        with self.assertRaises(NotSupportedError):
+            await adapter.submit(
+                Assignment(remote_id="1", title="t"),
+                [Answer(question=None, text="x")],  # type: ignore[arg-type]
+            )
+        self.assertEqual(calls, [], "闸门关闭时一个请求都不该发")

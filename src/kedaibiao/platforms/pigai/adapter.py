@@ -43,7 +43,14 @@ import re
 from datetime import datetime
 from urllib.parse import urlsplit, urljoin
 
-from kedaibiao.core.models import Assignment, Course, Credentials, TaskKind
+from kedaibiao.core.models import (
+    Answer,
+    Assignment,
+    Course,
+    Credentials,
+    SubmissionResult,
+    TaskKind,
+)
 from kedaibiao.platforms.base import (
     AdapterContext,
     Capabilities,
@@ -286,7 +293,7 @@ class PigaiAdapter(PlatformAdapter):
                 "题干/选项那套不适用。"
             )
 
-        page = await self.client().get(
+        page = await self.client.get(
             f"/index.php?c=v2&a=write&rid={assignment.remote_id}"
         )
         variables = _write_page_vars(page)
