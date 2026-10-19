@@ -1,0 +1,62 @@
+{
+  "statusCode": 0,
+  "data": {
+    "courseMaterials": [
+      {
+        "materialId": "1322029806386077696",
+        "materialName": "示例材料-01.pptx",
+        "materialSize": 22267856,
+        "updateTime": 1788350756000,
+        "materialSource": 0,
+        "learningRatio": 0,
+        "media": {
+          "mediaId": "1322029806386077696",
+          "resourceId": "1322029806344134656",
+          "resId": "dc8a8e2608804510abe0c5882ea08810",
+          "type": 4,
+          "fileName": "示例材料-01.pptx",
+          "fileSize": 22267856,
+          "downloadUrl": "https://pinco.seewo.com/server-main/api/resource/1322029806344134656/url?",
+          "thumbnailUrl": ""
+        }
+      },
+      {
+        "materialId": "1322029819315363840",
+        "materialName": "示例材料-02.pptx",
+        "materialSize": 19092894,
+        "updateTime": 1788350759000,
+        "materialSource": 0,
+        "learningRatio": 0.5,
+        "media": {
+          "mediaId": "1322029819315363840",
+          "resourceId": "1322029819269226496",
+          "resId": "9b1aef4ee4a640d4aba6eb0bccbfec6e",
+          "type": 4,
+          "fileName": "示例材料-02.pptx",
+          "fileSize": 19092894,
+          "downloadUrl": "https://pinco.seewo.com/server-main/api/resource/1322029819269226496/url?",
+          "thumbnailUrl": ""
+        }
+      },
+      {
+        "materialId": "1322222601630986240",
+        "materialName": "示例材料-电子书.pdf",
+        "materialSize": 77930675,
+        "updateTime": 1788396722000,
+        "materialSource": 0,
+        "learningRatio": 1,
+        "media": {
+          "mediaId": "1322222601630986240",
+          "resourceId": "1322222601584848896",
+          "resId": "74fb4ed8885440aea0045cecbb39aa43",
+          "type": 8,
+          "fileName": "示例材料-电子书.pdf",
+          "fileSize": 77930675,
+          "downloadUrl": "https://pinco.seewo.com/server-main/api/resource/1322222601584848896/url?",
+          "thumbnailUrl": ""
+        }
+      }
+    ]
+  },
+  "message": "ok"
+}

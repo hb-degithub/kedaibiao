@@ -1,0 +1,26 @@
+{
+  "statusCode": 0,
+  "data": {
+    "resourceTypeDownloadable": true,
+    "materialSource": 0,
+    "media": {
+      "downloadUrl": "https://pinco.seewo.com/server-main/api/resource/1322029806344134656/url?",
+      "resourceId": "1322029806344134656",
+      "resId": "dc8a8e2608804510abe0c5882ea08810",
+      "type": 4,
+      "fileName": "示例材料-01.pptx",
+      "fileSize": 22267856,
+      "mediaId": "1322029806386077696"
+    },
+    "chapterDirectoryMaterialId": "1322029806386077696",
+    "chapterDirectoryNodeId": "1322029746471198720",
+    "materialId": "1322029806344134656",
+    "downloadable": true,
+    "countLearningProgress": true,
+    "viewed": false,
+    "materialName": "示例材料-01.pptx",
+    "updateTime": 1788350756000,
+    "learningRatio": 0
+  },
+  "message": "ok"
+}

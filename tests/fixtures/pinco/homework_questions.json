@@ -1,0 +1,88 @@
+{
+  "statusCode": 0,
+  "data": {
+    "deadline": 1790265540000,
+    "expired": true,
+    "corrected": false,
+    "submitted": false,
+    "publishStandardSolution": false,
+    "shortAnswers": [
+      {
+        "questionId": "1328382733296533512",
+        "standardScore": 10,
+        "content": "<p>右图所示电路，试用节点电压法求得该电路的支路电流。</p><p><img id=\"rich-img-af520340985146b997c6d6efae035d32\" class=\"rich-img\" src=\"https://cstore-public.seewo.com/seewo-pinco/example-image-a\" style=\"min-width: 86px\"/></p>",
+        "publishStandardSolution": false,
+        "labels": [],
+        "answer": {
+          "answerId": "0",
+          "score": -1,
+          "review": "",
+          "content": "",
+          "submitted": false,
+          "attachments": []
+        }
+      },
+      {
+        "questionId": "1328382733296533513",
+        "standardScore": 10,
+        "content": "<p>&nbsp;已知某正弦交流电的有效值为50A，频率为100Hz，初相位为60，另一正弦交流电&nbsp;<img id=\"rich-formula-e512d92e06164c05944925a4f24cfe35\" class=\"rich-formula\" src=\"https://cstore-public.seewo.com/seewo-pinco/example-formula\" style=\"min-width: 177px\"/></p><p><br/></p>",
+        "publishStandardSolution": false,
+        "labels": [],
+        "answer": {
+          "answerId": "0",
+          "score": -1,
+          "review": "",
+          "content": "",
+          "submitted": false,
+          "attachments": []
+        }
+      },
+      {
+        "questionId": "1328382733296533514",
+        "standardScore": 20,
+        "content": "<p>请上传你的实验接线照片，并说明测量步骤。</p>",
+        "publishStandardSolution": false,
+        "labels": ["作图题"],
+        "answer": {
+          "answerId": "0",
+          "score": -1,
+          "review": "",
+          "content": "",
+          "submitted": true,
+          "attachments": [
+            {"fileName": "wiring.png", "fileSize": 20480, "url": "https://cstore-public.seewo.com/seewo-pinco/example-upload"}
+          ]
+        }
+      }
+    ],
+    "singleChoices": [
+      {
+        "questionId": "1328382733296533504",
+        "standardScore": 10,
+        "content": "<p>已知i1(t)=9sin314tA,i2(t)=6sin(314t-60°)A，则i1(t)与i2(t)的相位关系是（）?</p>",
+        "publishStandardSolution": false,
+        "optionItems": [
+          {"option": "A", "content": "<p>i1(t)滞后i2(t)60°<br/></p>"},
+          {"option": "B", "content": "<p>i1(t)超前i2(t)60°<br/></p>"},
+          {"option": "C", "content": "<p>i1(t)和i2(t)同相<br/></p>"},
+          {"option": "D", "content": "<p>i1(t)超前i2(t)-60°</p>"}
+        ],
+        "labels": [],
+        "answer": {"score": -1, "submitted": false, "solution": ""}
+      },
+      {
+        "questionId": "1328382733296533507",
+        "standardScore": 10,
+        "content": "<p>已知正弦电压的频率为50Hz，有效值相量表示为<img id=\"rich-img-1d284b65afa0441bb32e6ebc436d4308\" class=\"rich-img\" src=\"https://cstore-public.seewo.com/seewo-pinco/example-image-b\"/>，则其瞬时值表达式为（ &nbsp; ）？</p>",
+        "publishStandardSolution": false,
+        "optionItems": [
+          {"option": "A", "content": "<p><img class=\"rich-formula\" src=\"https://cstore-public.seewo.com/seewo-pinco/example-formula-a\"/></p>"},
+          {"option": "B", "content": "<p><img class=\"rich-formula\" src=\"https://cstore-public.seewo.com/seewo-pinco/example-formula-b\"/></p>"}
+        ],
+        "labels": [],
+        "answer": {"score": -1, "submitted": false, "solution": ""}
+      }
+    ]
+  },
+  "message": "ok"
+}

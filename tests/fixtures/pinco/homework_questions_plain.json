@@ -1,0 +1,43 @@
+{
+  "statusCode": 0,
+  "data": {
+    "deadline": 1795265540000,
+    "expired": false,
+    "corrected": false,
+    "submitted": false,
+    "publishStandardSolution": false,
+    "shortAnswers": [
+      {
+        "questionId": "1400000000000000001",
+        "standardScore": 10,
+        "content": "<p>请说明节点电压法的适用条件。</p>",
+        "publishStandardSolution": false,
+        "labels": [],
+        "answer": {
+          "answerId": "0",
+          "score": -1,
+          "review": "",
+          "content": "",
+          "submitted": false,
+          "attachments": []
+        }
+      }
+    ],
+    "singleChoices": [
+      {
+        "questionId": "1400000000000000002",
+        "standardScore": 10,
+        "content": "<p>下列哪项属于结构化数据？</p>",
+        "publishStandardSolution": false,
+        "optionItems": [
+          {"option": "A", "content": "<p>关系表</p>"},
+          {"option": "B", "content": "<p>图片</p>"},
+          {"option": "C", "content": "<p>音频</p>"}
+        ],
+        "labels": [],
+        "answer": {"score": -1, "submitted": false, "solution": ""}
+      }
+    ]
+  },
+  "message": "ok"
+}

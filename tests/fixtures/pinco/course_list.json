@@ -1,0 +1,31 @@
+{
+  "statusCode": 0,
+  "data": {
+    "content": [
+      {
+        "courseName": "示例课程 A",
+        "courseType": 1,
+        "courseId": "1326193414086569984",
+        "courseClassCount": 1,
+        "courseCover": "",
+        "creatorUser": {"creatorId": "1001", "creatorName": "教师甲"},
+        "createTime": 1789000000000,
+        "learnInfo": {"transactionCount": 3, "joinTime": 1789000000001},
+        "teach": false
+      },
+      {
+        "courseName": "示例课程 B",
+        "courseType": 2,
+        "courseId": "1321128857631563776",
+        "courseClassCount": 2,
+        "courseCover": "",
+        "creatorUser": {"creatorId": "1002", "creatorName": "教师乙"},
+        "createTime": 1789100000000,
+        "learnInfo": {"transactionCount": 0, "joinTime": 1789100000001},
+        "teach": false
+      }
+    ],
+    "size": 24
+  },
+  "message": "ok"
+}

@@ -1,0 +1,23 @@
+{
+  "statusCode": 0,
+  "data": {
+    "title": "示例作业-电路阶段性测试",
+    "deadline": 1790265540000,
+    "content": "",
+    "standardScore": 80,
+    "questionTotal": 10,
+    "sendTime": 1789865425000,
+    "submitted": false,
+    "expired": true,
+    "corrected": false,
+    "canSubmitted": false,
+    "canRedo": false,
+    "rejected": false,
+    "attachments": [],
+    "course": {
+      "courseName": "示例课程 B",
+      "courseId": "1321128857631563776"
+    }
+  },
+  "message": "ok"
+}

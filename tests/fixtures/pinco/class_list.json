@@ -1,0 +1,26 @@
+{
+  "statusCode": 0,
+  "data": [
+    {
+      "creatorId": "1001",
+      "creatorName": "教师甲",
+      "classId": "2001",
+      "className": "示例班级 A",
+      "classNamePinyin": "shilibanjia",
+      "studentCnt": 42,
+      "joinTime": 1789000000002,
+      "lastClassroomTime": 1789900000000
+    },
+    {
+      "creatorId": "1002",
+      "creatorName": "教师乙",
+      "classId": "2002",
+      "className": "示例班级 B",
+      "classNamePinyin": "shilibanjib",
+      "studentCnt": 38,
+      "joinTime": 1789100000002,
+      "lastClassroomTime": 1789910000000
+    }
+  ],
+  "message": "ok"
+}

@@ -1,0 +1,48 @@
+{
+  "statusCode": 0,
+  "data": {
+    "content": [
+      {
+        "title": "示例作业-已提交",
+        "content": "",
+        "studentHomeworkId": "1338910109598187586",
+        "submitted": true,
+        "expired": false,
+        "corrected": false,
+        "rejected": false,
+        "canRedo": false,
+        "canSubmitted": false,
+        "createTime": 1792375333000,
+        "courseId": "1326193414086569984"
+      },
+      {
+        "title": "示例作业-可作答",
+        "content": "请在规定时间内完成。",
+        "studentHomeworkId": "1326226616335966208",
+        "submitted": false,
+        "expired": false,
+        "corrected": false,
+        "rejected": false,
+        "canRedo": true,
+        "canSubmitted": true,
+        "createTime": 1789345152000,
+        "courseId": "1326193414086569984"
+      },
+      {
+        "title": "示例作业-已过期未提交",
+        "content": "",
+        "studentHomeworkId": "1328382789489344565",
+        "submitted": false,
+        "expired": true,
+        "corrected": false,
+        "rejected": false,
+        "canRedo": false,
+        "canSubmitted": false,
+        "createTime": 1789065425000,
+        "courseId": "1321128857631563776"
+      }
+    ],
+    "size": 3
+  },
+  "message": "ok"
+}
