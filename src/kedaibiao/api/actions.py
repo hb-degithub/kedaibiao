@@ -706,6 +706,9 @@ def _itest_fill_blocking(
         }
         if submit:
             result["submitted"] = runner.submit()
+            result["shot_after"] = runner.save_screenshot(
+                _itest_shot_dir(adapter) / f"submitted-{exam_id}.png"
+            )
         return result
 
 
@@ -835,20 +838,24 @@ async def _itest_submit(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - 查询失败不影响交卷结果本身
         log.debug("交卷后复核考试列表失败", exc_info=True)
 
+    server_ok = finish in (1, "1")
+    title = "已交卷" if server_ok else (
+        "已交卷（服务端状态还没刷新）" if submitted.get("ok") else "交卷未确认"
+    )
     fields = [
         {"label": "考试号", "value": exam_id},
+        {"label": "服务端 finish", "value": "已交卷（finish=1）" if server_ok else f"{finish}"},
         {"label": "页面证据", "value": submitted.get("text", "")[:120] or "（没有识别到成功提示）"},
-        {"label": "服务端 finish", "value": "已交卷" if finish in (1, "1") else f"{finish}"},
         {"label": "填表", "value": json.dumps(data["filled"], ensure_ascii=False)[:120]},
         {"label": "核验", "value": f"不符 {checked.get('total', 0)} 处"},
-        {"label": "截图", "value": str(data["shot"])},
+        {"label": "交卷后截图", "value": str(data.get("shot_after") or data["shot"])},
     ]
     steps = submitted.get("steps", [])
     return detail(
         platform=name,
         action="submit",
         label="交卷结果",
-        title=f"{'已交卷' if submitted.get('ok') else '交卷未确认'} · {exam_id}",
+        title=f"{title} · {exam_id}",
         note=(
             "交卷是不可逆操作。页面出现成功提示且服务端 finish 变成 1 才算真的交上；"
             "两者不一致时以服务端为准，并人工看一眼考试列表。"

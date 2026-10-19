@@ -485,6 +485,12 @@ python3 scripts/itest_exam.py paper <ksdId>   # 浏览器进窗口 → 设备检
    考试列表的 `finish`；两者不一致时以 `finish` 为准。
 7. 截图落在 `data/itest/`（已被 `.gitignore` 排除），只留本地排查用。
 
+**交卷实测（2026-10-19，B2U5）：** 作答页左侧的「交卷」是 `<a class="tijiao">`，
+点它 → 确认弹层点「确定」→ 考试列表里 `finish` 从 0 变 1，即真的交上了。
+注意**页面不一定出现「交卷成功」字样**（本次就没有），所以动作层以**服务端
+`finish`** 为准，页面文字只作辅助证据；交卷后 `a.tijiao` 会消失，也可用作
+「已交」的信号。
+
 ## 4. 待实测清单（需登录态，按优先级）
 
 | # | 目标 | 要确认的东西 | 状态 |
@@ -495,7 +501,7 @@ python3 scripts/itest_exam.py paper <ksdId>   # 浏览器进窗口 → 设备检
 | 4 | 答题页 | `url + "&returnUrl=" + 列表页` 打开；`$GLOBAL`（sppid/dataType=8/dataUser/openId）| **已核验** |
 | 5 | 答题端读取 | `ksInfo`、`exam/wait`、`load`（`D_HTML` 题号 `/ C_HTML` 题干+选项 `/ UIK`） | **已核验（浏览器）** |
 | 6 | 自动保存 | `submit` + `act=cache` 的响应；断线续答（`load` 返回已答） | 待测（写操作） |
-| 7 | 交卷 | `act=save` 的响应；`minSubmitLimit` / `screenLimit` 命中时的返回 | 待测（写操作，人工确认后才做） |
+| 7 | 交卷 | 点 `a.tijiao` → 确认 → 列表 `finish=1`；`act=save` 响应体未单独抓 | **已核验（浏览器，2026-10-19）** |
 | 8 | 确认页/设备检测 | 信息确认 → 键盘/耳机检测 → `examToken` → `考试冲突` → `solveUikConflict` → `load`；下发 `envTest*`/`iTMExam` | **已核验（浏览器交互）** |
 | 9 | 班级 | 班级列表、授权码加入、考生名单（只读） | 待测 |
 | 10 | 训练族 | 诊后 / 班级 / 模考训练的列表与题目接口 | 待测（低优先） |

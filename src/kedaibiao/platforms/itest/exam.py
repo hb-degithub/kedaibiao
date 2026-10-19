@@ -60,7 +60,7 @@ _START_LABELS = (r"/^(开始考试|开始答题|继续作答|继续考试)$/",)
 #: 交卷按钮
 _SUBMIT_LABELS = (r"/^(交卷|提交试卷|提交答卷)$/",)
 #: 交卷后的确认
-_CONFIRM_LABELS = (r"/^(确定|确认|确认交卷|交卷)$/",)
+_CONFIRM_LABELS = (r"/^(确定|确认|确认交卷|确定交卷)$/",)
 #: 交卷成功的页面证据
 _DONE_WORDS = ("交卷成功", "已交卷", "提交成功", "考试已结束", "成绩", "得分")
 
@@ -345,7 +345,9 @@ class ExamRunner:
         """
         self.browser.dialogs_seen.clear()
         steps: list[Step] = []
-        clicked = self._click_first(_SUBMIT_LABELS, wait=3.0)
+        # 作答页的交卷是左侧固定的 <a class="tijiao">，按 class 点最稳（文字匹配会撞上
+        # 弹层里的「确认交卷」）
+        clicked = self._click_submit_button() or self._click_first(_SUBMIT_LABELS, wait=3.0)
         if not clicked:
             raise ExamFlowError("页面上没找到「交卷」按钮", stage="submit")
         steps.append(Step("点交卷", True, clicked))
@@ -355,8 +357,13 @@ class ExamRunner:
             hit = self._click_first(_CONFIRM_LABELS, wait=2.5)
             if hit:
                 steps.append(Step("确认交卷", True, hit))
-            text = self._body_text(200)
-            if any(word in text for word in _DONE_WORDS):
+            text = self._body_text(240)
+            done = any(word in text for word in _DONE_WORDS)
+            # 交卷后左侧的「交卷」按钮会消失 —— 这也是「已经交上」的证据，
+            # 不用等满超时（实测交完页面不一定出现「交卷成功」字样）
+            if not done and self.browser.evaluate(_FIND_TIJIAO_JS) is None:
+                done = True
+            if done:
                 return {
                     "ok": True, "steps": [s.to_dict() for s in steps],
                     "text": text, "dialogs": list(self.browser.dialogs_seen),
@@ -461,6 +468,27 @@ class ExamRunner:
         except (CDPError, TypeError, ValueError):
             return 0
 
+    def _click_submit_button(self) -> str | None:
+        """点作答页左侧的「交卷」（``a.tijiao``）。找不到返回 None。"""
+        probe = self.browser.evaluate(_FIND_TIJIAO_JS)
+        if not probe:
+            return None
+        try:
+            box = json.loads(str(probe))
+        except json.JSONDecodeError:
+            return None
+        x, y = float(box.get("x", 0)), float(box.get("y", 0))
+        try:
+            self.browser.mouse("pressed", x, y)
+            time.sleep(0.12)
+            self.browser.mouse("released", x, y)
+        except CDPError:
+            log.debug("鼠标点击交卷失败，退回 JS 点击")
+        time.sleep(0.5)
+        self.browser.evaluate(_CLICK_TIJIAO_JS)
+        time.sleep(1.5)
+        return str(box.get("t") or "交卷")
+
     def _click_first(self, patterns: tuple[str, ...], *, wait: float = 5.0) -> str | None:
         for pattern in patterns:
             hit = self._click(pattern, wait=wait)
@@ -531,6 +559,22 @@ _ENTER_CARD_JS = r"""(() => {
   if (!btn) return 'no-btn';
   btn.click();
   return 'clicked';
+})()"""
+
+#: 作答页左侧的「交卷」按钮（class="tijiao"）
+_FIND_TIJIAO_JS = r"""(() => {
+  const el = document.querySelector('a.tijiao');
+  if (!el || !el.offsetParent) return null;
+  const r = el.getBoundingClientRect();
+  return JSON.stringify({x: r.x + r.width / 2, y: r.y + r.height / 2,
+                         t: (el.innerText || '交卷').trim().slice(0, 16)});
+})()"""
+
+_CLICK_TIJIAO_JS = r"""(() => {
+  const el = document.querySelector('a.tijiao');
+  if (!el) return false;
+  el.click();
+  return true;
 })()"""
 
 _FIND_JS = r"""(() => {
