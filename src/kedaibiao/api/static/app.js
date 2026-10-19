@@ -173,6 +173,7 @@
       error: '',             // 后端中文 error（经 describeError 补过「接下来做什么」）
       errorKind: '',
       notSupported: '',      // 501 not_supported 时后端的原文
+      logTimer: null,        // 抽屉里执行日志的轮询计时器
       detail: null,          // POST /api/assignments/detail 的信封
       plan: null,            // POST /api/assignments/submit confirm=false 的原始响应
       planRows: null,        // 从 plan 里解析出的「每题答案 + 置信度」（解析不出就是 null）
@@ -2016,6 +2017,7 @@
     var d = state.drawer;
     if (!d.open) { return; }
     graderStopPolling();
+    drawerLogStop();
     var host = $('grader-host');
     if (host && host.parentNode) { host.parentNode.removeChild(host); }
     d.open = false;
@@ -2094,6 +2096,8 @@
         /* 标题已经在抽屉头上（还有平台 / 任务号 / kind 徽标），这里不再重复一遍。 */
         renderEnvelope(box, d.detail, { noTitle: true, emptyText: '详情响应里没有可渲染的内容。' });
       }
+      /* 这个平台的执行日志（动作/跑批/评分循环/自动化都在这），跟详情放在一起看 */
+      if (d.platform) { drawerPlatformLog(box, d.platform); }
       return;
     }
 
@@ -2122,6 +2126,60 @@
     }
   }
 
+
+  /* ===================== 抽屉里的平台执行日志 ===================== */
+
+  function drawerLogStop() {
+    var d = state.drawer;
+    if (d.logTimer) { clearInterval(d.logTimer); d.logTimer = null; }
+  }
+
+  function drawerPlatformLog(box, plt) {
+    var det = el('details', 'drawer-plog');
+    det.open = true;
+    var summary = el('summary', '', '执行日志 · ' + platformLabel(plt));
+    det.appendChild(summary);
+
+    var pre = el('pre', 'auto-log');
+    pre.id = 'drawer-plog-log';
+    det.appendChild(pre);
+
+    var foot = el('div', 'action-submit');
+    var btn = el('button', 'btn btn-sm', '刷新');
+    btn.type = 'button';
+    btn.addEventListener('click', function () { fetchDrawerLog(plt); });
+    foot.appendChild(btn);
+    var hint = el('span', 'field-hint', '每 2.5 秒自动刷新');
+    hint.id = 'drawer-plog-hint';
+    foot.appendChild(hint);
+    det.appendChild(foot);
+
+    box.appendChild(det);
+    fetchDrawerLog(plt);
+    drawerLogStop();
+    state.drawer.logTimer = setInterval(function () {
+      if (!state.drawer.open) { drawerLogStop(); return; }
+      fetchDrawerLog(plt);
+    }, 2500);
+  }
+
+  function fetchDrawerLog(plt) {
+    var pre = $('drawer-plog-log');
+    if (!pre) { return; }
+    api('/api/platforms/' + encodeURIComponent(plt) + '/logs?limit=80')
+      .then(function (body) {
+        var node = $('drawer-plog-log');
+        if (!node) { return; }
+        paintLog(node, (body && body.logs) || []);
+        var hint = $('drawer-plog-hint');
+        if (hint) {
+          hint.textContent = '共 ' + ((body && body.total) || 0) + ' 行（显示最近 80 行）';
+        }
+      })
+      .catch(function (e) {
+        paintLog(pre, [{ at: '', level: 'error', text: '加载失败：' + describeError(e) }]);
+      });
+  }
 
   /* ===================== 评分循环（批改网） ===================== */
 
