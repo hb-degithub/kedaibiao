@@ -341,6 +341,47 @@ class Browser:
             time.sleep(0.1)
         raise CDPError("没有可用的页面目标")
 
+    def list_targets(self) -> list[dict[str, Any]]:
+        """列出所有目标（需要先 ``Target.setDiscoverTargets``）。"""
+        return self.call("Target.getTargets").get("targetInfos", [])
+
+    def switch_to_target(self, url_contains: str, *, timeout: float = 30.0) -> bool:
+        """把连接切到 URL 含指定片段的 **page** 目标（等它出现）。
+
+        必须有这个方法的原因：iTEST 的「开始考试」在**新标签页**里打开作答页。
+        不切过去的话，当前连接还挂在旧的 waiting 页上 —— 页面永远不变，
+        看起来就像「按钮点了没反应」，其实点击早就成功了（实测踩了很久）。
+
+        切完会把旧 WebSocket 关掉并重置消息序号，避免两页消息串味。
+        """
+        endpoint = f"http://127.0.0.1:{self.port}/json/list"
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(endpoint, timeout=2) as resp:  # noqa: S310
+                    targets = json.loads(resp.read())
+            except OSError:
+                targets = []
+            for target in targets:
+                if (target.get("type") == "page"
+                        and target.get("webSocketDebuggerUrl")
+                        and url_contains in str(target.get("url") or "")):
+                    self._drop_socket()
+                    path = target["webSocketDebuggerUrl"].split(
+                        f"127.0.0.1:{self.port}", 1)[-1]
+                    self._ws = WebSocket("127.0.0.1", self.port, path)
+                    return True
+            time.sleep(0.3)
+        return False
+
+    def _drop_socket(self) -> None:
+        if self._ws is not None:
+            try:
+                self._ws.close()
+            except Exception:  # noqa: BLE001 - 关旧连接失败不影响切页
+                log.debug("关闭旧 WebSocket 失败", exc_info=True)
+            self._ws = None
+
     def connect(self) -> WebSocket:
         if self._ws is not None:
             return self._ws
