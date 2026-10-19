@@ -28,6 +28,7 @@ socket 实现一个够用的客户端即可，不需要任何第三方依赖。
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -176,14 +177,10 @@ class WebSocket:
         self._sock.sendall(bytes(header) + masked)
 
     def close(self) -> None:
-        try:
+        with contextlib.suppress(OSError):
             self._send_frame(0x88, b"")
-        except OSError:
-            pass
-        try:
+        with contextlib.suppress(OSError):
             self._sock.close()
-        except OSError:
-            pass
 
 
 # --------------------------------------------------------------------------
@@ -217,6 +214,7 @@ class Browser:
         user_data_dir: str | Path | None = None,
         port: int = 0,
         timeout: float = 20.0,
+        extra_args: list[str] | None = None,
     ) -> None:
         self.executable = executable or find_browser()
         if not self.executable:
@@ -225,6 +223,8 @@ class Browser:
             )
         self.user_data_dir = Path(user_data_dir) if user_data_dir else None
         self.timeout = timeout
+        #: 额外启动参数（例如 iTEST 的「开始考试」要弹新标签页，需要放开弹窗拦截）
+        self.extra_args = list(extra_args or [])
         #: 出现原生对话框时自动点「确定」（页面会被对话框阻塞，必须处理）
         self.auto_accept_dialogs = True
         #: 见过的对话框（排查用）
@@ -272,6 +272,7 @@ class Browser:
             args.append(f"--user-data-dir={self.user_data_dir}")
         if os.name != "nt":
             args.append("--no-sandbox")
+        args.extend(self.extra_args)
 
         log.debug("启动浏览器: %s", " ".join(args))
         self._proc = subprocess.Popen(  # noqa: S603 - 路径由用户/探测决定
@@ -345,7 +346,9 @@ class Browser:
         """列出所有目标（需要先 ``Target.setDiscoverTargets``）。"""
         return self.call("Target.getTargets").get("targetInfos", [])
 
-    def switch_to_target(self, url_contains: str, *, timeout: float = 30.0) -> bool:
+    def switch_to_target(
+        self, url_contains: str, *, timeout: float = 30.0, newest: bool = False,
+    ) -> bool:
         """把连接切到 URL 含指定片段的 **page** 目标（等它出现）。
 
         必须有这个方法的原因：iTEST 的「开始考试」在**新标签页**里打开作答页。
@@ -362,6 +365,9 @@ class Browser:
                     targets = json.loads(resp.read())
             except OSError:
                 targets = []
+            if newest:
+                # 同 URL 的旧标签页 + 新弹窗同时存在时，取最新打开的那个
+                targets = list(reversed(targets))
             for target in targets:
                 if (target.get("type") == "page"
                         and target.get("webSocketDebuggerUrl")
