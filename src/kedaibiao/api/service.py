@@ -1136,8 +1136,13 @@ class ConsoleService:
         max_attempts: int = 3,
         initial_essay: str = "",
         viewer: Viewer | None = None,
+        analysis_timeout: float = 180.0,
     ) -> dict[str, Any]:
-        """启动「写→交→看批注→改写→再交」的后台任务。"""
+        """启动「写→交→看批注→改写→再交」的后台任务。
+
+        ``analysis_timeout`` 是**等批改出分**的上限（秒）。超时不算失败：稿子已经交了，
+        任务会以 ``stop_reason=timeout`` 停下，前端提供「继续等待 N 秒 / 手动获取」。
+        """
         scope = self._check_platform(platform)
         assert scope is not None
         if scope != "pigai":
@@ -1151,6 +1156,9 @@ class ConsoleService:
             raise ConsoleError("目标分数要在 0~100 之间", kind="bad_request", status=400)
         if int(max_attempts) < 1:
             raise ConsoleError("轮次至少 1 轮", kind="bad_request", status=400)
+        analysis_timeout = float(analysis_timeout or 180.0)
+        if not (20.0 <= analysis_timeout <= 1800.0):
+            raise ConsoleError("等分上限要在 20~1800 秒之间", kind="bad_request", status=400)
 
         with self._lock:
             self._seq += 1
@@ -1158,6 +1166,7 @@ class ConsoleService:
             job: dict[str, Any] = {
                 "job_id": job_id, "platform": scope, "rid": rid.strip(),
                 "target_score": float(target_score), "max_attempts": int(max_attempts),
+                "analysis_timeout": analysis_timeout,
                 "status": "running", "started_at": _now(), "finished_at": None,
                 "events": [], "attempts": [], "stop_reason": "", "message": "",
                 "best_score": None, "initial_essay": initial_essay,
@@ -1173,7 +1182,7 @@ class ConsoleService:
         threading.Thread(
             target=self._run_grade_loop, args=(job_id, scope, rid.strip(),
                                                float(target_score), int(max_attempts),
-                                               initial_essay, viewer),
+                                               initial_essay, viewer, analysis_timeout),
             name=f"kedaibiao-grade-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
@@ -1547,7 +1556,7 @@ class ConsoleService:
 
     def _run_grade_loop(self, job_id: str, platform: str, rid: str,
                         target: float, attempts: int, initial_essay: str,
-                        viewer: Viewer | None) -> None:
+                        viewer: Viewer | None, analysis_timeout: float = 180.0) -> None:
         from kedaibiao.platforms.pigai.grade_loop import GradeLoop
         from kedaibiao.tasks.llm import LLMConfig, LLMAnswerer
 
@@ -1626,6 +1635,7 @@ class ConsoleService:
                 target_score=target, max_attempts=attempts,
                 on_event=on_event, rewrite=rewrite,
                 word_range=word_range,
+                analysis_timeout=analysis_timeout,
             )
             result = asyncio.run(loop.run(rid=rid, topic=topic, initial_essay=essay))
 
@@ -1710,6 +1720,54 @@ class ConsoleService:
             return snap.to_dict()
         finally:
             asyncio.run(adapter.close())
+            runtime.close()
+
+    def wait_essay_grade(
+        self, rid: str, eid: str = "", *, platform: str = "pigai",
+        timeout: float = 180.0, viewer: Viewer | None = None,
+    ) -> dict[str, Any]:
+        """**再等一段时间的批改结果**（不重新提交）。
+
+        评分循环以 ``stop_reason=timeout`` 停下后，用户可以带着稿件号再等 N 秒，
+        或者直接取一次分。超时**不抛 502** —— 返回 ``timed_out=True`` 让前端继续问用户。
+        """
+        scope = self._check_platform(platform)
+        assert scope is not None
+        if scope != "pigai":
+            raise ConsoleError("等分目前只实现了 pigai", kind="not_supported", status=501)
+        rid = str(rid or "").strip()
+        if not rid:
+            raise ConsoleError("缺少作业号 rid", kind="bad_request", status=400)
+        timeout = float(timeout or 180.0)
+        if not (5.0 <= timeout <= 1800.0):
+            raise ConsoleError("等待时长要在 5~1800 秒之间", kind="bad_request", status=400)
+
+        from kedaibiao.platforms.pigai import grading
+
+        adapter, runtime, _ = self._essay_http(scope, viewer)
+        try:
+            http = adapter.ctx.client()
+            self._plog(scope, "info", f"$ 等批改 {rid}/{eid or '—'} 最多 {timeout:.0f}s")
+            try:
+                snap = asyncio.run(grading.wait_for_grade(
+                    adapter, http, base="https://www.pigai.org",
+                    rid=rid, eid=eid, timeout=timeout,
+                ))
+            except grading.AnalysisTimeout as exc:
+                self._plog(scope, "warn", f"· 仍未出分（{exc}），可以继续等或手动获取")
+                return {
+                    "rid": rid, "eid": eid, "graded": False, "timed_out": True,
+                    "message": f"{exc}。稿子已经交了，只是还没批完；可以再等一段或稍后手动获取。",
+                }
+            out = snap.to_dict()
+            out.update({"timed_out": False})
+            self._plog(scope, "ok",
+                       f"→ 出分 {out.get('score') if out.get('graded') else '未出分'}"
+                       f"（{out.get('raw_state') or '—'}）")
+            return out
+        finally:
+            with contextlib.suppress(Exception):
+                asyncio.run(adapter.close())
             runtime.close()
 
     def essay_history(self, rid: str, *, platform: str = "pigai",

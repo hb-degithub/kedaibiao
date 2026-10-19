@@ -2184,7 +2184,7 @@
   /* ===================== 评分循环（批改网） ===================== */
 
   var grader = {
-    platform: '', rid: '', target: 90, maxAttempts: 3,
+    platform: '', rid: '', target: 90, maxAttempts: 3, analysisTimeout: 180,
     job: null, timer: null, history: null, busy: false, error: '', note: ''
   };
 
@@ -2192,7 +2192,8 @@
     reached: '已达目标分',
     exhausted: '轮次用尽，仍未达标',
     unavailable: '平台未给分（作业未到期）',
-    error: '出错了'
+    error: '出错了',
+    timeout: '等批改超时（稿子已交，只是还没出分）'
   };
 
   var GRADER_EVENT_TEXT = {
@@ -2202,6 +2203,7 @@
     'attempt.graded': '出分：{score}（批注 {feedback_count} 条）',
     'attempt.rewriting': '按批注改写中…',
     'attempt.error': '出错：{error}',
+    'attempt.timeout': '等分超时：{error}',
     'loop.finish': '循环结束'
   };
 
@@ -2212,7 +2214,7 @@
   function graderReset(platform, rid) {
     graderStopPolling();
     grader = {
-      platform: platform, rid: rid, target: 90, maxAttempts: 3,
+      platform: platform, rid: rid, target: 90, maxAttempts: 3, analysisTimeout: 180,
       job: null, timer: null, history: null, busy: false, error: '', note: ''
     };
   }
@@ -2248,6 +2250,8 @@
       function (v) { grader.target = v; }));
     controls.appendChild(graderNumber('轮次上限', grader.maxAttempts, 1, 10,
       function (v) { grader.maxAttempts = v; }));
+    controls.appendChild(graderNumber('等分上限（秒）', grader.analysisTimeout, 20, 1800,
+      function (v) { grader.analysisTimeout = v; }));
     box.appendChild(controls);
 
     var actions = el('div', 'grader-actions');
@@ -2357,10 +2361,88 @@
       box.appendChild(det);
     }
 
+    /* 没拿到分数（超时 / 出错）：让用户决定「继续等待 X 秒」还是「手动获取」 */
+    if (job.stop_reason === 'timeout' || job.stop_reason === 'error') {
+      box.appendChild(graderRetryBlock(job));
+    }
+
     /* 每轮结果 */
     var attempts = job.attempts || [];
     attempts.forEach(function (a) { box.appendChild(graderAttemptCard(a)); });
     return box;
+  }
+
+  /* 取不到分数时的补救面板：继续等待 N 秒 / 手动获取一次（都不重新提交作文） */
+  function graderRetryBlock(job) {
+    var attempts = job.attempts || [];
+    var last = attempts.length ? attempts[attempts.length - 1] : {};
+    var eid = last.eid || job.eid || '';
+
+    var box = el('div', 'grader-retry');
+    box.appendChild(el('p', 'hint',
+      job.stop_reason === 'timeout'
+        ? '批改还没出分（稿子已经提交，不用重交）。可以再等一段时间，或手动获取一次。'
+        : '这一轮没取到分数。可以先手动获取一次，或继续等待。'));
+
+    var row = el('div', 'grader-controls');
+    var secs = 180;
+    row.appendChild(graderNumber('继续等待（秒）', secs, 5, 1800,
+      function (v) { secs = v; }));
+
+    var waitBtn = el('button', 'btn btn-sm btn-warn', '继续等待');
+    waitBtn.type = 'button';
+    waitBtn.addEventListener('click', function () {
+      graderWait(eid, secs, waitBtn);
+    });
+    var fetchBtn = el('button', 'btn btn-sm', '手动获取一次');
+    fetchBtn.type = 'button';
+    fetchBtn.addEventListener('click', function () { graderFetch(); });
+    var actions = el('div', 'grader-actions');
+    actions.appendChild(waitBtn);
+    actions.appendChild(fetchBtn);
+    box.appendChild(row);
+    box.appendChild(actions);
+
+    var out = el('div', 'grader-retry-out');
+    out.id = 'grader-retry-out';
+    box.appendChild(out);
+    if (eid) { box.appendChild(el('p', 'hint', '稿件号：' + eid)); }
+    return box;
+  }
+
+  function graderWait(eid, seconds, btn) {
+    var out = $('grader-retry-out');
+    var say = function (text, ok) {
+      if (!out) { return; }
+      out.textContent = text;
+      out.className = 'grader-retry-out' + (ok === true ? ' llm-msg-ok' : (ok === false ? ' llm-msg-err' : ''));
+    };
+    if (btn) { btn.disabled = true; btn.textContent = '等待中…'; }
+    say('等待平台出分，最多 ' + seconds + ' 秒（期间不用管它）…');
+    graderApi('/api/essays/wait', {
+      platform: 'pigai', assignment_id: grader.rid, eid: eid, timeout: seconds,
+    }).then(function (body) {
+      if (btn) { btn.disabled = false; btn.textContent = '继续等待'; }
+      if (body && body.timed_out) {
+        say((body.message || '还是没出分') + ' —— 可以再等一次，或点「手动获取一次」。', false);
+        return;
+      }
+      var score = body && body.score;
+      if (body && body.graded && score !== undefined && score !== null) {
+        say('出分了：' + score + ' 分'
+          + (body.raw_state ? '（' + body.raw_state + '）' : '')
+          + '。想看批注可以用「手动获取一次」，想继续提分就再开自动改写。', true);
+      } else if (String((body && body.raw_state) || '').includes('未截止')) {
+        say('这个作业还没到截止时间，平台不公布分数 —— 不用再等了，' +
+          '到期后再点「手动获取一次」即可。', false);
+      } else {
+        say('拿到了结果但还没出分（' + ((body && body.raw_state) || '未知状态') + '）。', false);
+      }
+      /* 不在这里重绘历史：重绘会把上面这条结果提示一起清掉 */
+    }).catch(function (e) {
+      if (btn) { btn.disabled = false; btn.textContent = '继续等待'; }
+      say('等待失败：' + describeError(e), false);
+    });
   }
 
   function graderAttemptCard(a) {
@@ -5709,6 +5791,19 @@
   /* 自测钩子（只在 ?debug=1 时挂）：把自动化标成「运行中」，用来验证切换拦截。
      正常访问时不存在，不参与任何业务逻辑。 */
   if (/[?&]debug=1\b/.test(location.search)) {
+    window.__kdbGraderDebug = function (stopReason) {
+      grader.job = {
+        job_id: 'debug-grade', status: 'failed', stop_reason: stopReason || 'timeout',
+        message: '等待分析超时（180s）。稿件号 900000001 已提交，可以「继续等待 N 秒」或「手动获取一次」。',
+        target_score: 90, max_attempts: 3, best_score: null,
+        attempts: [{ attempt: 1, eid: '900000001', score: null, graded: false,
+                     raw_state: '', word_count: 386 }],
+        events: [{ at: '', kind: 'attempt.timeout', error: '等待分析超时（180s）' }],
+      };
+      if (typeof graderRender === 'function') { graderRender(); }
+      return true;
+    };
+
     window.__kdbAutoDebug = function (running) {
       if (running) {
         state.auto.jobId = state.auto.jobId || 'debug-job';

@@ -438,6 +438,19 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 max_attempts=int(payload.get("max_attempts") or 3),
                 initial_essay=str(payload.get("initial_essay") or ""),
                 viewer=viewer,
+                analysis_timeout=float(payload.get("analysis_timeout") or 180),
+            ))
+
+        if path == "/api/essays/wait":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.wait_essay_grade(
+                str(payload.get("assignment_id") or payload.get("rid") or ""),
+                str(payload.get("eid") or ""),
+                platform=str(payload.get("platform") or "pigai"),
+                timeout=float(payload.get("timeout") or 180),
+                viewer=viewer,
             ))
 
         if path == "/api/essays/fetch":

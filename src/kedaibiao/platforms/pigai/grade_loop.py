@@ -42,6 +42,9 @@ STOP_REACHED = "reached"
 STOP_EXHAUSTED = "exhausted"
 STOP_UNAVAILABLE = "unavailable"
 STOP_ERROR = "error"
+#: 等批改出分超时 —— 不是写作失败：作文已经交上去了，只是平台的批改队列还没出分。
+#: 用户可以「继续等待 N 秒」或「手动获取一次」，不必重新提交。
+STOP_TIMEOUT = "timeout"
 
 REWRITE_SYSTEM = """你是一位英语写作导师。你会收到一篇英语作文、它的机器评分与批注。
 请按照批注**改写**这篇作文，使其更符合评分标准。
@@ -232,6 +235,19 @@ class GradeLoop:
                     on_tick=lambda i, s, _t: self._emit("attempt.analysis",
                                                         attempt=attempt, tick=i, state=s),
                 )
+            except grading.AnalysisTimeout as exc:
+                # 超时不是失败：稿子已经交了，只是还没批完 → 停下让用户决定再等多久
+                record.note = f"等批改超时：{exc}"
+                result.attempts.append(record)
+                self._emit("attempt.timeout", attempt=attempt, eid=eid,
+                           error=record.note)
+                result.stop_reason = STOP_TIMEOUT
+                result.final_eid = eid
+                result.message = (
+                    f"{record.note}。稿件号 {eid} 已提交，"
+                    "可以「继续等待 N 秒」或「手动获取一次」，不需要重新提交。"
+                )
+                break
             except Exception as exc:  # noqa: BLE001 - 单轮失败不该炸掉整个循环
                 record.note = f"{type(exc).__name__}: {exc}"
                 result.attempts.append(record)

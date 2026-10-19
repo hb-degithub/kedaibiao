@@ -900,3 +900,15 @@ pre.cmd {
 .auto-q-subs label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
 .auto-q-subs select, .auto-q-subs input { min-width: 120px; }
 .auto-foot { margin-top: 12px; }
+
+
+/* 评分循环：取不到分数时的补救面板 */
+.grader-retry {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid #5c2a24;
+  border-radius: 4px;
+  background: var(--red-bg);
+}
+.grader-retry .grader-controls { margin-top: 8px; }
+.grader-retry-out { margin-top: 8px; font-size: 12.5px; min-height: 18px; }
