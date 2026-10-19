@@ -439,7 +439,11 @@ run 是「一个作业的处理结果」，job 是「一次跑批的整体结果
 }
 ```
 
-`params[].type` ∈ `string` / `int`。`required` 为 true 的必须给值。
+`params[].type` ∈ `string` / `int` / `text`（`text` 表示长文本，前端应渲染成多行输入框）。
+`required` 为 true 的必须给值。
+
+动作对象还可能带 `"mutates": true` —— 表示**会改平台侧状态**（开考计时、填答案、交卷），
+前端应把「只读」徽标换成醒目的「写操作」，不要让人误当查询点。缺省（不出现）按只读处理。
 
 > **列表行必须带 `assignment_id`。** 「作业」类动作（`assignments`）的每一行
 > 除了展示用的 `id`，还要给 `assignment_id` —— 前端双击详情与提交都按它调

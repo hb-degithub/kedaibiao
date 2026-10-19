@@ -3077,7 +3077,11 @@
     var head = el('div', 'action-head');
     head.appendChild(el('span', 'action-title', act.label || act.name));
     head.appendChild(el('span', 'action-name mono', act.name));
-    head.appendChild(badge('只读', 'badge-ro'));
+    if (act.mutates) {
+      head.appendChild(badge('写操作', 'badge-rw'));
+    } else {
+      head.appendChild(badge('只读', 'badge-ro'));
+    }
     if (act.description) { head.appendChild(el('span', 'hint', act.description)); }
     form.appendChild(head);
 
@@ -3090,16 +3094,23 @@
         wrap.setAttribute('for', 'ap-' + spec.name);
         wrap.appendChild(el('span', 'field-label',
           (spec.label || spec.name) + (spec.required ? ' *' : '')));
-        var input = el('input', 'mono');
+        /* type=text 的长参数（答案单 JSON 等）用多行输入框，单行框放不下也看不清 */
+        var longText = spec.type === 'text';
+        var input = el(longText ? 'textarea' : 'input', 'mono');
         input.id = 'ap-' + spec.name;
         input.name = spec.name;
-        input.autocomplete = 'off';
-        if (spec.type === 'int') {
-          input.type = 'number';
-          input.step = '1';
-          input.inputMode = 'numeric';
+        if (longText) {
+          input.rows = 7;
+          input.spellcheck = false;
         } else {
-          input.type = 'text';
+          input.autocomplete = 'off';
+          if (spec.type === 'int') {
+            input.type = 'number';
+            input.step = '1';
+            input.inputMode = 'numeric';
+          } else {
+            input.type = 'text';
+          }
         }
         if (spec.required) { input.required = true; }
         /* 「查看详情」带过来的预填值（如 finished 行 → essay 的 rid/eid）。 */

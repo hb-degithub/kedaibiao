@@ -19,11 +19,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from kedaibiao.core.models import Assignment, TaskKind
@@ -63,6 +65,9 @@ class ActionSpec:
     #: True = 框架契约里本来就有的通用能力（courses / assignments），它们有专属
     #: 功能页。控制台的「工具」页应过滤掉这些，避免与专属页重复。
     builtin: bool = False
+    #: True = 这个动作会改平台侧状态（交卷、填答案、开考计时）。控制台据此把
+    #: 「只读」徽标换成「写操作」，避免用户把它当查询点。
+    mutates: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +76,7 @@ class ActionSpec:
             "description": self.description,
             "params": [p.to_dict() for p in self.params],
             "builtin": self.builtin,
+            "mutates": self.mutates,
         }
 
 
@@ -534,6 +540,324 @@ def _register_itest() -> None:
         ),
         _itest_entry,
     )
+    register(
+        ActionSpec(
+            platform="itest",
+            name="paper",
+            label="进考场取卷",
+            description="进答题页把试卷读出来（★ 会开始计时，不可逆；只读题目，不改答案）",
+            params=(ActionParam("exam_id", "考试号", required=True),),
+            mutates=True,
+        ),
+        _itest_paper,
+    )
+    register(
+        ActionSpec(
+            platform="itest",
+            name="fill",
+            label="填答案",
+            description="按答案单填进作答页并逐项核验（不进服务端；不会交卷）",
+            params=(
+                ActionParam("exam_id", "考试号", required=True),
+                ActionParam(
+                    "answers", "答案单（JSON）", type="text", required=True,
+                    hint='{"qid": "字母串或整句译文"}，如 {"1001353740": "F I G C B E J D A H"}',
+                ),
+            ),
+            mutates=True,
+        ),
+        _itest_fill,
+    )
+    register(
+        ActionSpec(
+            platform="itest",
+            name="submit",
+            label="交卷",
+            description="填答案 → 核验 → 交卷（不可逆，必须把确认串写成「交卷」）",
+            params=(
+                ActionParam("exam_id", "考试号", required=True),
+                ActionParam("answers", "答案单（JSON）", type="text", required=True),
+                ActionParam(
+                    "confirm", "确认串", required=True,
+                    hint="必须输入「交卷」—— 交卷后不能再次作答",
+                ),
+            ),
+            mutates=True,
+        ),
+        _itest_submit,
+    )
+
+
+# --------------------------------------------------------------------------
+# iTEST 进考场作答：取卷 / 填答 / 交卷
+# --------------------------------------------------------------------------
+#
+# 这一组动作把 exam.py 的浏览器链路接到控制台。三条纪律写在最前面：
+#   1. 进考场就开始计时 —— 取卷动作本身也是不可逆的（但只读，不改答案）；
+#   2. 填答案只操作界面，不拼 ansData —— 页面自己组装载荷；
+#   3. 交卷必须带人工确认串，且核验有错就**拒绝交卷**。
+
+_ITEST_KIND_LABEL = {"blank": "填空", "radio": "单选", "write": "翻译"}
+
+
+def _itest_require(params: dict[str, Any], key: str, label: str) -> str:
+    value = str(params.get(key) or "").strip()
+    if not value:
+        raise ActionInputError(f"缺少{label}（{key}）")
+    return value
+
+
+def _itest_exam_cookies(adapter: Any) -> list[dict[str, Any]]:
+    """从适配器已登录的 HTTP 会话取 cookie，灌进浏览器（不落盘、不打印）。"""
+    from kedaibiao.platforms.itest.exam import cookies_from_jar
+
+    client = adapter.client()
+    jar = getattr(getattr(client, "http", None), "cookies", None)
+    cookies = cookies_from_jar(jar) if jar is not None else []
+    if not cookies:
+        raise ActionInputError(
+            "当前账号没有可用的登录会话 —— 先在「账号」页绑定该平台并登录一次"
+        )
+    return cookies
+
+
+def _itest_runner(adapter: Any) -> Any:
+    from kedaibiao.platforms.itest.exam import ExamRunner
+
+    return ExamRunner(_itest_exam_cookies(adapter))
+
+
+def _itest_shot_dir(adapter: Any) -> Path:
+    settings = getattr(adapter.ctx, "settings", None)
+    base = Path(getattr(settings, "session_dir", "./data/sessions") or "./data/sessions")
+    return base.parent / "itest"
+
+
+def _itest_parse_answers(raw: Any) -> dict[str, str]:
+    """答案单必须是 ``{qid: "答案"}`` 的 JSON 对象。"""
+    text = str(raw or "").strip()
+    if not text:
+        raise ActionInputError("答案单是空的")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ActionInputError(f"答案单不是合法 JSON：{exc}") from exc
+    if not isinstance(data, dict) or not data:
+        raise ActionInputError('答案单必须是对象，例如 {"1001353740": "F I G C B E J D A H"}')
+    out: dict[str, str] = {}
+    for key, value in data.items():
+        if not isinstance(value, (str, int, float)):
+            raise ActionInputError(f"答案 {key!r} 的值必须是字符串（填字母串或整句译文）")
+        out[str(key)] = str(value).strip()
+    return out
+
+
+def _itest_ks_id(entry: Any) -> str:
+    """考试卡片上印的是 ksId（不是 ksdId）—— 点卡片进考场要用它。"""
+    return str(((getattr(entry, "raw", None) or {}).get("ksId")) or "")
+
+
+async def _itest_exam_entry(adapter: Any, exam_id: str) -> tuple[str, str]:
+    """取这场考试的 (标题, ksId)；拿不到元信息就让 ksId 留空（走兜底路径）。"""
+    entry = await adapter.exam_meta(exam_id)
+    return (entry.title if entry else ""), _itest_ks_id(entry)
+
+
+def _itest_paper_blocking(
+    adapter: Any, exam_id: str, ks_id: str = ""
+) -> dict[str, Any]:
+    runner = _itest_runner(adapter)
+    with runner:
+        entered = runner.enter(exam_id, ks_id=ks_id)
+        if not entered.ok:
+            raise ActionInputError(
+                f"没能进入作答页：{entered.message}（步骤：{_steps_text(entered.steps)}）"
+            )
+        paper = runner.read_paper()
+        current = runner.read_answers()
+        shot = runner.save_screenshot(_itest_shot_dir(adapter) / f"paper-{exam_id}.png")
+    return {"entered": entered, "paper": paper, "current": current, "shot": shot}
+
+
+def _itest_fill_blocking(
+    adapter: Any, exam_id: str, answers: dict[str, str], *, submit: bool,
+    ks_id: str = "",
+) -> dict[str, Any]:
+    runner = _itest_runner(adapter)
+    with runner:
+        entered = runner.enter(exam_id, ks_id=ks_id)
+        if not entered.ok:
+            raise ActionInputError(
+                f"没能进入作答页：{entered.message}（步骤：{_steps_text(entered.steps)}）"
+            )
+        paper = runner.read_paper()
+        applied = paper.apply_answers(answers)
+        filled = runner.fill(answers)
+        checked = runner.verify(answers)
+        shot = runner.save_screenshot(_itest_shot_dir(adapter) / f"filled-{exam_id}.png")
+        result: dict[str, Any] = {
+            "entered": entered, "paper": paper, "current": runner.read_answers(),
+            "applied": applied, "filled": filled, "checked": checked, "shot": shot,
+            "submitted": None,
+        }
+        if submit:
+            result["submitted"] = runner.submit()
+        return result
+
+
+def _steps_text(steps: list[Any]) -> str:
+    return "；".join(f"{s.name}{'✓' if s.ok else '✗'}" for s in steps) or "无"
+
+
+async def _itest_paper(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """进考场把试卷读出来（会开始计时，但只读题目、不改答案）。"""
+    name = getattr(adapter, "name", "itest")
+    exam_id = _itest_require(params, "exam_id", "考试号")
+    _title, ks_id = await _itest_exam_entry(adapter, exam_id)
+    data = await asyncio.to_thread(_itest_paper_blocking, adapter, exam_id, ks_id)
+    paper = data["paper"]
+    current: dict[str, str] = data["current"]
+
+    rows: list[dict[str, Any]] = []
+    for section in paper.sections:
+        for question in section.questions:
+            rows.append({
+                "section": f"{section.index}. {(section.part2 or section.part1)[:14]}",
+                "qid": question.qid,
+                "kind": _ITEST_KIND_LABEL.get(question.kind, question.kind),
+                "number": question.number,
+                "text": (question.text or "")[:46],
+                "slots": question.slot_count,
+                "filled": (current.get(question.qid) or "—")[:24],
+            })
+    return table(
+        platform=name,
+        action="paper",
+        label="试卷",
+        title=f"取卷 · {paper.title[:40] or exam_id}",
+        note=(
+            f"已进入作答页（★ 计时已开始/继续）。{len(paper.sections)} 大题 / "
+            f"{paper.question_count} 题 / {paper.blank_count} 槽位；"
+            f"「已填」读的是页面当前值（服务端自动保存的也在里面）。"
+            f"截图：{data['shot']}"
+        ),
+        columns=[
+            column("section", "大题"),
+            column("number", "序号", mono=True),
+            column("kind", "题型"),
+            column("qid", "qid", mono=True),
+            column("text", "题干/首句"),
+            column("slots", "槽位", mono=True),
+            column("filled", "已填"),
+        ],
+        rows=rows,
+        empty_hint="这场的作答页没解析出题目 —— 可能在设备检测页，或页面结构变了。",
+    )
+
+
+async def _itest_fill(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """把答案填进作答页并逐项读回核验（不交卷）。"""
+    name = getattr(adapter, "name", "itest")
+    exam_id = _itest_require(params, "exam_id", "考试号")
+    answers = _itest_parse_answers(params.get("answers"))
+    _title, ks_id = await _itest_exam_entry(adapter, exam_id)
+    data = await asyncio.to_thread(
+        _itest_fill_blocking, adapter, exam_id, answers, submit=False, ks_id=ks_id
+    )
+
+    checked = data["checked"]
+    bad = {str(item).split("#", 1)[0] for item in checked.get("bad", [])}
+    paper = data["paper"]
+    rows = [
+        {
+            "qid": question.qid,
+            "kind": _ITEST_KIND_LABEL.get(question.kind, question.kind),
+            "want": (question.answer or "")[:40],
+            "state": "✗ 核验不符" if question.qid in bad else "✓",
+        }
+        for section in paper.sections for question in section.questions
+    ]
+    filled = data["filled"]
+    return table(
+        platform=name,
+        action="fill",
+        label="填答案",
+        title=f"填答案 · {exam_id}（核验 {checked.get('total', 0)} 处不符）",
+        note=(
+            f"填空 {filled.get('blank', 0)} / 单选 {filled.get('radio', 0)} / "
+            f"翻译 {filled.get('textarea', 0)}；"
+            f"未匹配 {len(filled.get('missing', []))}；"
+            f"核验不符 {checked.get('total', 0)}。"
+            "只改了页面，**没有交卷**；截图已存 " + str(data["shot"])
+        ),
+        columns=[
+            column("qid", "qid", mono=True),
+            column("kind", "题型"),
+            column("want", "应填"),
+            column("state", "核验"),
+        ],
+        rows=rows,
+        empty_hint="没有可填的题。",
+    )
+
+
+async def _itest_submit(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """填答案 → 核验 → 交卷（不可逆，必须人工确认）。"""
+    name = getattr(adapter, "name", "itest")
+    exam_id = _itest_require(params, "exam_id", "考试号")
+    if str(params.get("confirm") or "").strip() != "交卷":
+        raise ActionInputError("交卷是不可逆操作 —— 请在「确认串」里输入「交卷」")
+    answers = _itest_parse_answers(params.get("answers"))
+    _title, ks_id = await _itest_exam_entry(adapter, exam_id)
+    data = await asyncio.to_thread(
+        _itest_fill_blocking, adapter, exam_id, answers, submit=True, ks_id=ks_id
+    )
+
+    checked = data["checked"]
+    submitted = data["submitted"] or {}
+    if checked.get("total"):
+        # 核验有错就不该交 —— 这一层比「相信调用方」更可靠
+        raise ActionInputError(
+            f"核验有 {checked['total']} 处不符，已拒绝交卷（答案没填对）。详见 fill 动作。"
+        )
+
+    finish = None
+    try:
+        exams = await adapter.client().list_exams()
+        entry = next((e for e in exams if e.exam_id == exam_id), None)
+        finish = (entry.raw or {}).get("finish") if entry else None
+    except Exception:  # noqa: BLE001 - 查询失败不影响交卷结果本身
+        log.debug("交卷后复核考试列表失败", exc_info=True)
+
+    fields = [
+        {"label": "考试号", "value": exam_id},
+        {"label": "页面证据", "value": submitted.get("text", "")[:120] or "（没有识别到成功提示）"},
+        {"label": "服务端 finish", "value": "已交卷" if finish in (1, "1") else f"{finish}"},
+        {"label": "填表", "value": json.dumps(data["filled"], ensure_ascii=False)[:120]},
+        {"label": "核验", "value": f"不符 {checked.get('total', 0)} 处"},
+        {"label": "截图", "value": str(data["shot"])},
+    ]
+    steps = submitted.get("steps", [])
+    return detail(
+        platform=name,
+        action="submit",
+        label="交卷结果",
+        title=f"{'已交卷' if submitted.get('ok') else '交卷未确认'} · {exam_id}",
+        note=(
+            "交卷是不可逆操作。页面出现成功提示且服务端 finish 变成 1 才算真的交上；"
+            "两者不一致时以服务端为准，并人工看一眼考试列表。"
+        ),
+        fields=fields,
+        sections=[
+            _text_section("页面提示", submitted.get("text", "")),
+            _table_section(
+                "交卷步骤",
+                [column("name", "步骤"), column("detail", "点中的文字")],
+                [{"name": s.get("name", ""), "detail": s.get("detail", "")} for s in steps],
+            ),
+        ],
+    )
+
 
 
 def load_builtin_actions() -> int:
