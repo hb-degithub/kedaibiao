@@ -50,6 +50,8 @@ packages = ["kedaibiao"]
 strict = true
 warn_unused_ignores = true
 
-# 平台适配器通过 entry point 注册，核心无需感知具体平台。
+# 平台适配器也可以声明成 entry point（装成包发布时用得上）。
+# 源码直跑时由 kedaibiao.platforms.load_builtin_adapters() 自动发现，
+# 不需要在这里登记 —— 并行开发时改这个文件必然冲突。
 [project.entry-points."kedaibiao.adapters"]
-# neusoft = "kedaibiao.platforms.neusoft:NeusoftAdapter"
+unipus = "kedaibiao.platforms.unipus:UnipusAdapter"

@@ -173,15 +173,25 @@ cd /home/hb/刷题刷课 && PYTHONPATH=src python3 -m unittest discover -s tests
 
 ## 7. 注册
 
-适配器写完后，由 **lead** 统一完成注册（避免 `platforms/__init__.py` 冲突）：
+**不需要改任何共享文件。** `kedaibiao.platforms.load_builtin_adapters()` 会
+自动扫描 `platforms/` 下的子包，找出 `PlatformAdapter` 的具体子类并用类上的
+`name` 注册。所以「新增平台」= 纯新增一个目录，共享区零改动。
 
-```toml
-# pyproject.toml
-[project.entry-points."kedaibiao.adapters"]
-unipus = "kedaibiao.platforms.unipus:UnipusAdapter"
+自动发现只认这几条：
+
+- 是 `PlatformAdapter` 的**具体**子类（抽象基类、中间基类不算）；
+- 类属性 `name` **非空** —— 它就是注册键，也是 `kedaibiao run <name>` 用的名字；
+- 子包导入**失败只记日志并跳过**（所以半成品不会拖垮框架，但也不会报错，
+  排查时把日志级别调到 `DEBUG`）。
+
+装成包发布时，另外在 `pyproject.toml` 里声明 entry point 也可以 —— 但那个
+文件是共享区，多窗口会冲突，通常不需要动。
+
+验证：
+
+```bash
+PYTHONPATH=src python3 -m kedaibiao platforms     # 应列出你的平台
 ```
-
-或在 `platforms/__init__.py` 里手工注册。注册后 `make platforms` 能列出。
 
 ---
 

@@ -6,7 +6,12 @@ import asyncio
 import time
 import unittest
 
-from kedaibiao.core.scheduler import RateLimiter, RetryPolicy, Scheduler
+from kedaibiao.core.scheduler import (
+    RateLimiter,
+    RetryPolicy,
+    Scheduler,
+    current_attempt,
+)
 
 
 class TestRetryPolicy(unittest.TestCase):
@@ -192,6 +197,68 @@ class TestRetryAfter(unittest.IsolatedAsyncioTestCase):
 
         policy = RetryPolicy(attempts=3, base_delay=0.001, max_delay=0.002, jitter=False)
         await Scheduler().run(flaky, policy=policy)  # 不应抛异常
+
+
+class TestCurrentAttempt(unittest.IsolatedAsyncioTestCase):
+    """适配器要知道自己被重试了几次，才能算「按次数递增」的等待时间。"""
+
+    async def test_zero_outside_run(self) -> None:
+        self.assertEqual(current_attempt(), 0)
+
+    async def test_counts_up_across_retries(self) -> None:
+        seen: list[int] = []
+
+        async def fn() -> str:
+            seen.append(current_attempt())
+            if len(seen) < 3:
+                raise ConnectionError("抖一下")
+            return "ok"
+
+        policy = RetryPolicy(attempts=5, base_delay=0.001, max_delay=0.002, jitter=False)
+        self.assertEqual(await Scheduler().run(fn, policy=policy), "ok")
+        self.assertEqual(seen, [1, 2, 3])
+
+    async def test_visible_when_building_the_exception(self) -> None:
+        """真正要用的地方：抛限流异常时读它，写成递增的 retry_after。"""
+
+        class RateLimited(OSError):
+            def __init__(self) -> None:
+                super().__init__("限流")
+                self.retry_after = 0.02 * current_attempt()
+
+        seen_retry_after: list[float] = []
+        calls = {"n": 0}
+
+        async def fn() -> str:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                exc = RateLimited()
+                seen_retry_after.append(exc.retry_after)
+                raise exc
+            return "ok"
+
+        policy = RetryPolicy(attempts=5, base_delay=0.001, max_delay=0.002, jitter=False)
+        await Scheduler().run(fn, policy=policy)
+        self.assertEqual(seen_retry_after, [0.02, 0.04], "退避应随尝试次数递增")
+
+    async def test_reset_after_success(self) -> None:
+        async def fn() -> int:
+            return current_attempt()
+
+        self.assertEqual(await Scheduler().run(fn), 1)
+        self.assertEqual(current_attempt(), 0, "跑完必须复位，不能污染调用方上下文")
+
+    async def test_isolated_between_concurrent_tasks(self) -> None:
+        """gather 派生的任务各自持有上下文副本，互不串号。"""
+        seen: dict[int, int] = {}
+
+        async def fn(item: int) -> int:
+            seen[item] = current_attempt()
+            await asyncio.sleep(0)
+            return item
+
+        await Scheduler(max_concurrency=3).map([1, 2, 3], fn)
+        self.assertEqual(set(seen.values()), {1})
 
 
 class TestConcurrency(unittest.IsolatedAsyncioTestCase):

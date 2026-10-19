@@ -131,7 +131,28 @@ Pipeline.run(adapter, credentials)
 `Scheduler.map()` 刻意不用 `gather` 的默认行为：它把每个元素的异常**就地捕获**
 放进结果列表，一个作业挂掉不会带走整批。
 
-### 4.4 配置优先级
+### 4.4 限流退避的两个通道
+
+平台限流时，**服务端给的等待时间比本地指数退避更权威**，所以有两条通道：
+
+1. **`retry_after` 属性**：异常上挂一个 `int`/`float` 秒数，`Scheduler` 取
+   `max(本地退避, retry_after)`。用鸭子类型读取，`core` 不认识任何平台的异常类。
+2. **`current_attempt()`**：适配器需要「按次数递增」的等待时（例如平台要求
+   依次等 20s / 40s / 60s），靠它拿到自己是第几次尝试：
+
+   ```python
+   from kedaibiao.core.scheduler import current_attempt
+
+   class RateLimited(TransportError):
+       def __init__(self, message):
+           super().__init__(message)
+           self.retry_after = 20.0 * max(1, current_attempt())
+   ```
+
+   `current_attempt()` 从 1 起；不在 `Scheduler.run` 内时返回 0（所以要 `max(1, ...)`）。
+   用 `contextvars` 实现，`asyncio.gather` 派生的任务之间天然隔离，跑完自动复位。
+
+### 4.5 配置优先级
 
 ```
 内置默认值 < config/default.toml < config/local.toml < 环境变量 KEDAIBIAO_*
@@ -143,7 +164,7 @@ Pipeline.run(adapter, credentials)
 
 ---
 
-### 4.5 运行时装配（`runtime.py`）
+### 4.6 运行时装配（`runtime.py`）
 
 CLI 与将来的 Web 控制面必须共用**同一套**装配逻辑。各拼各的会让两边行为悄悄
 分叉 —— 最典型的后果是 Web 面板显示的成功率与 CLI 跑出来的对不上。

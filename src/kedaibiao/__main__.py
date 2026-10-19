@@ -16,6 +16,7 @@ from kedaibiao import __version__, adapters
 from kedaibiao.bank.store import QuestionBank, ProgressStore
 from kedaibiao.config.settings import load_settings
 from kedaibiao.core.models import TaskKind
+from kedaibiao.platforms import load_builtin_adapters
 from kedaibiao.runtime import build_runtime
 from kedaibiao.security.credentials import CredentialError, available_platforms
 from kedaibiao.tasks.pipeline import PipelineConfig
@@ -273,6 +274,8 @@ HANDLERS = {
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # 适配器靠自动发现注册；CLI 启动时统一装载一次
+    load_builtin_adapters()
     return HANDLERS[args.command](args)
 
 

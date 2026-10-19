@@ -11,6 +11,7 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -68,6 +69,23 @@ def _retry_after(exc: BaseException) -> float | None:
     return max(0.0, float(raw))
 
 
+#: 当前重试次数，仅在 ``Scheduler.run`` 执行 ``fn`` 期间有效。
+_ATTEMPT: ContextVar[int] = ContextVar("kedaibiao_attempt", default=0)
+
+
+def current_attempt() -> int:
+    """当前处于第几次尝试（从 1 开始；不在 ``Scheduler.run`` 内时返回 0）。
+
+    适配器需要它来做「按次数递增」的等待 —— 例如某平台限流要求依次等
+    20s、40s、60s。只有知道自己被重试了几次，才可能算得出来。
+
+    用 ``ContextVar`` 而不是给 ``fn`` 加参数：调用方签名保持不变，
+    ``Scheduler.map`` 也不用动，并且在 ``asyncio.gather`` 派生的各个任务里
+    天然隔离（每个任务拿到自己的上下文副本）。
+    """
+    return _ATTEMPT.get()
+
+
 class Scheduler:
     """全局并发闸门 + 限速器。"""
 
@@ -91,6 +109,7 @@ class Scheduler:
         last_exc: BaseException | None = None
 
         for attempt in range(1, policy.attempts + 1):
+            token = _ATTEMPT.set(attempt)
             try:
                 async with self._sem:
                     await self.rate_limiter.acquire(key)
@@ -114,6 +133,8 @@ class Scheduler:
                 if on_retry is not None:
                     on_retry(attempt, exc)
                 await asyncio.sleep(delay)
+            finally:
+                _ATTEMPT.reset(token)
 
         assert last_exc is not None
         raise last_exc
