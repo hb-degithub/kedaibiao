@@ -6121,8 +6121,8 @@
       batch.running = false;
       batchShowLive(false);
       if (job.status === 'done') {
+        // 后端已经往 logs 里写过一行「■ 汇总」，这里不再重复
         batchSetState(job.summary || '完成');
-        batchLog('■ ' + (job.summary || '批量提交结束'));
         var counts = job.counts || {};
         if (!job.confirm && (counts.planned || 0) > 0) {
           batch.dryDone = true;
