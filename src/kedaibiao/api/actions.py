@@ -2294,14 +2294,23 @@ async def _generic_assignment_detail(adapter: Any, params: dict[str, Any]) -> di
         {"label": "进度", "value": f"{target.progress:.0%}"},
         {"label": "题目数", "value": len(questions)},
     ]
+    # 平台自己的题型（目前 U校园提供：听力/词汇/阅读/翻译/写作/单元测验/口语/上传）
+    platform_type = (target.raw or {}).get("type_label") if isinstance(target.raw, dict) else None
+    if platform_type:
+        fields.insert(4, {"label": "任务题型", "value": str(platform_type)})
 
     sections: list[dict[str, Any]] = []
     if questions:
         rows = []
         for i, q in enumerate(questions):
+            raw_q = q.raw if isinstance(q.raw, dict) else {}
+            # 平台题型（U校园有 unipus_type；其它平台回落到核心题型）
+            type_text = str(raw_q.get("unipus_type") or q.type.value)
+            if raw_q.get("unipus_type") and raw_q.get("reply_type"):
+                type_text = f"{raw_q['unipus_type']}（{raw_q['reply_type']}）"
             rows.append({
                 "index": i + 1,
-                "type": q.type.value,
+                "type": type_text,
                 "stem": q.stem or "（平台未提供题干）",
                 "options": " / ".join(
                     f"{n}. {o}" for n, o in enumerate(q.options)

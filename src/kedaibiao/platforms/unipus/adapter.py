@@ -1095,6 +1095,9 @@ def _to_course(binding: CourseBinding) -> Course:
 def _to_assignment(
     course: Course, unit: parsing.CatalogUnit, group: parsing.CatalogGroup, *, resource_id: str
 ) -> Assignment:
+    base = (group.raw or {}).get("base")
+    tab_type = (group.raw or {}).get("tab_type")
+    type_key, type_label = parsing.task_type_of(base, tab_type)
     return Assignment(
         remote_id=pack_assignment_id(_course_instance_id(course), group.group_id),
         title=group.name or group.group_id,
@@ -1114,6 +1117,9 @@ def _to_assignment(
             "group_id": group.group_id,
             "base": group.base,
             "tab_type": group.tab_type,
+            # 平台题型（听力/词汇/阅读/翻译/写作/单元测验/口语…），详情页展示用
+            "type": type_key,
+            "type_label": type_label,
             "resource_id": resource_id,
             KIND_UNCONFIRMED_KEY: True,
             STATE_UNCONFIRMED_KEY: True,
