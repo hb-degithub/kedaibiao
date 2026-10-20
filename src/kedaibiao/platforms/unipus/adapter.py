@@ -519,6 +519,9 @@ class UnipusAdapter(PlatformAdapter):
                 ),
             }
         )
+        # 控制台的通用提交抽屉按「展示信封」渲染（kind=detail）；这里额外挂一份，
+        # 机器字段（can_submit / note / questions…）全部保留，互不影响。
+        data.update(_plan_envelope(data, assignment_id))
         return data
 
     async def native_submit(self, assignment_id: str) -> dict[str, Any]:
@@ -535,7 +538,7 @@ class UnipusAdapter(PlatformAdapter):
         result, readback, readback_error = await self._post_and_readback(
             instance_id, group_id, plan
         )
-        return {
+        data = {
             "platform": self.name,
             "assignment_id": assignment_id,
             "dry_run": False,
@@ -559,6 +562,30 @@ class UnipusAdapter(PlatformAdapter):
             "warnings": list(plan.warnings),
             "blockers": list(plan.blockers),
         }
+        lines = [
+            f"服务端已接受：{'是' if result.accepted else '否'}",
+            f"code={result.code!r}（类型 {result.code_type}）",
+            f"得分率：{result.score_pct}",
+            f"提交类型 {plan.submit_type} · 题目 {plan.question_count} · 计分点 {plan.item_count}",
+        ]
+        if readback is not None:
+            lines.append(
+                f"回读 progress/v2：finish={readback.finished} "
+                f"score={list(readback.score)} 得分率={readback.score_pct}"
+            )
+        if readback_error:
+            lines.append(f"回读失败：{readback_error}")
+        for warning in plan.warnings:
+            lines.append(f"⚠️ {warning}")
+        data.update(
+            {
+                "kind": "message",
+                "action": "submit",
+                "title": f"{assignment_id} · 提交结果",
+                "message": "\n".join(lines),
+            }
+        )
+        return data
 
     # -- 提交辅助（submit / native_* 共用同一份构造逻辑）-------------------
 
@@ -690,6 +717,65 @@ class UnipusAdapter(PlatformAdapter):
 # --------------------------------------------------------------------------
 # 提交辅助
 # --------------------------------------------------------------------------
+
+
+def _plan_envelope(data: dict[str, Any], assignment_id: str) -> dict[str, Any]:
+    """把提交计划的机器字段**另挂**一份展示信封（控制台按 kind 渲染）。
+
+    为什么不让 ``native_plan`` 直接返回信封：流水线也要消费同一份 plan
+    （``can_submit`` / ``note`` / ``questions``），机器字段必须保持原样。
+    信封键（``kind`` / ``fields`` / ``sections``）与机器字段互不冲突。
+    """
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(data.get("questions") or [], start=1):
+        stem = str(item.get("stem") or "").strip()
+        rows.append(
+            {
+                "index": index,
+                "kind": item.get("kind") or "—",
+                "children": item.get("child_count"),
+                "stem": (stem[:140] + "…") if len(stem) > 140 else (stem or "（无文字题干）"),
+                "answer": item.get("answer") or "—",
+                "points": item.get("item_count"),
+            }
+        )
+    blockers = [str(item) for item in (data.get("blockers") or [])]
+    warnings = [str(item) for item in (data.get("warnings") or [])]
+    return {
+        "kind": "detail",
+        "action": "submit",
+        "title": f"{data.get('group_id') or assignment_id} · 提交计划（干跑）",
+        "fields": [
+            {"label": "任务号", "value": assignment_id},
+            {"label": "分组", "value": data.get("group_id") or "—"},
+            {"label": "提交类型", "value": data.get("submit_type")},
+            {"label": "题目数", "value": data.get("question_count")},
+            {"label": "计分点", "value": data.get("item_count")},
+            {"label": "可提交", "value": "是" if data.get("can_submit") else "否"},
+            {"label": "结论", "value": data.get("verdict") or "—"},
+            {"label": "阻塞项", "value": "；".join(blockers) or "无"},
+        ],
+        "sections": [
+            {
+                "label": "题目与将要提交的答案",
+                "kind": "table",
+                "columns": [
+                    {"key": "index", "label": "#"},
+                    {"key": "kind", "label": "平台题型"},
+                    {"key": "children", "label": "子题"},
+                    {"key": "stem", "label": "题干"},
+                    {"key": "answer", "label": "将提交的答案"},
+                    {"key": "points", "label": "计分点"},
+                ],
+                "rows": rows,
+            },
+            {
+                "label": "提示",
+                "kind": "text",
+                "text": "\n".join(warnings) or "无",
+            },
+        ],
+    }
 
 
 def _readback_dict(state: GroupState | None) -> dict[str, Any] | None:
