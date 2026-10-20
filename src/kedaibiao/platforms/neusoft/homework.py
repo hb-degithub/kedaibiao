@@ -55,6 +55,8 @@ class StudyTask:
     course_name: str = ""
     study_status: int = 0
     open_time: str = ""
+    #: 平台原始类型：2 = 单元测试 / 测验，3 = 作业（两者都用 testId 取卷）
+    task_type: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -156,15 +158,24 @@ def core_question_type(platform_type: Any) -> QuestionType:
 
 
 def parse_study_tasks(payload: Any) -> list[StudyTask]:
-    """解析学习任务分页，**只留作业/测验**。
+    """解析学习任务分页，**留作业（3）与单元测试 / 测验（2）**。
 
     列表里混着视频与资料（``type == 1``），不过滤就会把视频当试卷；
     缺 ``ctlId`` 的行没有可作答的 ``testId``，跳过并留日志，免得后面取卷时
     只得到一句「试卷不存在」。
+
+    ⚠️ 以前只认 ``type == 3``，把「单元测试一/二/三」这类 **type=2** 的任务
+    整批过滤掉了 —— 用户看到的就是「东软的考试怎么没做」。两种类型走的是同一套
+    smartexam 取卷 / 保存 / 交卷链路，只有类型值不同。
     """
     tasks: list[StudyTask] = []
+    # 未识别的 type 不再静默丢弃：按类型聚合计数 + 一条样例名，打完一次 warning。
+    # 上一次事故就是 type=2 被 `continue` 吃掉，界面看起来像「考试功能没做」。
+    skipped: dict[int, list[str]] = {}
     for row in _rows(payload, key="list"):
-        if as_int(row.get("type")) != ep.TASK_KIND_HOMEWORK:
+        task_type = as_int(row.get("type"))
+        if task_type not in (ep.TASK_KIND_TEST, ep.TASK_KIND_HOMEWORK):
+            skipped.setdefault(task_type, []).append(as_str(row.get("resName")))
             continue
         test_id = as_str(row.get("ctlId"))
         if not test_id:
@@ -177,9 +188,17 @@ def parse_study_tasks(payload: Any) -> list[StudyTask]:
                 course_name=as_str(row.get("teachCourseName")),
                 study_status=as_int(row.get("studyStatus")),
                 open_time=as_str(row.get("openTime")),
+                task_type=task_type,
                 raw=dict(row),
             )
         )
+    if skipped:
+        detail = "；".join(
+            f"type={kind} ×{len(names)}（例：{names[0][:24]}）"
+            for kind, names in sorted(skipped.items())
+        )
+        log.warning("学习任务里有 %d 行类型未识别，已跳过：%s", 
+                    sum(len(v) for v in skipped.values()), detail)
     return tasks
 
 

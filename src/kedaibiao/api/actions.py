@@ -2414,12 +2414,33 @@ async def _generic_courses(adapter: Any, params: dict[str, Any]) -> dict[str, An
     )
 
 
+async def _list_assignments_maybe_with_state(adapter: Any, course: Any) -> list[Any]:
+    """读作业列表；适配器支持 ``with_state`` 就顺便回读完成度。
+
+    U校园的目录接口本身没有完成度，``finished`` 必须逐组回读 ``progress/v2``
+    （N 次请求，顺序执行）。所以默认不读，只有显式要求时才付这个代价。
+    """
+    import inspect
+
+    try:
+        supported = "with_state" in inspect.signature(adapter.list_assignments).parameters
+    except (TypeError, ValueError):  # C 扩展/装饰器包裹时拿不到签名
+        supported = False
+    if supported:
+        return list(await adapter.list_assignments(course, with_state=True))
+    return list(await adapter.list_assignments(course))
+
+
 async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     name = getattr(adapter, "name", "?")
     caps = _caps(adapter)
     for capability in ("list_courses", "list_assignments"):
         if caps is not None and not getattr(caps, capability, False):
             raise ActionInputError(f"{name} 不支持读取作业列表")
+
+    # 状态列默认不读：平台目录本身没有完成度，回读要逐组打接口（很慢）。
+    # 读不到就显示「—」，绝不默认写成「未完成」—— 那会把已提交的作业报成没做。
+    with_state = _unipus_flag(params, "with_state")
 
     courses = list(await adapter.list_courses())
     only = str(params.get("course") or "").strip()
@@ -2432,7 +2453,10 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
     failures: list[str] = []
     for course in courses:
         try:
-            items = list(await adapter.list_assignments(course))
+            items = (
+                await _list_assignments_maybe_with_state(adapter, course)
+                if with_state else list(await adapter.list_assignments(course))
+            )
         except Exception as error:  # noqa: BLE001 - 只跳平台声明的课程级错误
             if only or not _course_scoped_failure(adapter, error):
                 raise
@@ -2449,7 +2473,10 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
                     "title": item.title,
                     "kind": _KIND_LABEL.get(item.kind, item.kind.value),
                     "deadline": _fmt_deadline(item.deadline) or "—",
-                    "state": "已完成" if item.finished else "未完成",
+                    "state": (
+                        ("已完成" if item.finished else "未完成")
+                        if with_state else "—"
+                    ),
                 }
             )
 
@@ -2461,6 +2488,12 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
         title=f"作业 / 任务{scope} —— {len(rows)} 项",
         note=(
             "只读数据，不会提交任何内容。"
+            + (
+                "状态列按逐组回读的 progress/v2 判定（已完成 = 平台已记账）。"
+                if with_state else
+                "状态列默认不读：平台目录本身没有完成度，这里显示「—」；"
+                "要看真实状态请传 with_state=1（逐组回读，慢但准）。"
+            )
             + _skipped_note(failures, len(courses))
         ),
         columns=[
@@ -2512,7 +2545,13 @@ async def _generic_assignment_detail(adapter: Any, params: dict[str, Any]) -> di
         {"label": "课程", "value": course_name or "—"},
         {"label": "类型", "value": _KIND_LABEL.get(target.kind, target.kind.value)},
         {"label": "截止", "value": _fmt_deadline(target.deadline) or "—"},
-        {"label": "状态", "value": "已完成" if target.finished else "未完成"},
+        # 目录接口没回读完成度时（raw.state_unconfirmed）不能写成「未完成」，
+        # 那会把已提交的作业报成没做；显示「未核实」，让用户去勾「读取完成状态」。
+        {"label": "状态", "value": (
+            "未核实"
+            if (target.raw or {}).get("state_unconfirmed")
+            else ("已完成" if target.finished else "未完成")
+        )},
         {"label": "进度", "value": f"{target.progress:.0%}"},
         {"label": "题目数", "value": len(questions)},
     ]
@@ -2610,6 +2649,11 @@ def ensure_generic_actions(platform: str) -> None:
                 builtin=True,
                 params=(
                     ActionParam("course", "课程号", hint="留空 = 全部课程"),
+                    ActionParam(
+                        "with_state", "读取完成状态",
+                        hint="1 = 逐组回读 progress/v2（慢，但状态是真实的）；"
+                             "0 = 不读，状态列显示 —",
+                    ),
                 ),
             ),
             _generic_assignments,

@@ -129,9 +129,17 @@ class NeusoftClient:
                 method, path, params=params, body=body, auth=auth, timeout=timeout
             )
         except NeusoftApiError as exc:
-            if not (exc.is_auth_error and auth and allow_reauth and self._username):
+            if not (exc.is_auth_error and auth and allow_reauth):
                 raise
-            log.info("会话被吊销，重新登录后重试一次: %s", path)
+            # 优先用 refresh_token 续期（不需要密码，进程重启后也有效）
+            if await self.refresh():
+                return await self._send(
+                    method, path, params=params, body=body, auth=auth,
+                    allow_reauth=False, timeout=timeout,
+                )
+            if not self._username:
+                raise NeusoftNotLoggedIn(_NEED_LOGIN) from exc
+            log.info("会话被吊销且刷新失败，重新登录后重试一次: %s", path)
             await self.login(self._username, self._password)
             return await self._send(
                 method,
@@ -248,6 +256,49 @@ class NeusoftClient:
         self.remember_credentials(username, password)
         log.info("已登录东软平台: userId=%s", session.user_id)
         return session
+
+    async def refresh(self) -> bool:
+        """用 ``refresh_token`` 换新 access_token。
+
+        为什么重要：账号库**故意不存平台密码**，所以进程重启后从磁盘恢复的会话
+        没有 ``_username``/``_password``；一旦服务端吊销 token，旧实现只会抛
+        「登录失败（凭据可能不对，或会话已失效）」，用户必须回账号页重输密码。
+
+        这条路径不需要密码，正好补上那个洞。``APP_REFRESH`` 目前是 **[C] 级证据**
+        （未实测过报文），所以：
+        - 失败一律**静默**返回 False，绝不把原本能用的路径弄坏；
+        - 不清掉旧 ``refresh_token``，可能只是临时故障；
+        - 调用方拿到 False 后照旧走密码重登（有凭据时）或直接报失效。
+        """
+        token = self.session.refresh_token
+        if not token:
+            return False
+        try:
+            payload = await self._send(
+                "POST",
+                ep.APP_REFRESH,
+                params=None,
+                body={"refreshToken": token},
+                auth=False,
+                allow_reauth=False,
+            )
+        except NeusoftError as exc:
+            log.info("刷新令牌失败，交回调用方处理: %s", exc)
+            return False
+        renewed = Session.from_payload(payload)
+        if not renewed.access_token:
+            log.info("刷新令牌返回里没有 accessToken，按失败处理")
+            return False
+        # 平台可能只回 accessToken，其它字段沿用旧会话
+        renewed.user_id = renewed.user_id or self.session.user_id
+        renewed.refresh_token = renewed.refresh_token or self.session.refresh_token
+        renewed.expires_time = renewed.expires_time or 0
+        renewed.tenant_id = renewed.tenant_id or self.tenant_id
+        self.session = renewed
+        if renewed.tenant_id:
+            self.tenant_id = renewed.tenant_id
+        log.info("已用 refresh_token 续期东软会话")
+        return True
 
     async def is_logged_in(self) -> bool:
         """会话是否还有效。探测失败一律按「无效」处理，交给调用方重新登录。"""

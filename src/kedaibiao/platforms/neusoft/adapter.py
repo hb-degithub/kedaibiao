@@ -136,6 +136,21 @@ class NeusoftAdapter(PlatformAdapter):
     async def is_logged_in(self) -> bool:
         return await self.client.is_logged_in()
 
+    async def refresh_session(self, credentials: Credentials) -> bool:
+        """会话失效时的统一入口：探测 → refresh_token 续期 → 密码重登。
+
+        比基类多一步「用 refresh_token 续期」：账号库不存密码，从磁盘恢复的
+        会话没有凭据，光靠密码重登会把「会话过期」变成「必须回账号页重绑」。
+        """
+        if await self.is_logged_in():
+            return True
+        if await self.client.refresh():
+            # 续期成功后要再确认一次：拿到 token ≠ 真能用
+            if await self.is_logged_in():
+                return True
+        self.log.info("会话失效且无法续期，重新登录: %s", self.name)
+        return await self.login(credentials)
+
     def export_session(self) -> dict[str, Any] | None:
         """导出会话。
 
@@ -404,10 +419,16 @@ def _task_belongs(task: homework.StudyTask, course: Course) -> bool:
 
 
 def _to_core_assignment(task: homework.StudyTask) -> Assignment:
+    #: type=2 是单元测试 / 测验，type=3 是作业；两者同一套交卷链路，只是种类不同
+    kind = (
+        TaskKind.EXAM
+        if task.task_type == ep.TASK_KIND_TEST
+        else TaskKind.HOMEWORK
+    )
     return Assignment(
         remote_id=task.test_id,
         title=task.name or task.test_id,
-        kind=TaskKind.HOMEWORK,
+        kind=kind,
         course_name=task.course_name,
         finished=task.is_completed,
         progress=1.0 if task.is_completed else 0.0,

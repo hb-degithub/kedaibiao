@@ -446,11 +446,15 @@ class PincoAdapter(PlatformAdapter):
         """
         self._require_session()
         # 参数必须带 courseId + page + pageSize —— 缺参数会 401 illegal argument。
-        data = await self.client().post_action(
+        # 服务端 pageSize 封顶 20，只取第一页会让第 21 条起静默消失（提交也定位不到），
+        # 所以和其它列表一样按页取全。
+        return await self._paged(
             ep.ACTION_HOMEWORK_LIST,
-            {**self._page_payload(), ep.FIELD_COURSE_ID: course.remote_id},
+            {ep.FIELD_COURSE_ID: course.remote_id},
+            lambda data: parsing.parse_assignments(
+                data, course=course, default_kind=TaskKind.HOMEWORK
+            ),
         )
-        return parsing.parse_assignments(data, course=course, default_kind=TaskKind.HOMEWORK)
 
     async def list_learning_tasks(self, course: Course) -> list[Assignment]:
         """学习任务 = **课程材料**（PPT / PDF / 视频）。实测确认。

@@ -136,6 +136,9 @@ STUDY_STATUS_DONE = 2
 
 #: 学习任务里混着视频与作业，**必须按 type 过滤**，[A]
 TASK_KIND_RESOURCE = 1
+#: 单元测试 / 测验：走和作业同一套 smartexam 取卷-作答-交卷，只是类型值不同。
+#: 之前只认 3，把这类任务整批丢掉了（见 docs/pigai… 类似事故：过滤太窄）。
+TASK_KIND_TEST = 2
 TASK_KIND_HOMEWORK = 3
 
 #: 视频播放状态，[A]

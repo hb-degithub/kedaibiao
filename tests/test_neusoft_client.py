@@ -24,6 +24,7 @@ from kedaibiao.platforms.neusoft.errors import (
 )
 from kedaibiao.platforms.neusoft.models import Session
 from tests.neusoft_support import (
+    TEST_BASE,
     FakeTransport,
     RecordedRequest,
     make_anonymous_client,
@@ -173,6 +174,92 @@ class ReauthTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(NeusoftApiError):
             await client.request("POST", ep.START_STUDY, body={"x": 1})
         self.assertNotIn(ep.APP_LOGIN, transport.paths())
+
+    async def test_401_renews_with_refresh_token_without_password(self) -> None:
+        """没有密码时也能救回来：用 refresh_token 续期（账号库不存密码）。
+
+        回归：进程重启后从磁盘恢复的会话没有凭据，旧实现只能抛
+        「登录失败（凭据可能不对，或会话已失效）」，用户必须回账号页重输密码。
+        """
+        transport = _FlakyTransport()
+        transport.json("POST", "/auth/app/refresh", {
+            "accessToken": "renewed-token", "userId": "u9", "refreshToken": "ref-2",
+        })
+        transport.json("POST", "/startStudy", {"ok": True})
+        transport.flaky_paths[ep.START_STUDY] = 1
+        client = NeusoftClient(
+            transport,
+            session=Session(access_token="stale", refresh_token="ref-1", user_id="u9"),
+        )
+
+        result = await client.request("POST", ep.START_STUDY, body={"x": 1})
+
+        self.assertEqual(result, {"ok": True})
+        paths = transport.paths()
+        self.assertEqual(paths.count(ep.APP_REFRESH), 1, "应刷新一次")
+        self.assertNotIn(ep.APP_LOGIN, paths, "有 refresh_token 时不该走密码登录")
+        self.assertEqual(client.session.access_token, "renewed-token")
+        self.assertEqual(client.session.refresh_token, "ref-2")
+
+    async def test_refresh_keeps_old_refresh_token_when_absent(self) -> None:
+        """平台只回 accessToken 时，旧的 refresh_token 要留着，否则下次就续不了。"""
+        transport = _FlakyTransport()
+        transport.json("POST", "/auth/app/refresh", {"accessToken": "renewed"})
+        transport.json("POST", "/startStudy", {"ok": True})
+        transport.flaky_paths[ep.START_STUDY] = 1
+        client = NeusoftClient(
+            transport,
+            session=Session(access_token="stale", refresh_token="keep-me", user_id="u9"),
+        )
+
+        await client.request("POST", ep.START_STUDY, body={})
+
+        self.assertEqual(client.session.access_token, "renewed")
+        self.assertEqual(client.session.refresh_token, "keep-me")
+        self.assertEqual(client.session.user_id, "u9")
+
+    async def test_refresh_failure_falls_back_to_password(self) -> None:
+        """刷新失败不能弄坏原有路径：有凭据时照旧密码重登。"""
+        transport = _FlakyTransport()
+        transport.json("POST", "/auth/app/refresh", {"code": 401, "msg": "refresh expired"})
+        transport.json("POST", "/auth/app/login", {"accessToken": "new-token", "userId": "u9"})
+        transport.json("POST", "/startStudy", {"ok": True})
+        transport.flaky_paths[ep.START_STUDY] = 1
+        client = NeusoftClient(
+            transport,
+            session=Session(access_token="stale", refresh_token="dead", user_id="u9"),
+        )
+        client.remember_credentials("alice", "secret")
+
+        result = await client.request("POST", ep.START_STUDY, body={})
+
+        self.assertEqual(result, {"ok": True})
+        paths = transport.paths()
+        self.assertEqual(paths.count(ep.APP_REFRESH), 1)
+        self.assertEqual(paths.count(ep.APP_LOGIN), 1, "刷新失败后应回退到密码重登")
+        self.assertEqual(client.session.access_token, "new-token")
+
+    async def test_no_refresh_token_goes_straight_to_password(self) -> None:
+        transport = _FlakyTransport()
+        transport.json("POST", "/auth/app/login", {"accessToken": "new-token", "userId": "u9"})
+        transport.json("POST", "/startStudy", {"ok": True})
+        transport.flaky_paths[ep.START_STUDY] = 1
+        # 显式造一个没有 refresh_token 的会话（make_client 默认带一个）
+        client = NeusoftClient(
+            transport,
+            base_url=TEST_BASE,
+            tenant_id="0000000000000000000",
+            session=Session(user_id="u9", tenant_id="0000000000000000000",
+                            access_token="stale", refresh_token=""),
+            uuid_factory=lambda: "fixed-uuid",
+        )
+        client.remember_credentials("alice", "secret")
+
+        await client.request("POST", ep.START_STUDY, body={})
+
+        paths = transport.paths()
+        self.assertNotIn(ep.APP_REFRESH, paths, "没有 refresh_token 就别白发一次请求")
+        self.assertEqual(paths.count(ep.APP_LOGIN), 1)
 
     async def test_missing_token_without_credentials_raises(self) -> None:
         transport = FakeTransport()

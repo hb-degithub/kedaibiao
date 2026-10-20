@@ -41,9 +41,9 @@ def setUpModule() -> None:
 
 
 #: 一份学习任务分页：两行作业（type 3，一行数字一行字符串）+ 一行视频（type 1）
-#: + 一行缺 ``ctlId`` 的作业。
+#: + 一行单元测试（type 2，走同一套取卷链路）+ 一行缺 ``ctlId`` 的作业。
 TASK_PAGE: dict[str, Any] = {
-    "total": 4,
+    "total": 5,
     "list": [
         {
             "resId": "res-1",
@@ -53,6 +53,15 @@ TASK_PAGE: dict[str, Any] = {
             "teachCourseName": "高等数学",
             "studyStatus": 0,
             "openTime": "2026-09-01 08:00:00",
+        },
+        {
+            "resId": "res-9",
+            "ctlId": "ctl-401",
+            "type": 2,
+            "resName": "单元测试一",
+            "teachCourseName": "高等数学",
+            "studyStatus": 0,
+            "openTime": "2026-09-10 08:00:00",
         },
         {
             "resId": "res-2",
@@ -153,10 +162,16 @@ def _entered() -> Entered:
 class StudyTaskParseTest(unittest.TestCase):
     """列表解析：过滤 + ctlId ↔ testId。"""
 
-    def test_filters_out_video_rows(self) -> None:
+    def test_filters_out_video_rows_but_keeps_tests(self) -> None:
         tasks = parse_study_tasks(TASK_PAGE)
-        # type=1 的视频被丢弃；缺 ctlId 的作业无法作答也跳过
-        self.assertEqual([task.test_id for task in tasks], ["ctl-301", "ctl-302"])
+        # type=1 的视频被丢弃、缺 ctlId 的行跳过；type=2 的单元测试**必须保留**
+        # （曾经只认 type=3，把「单元测试一/二/三」整批过滤掉了）
+        self.assertEqual([task.test_id for task in tasks], ["ctl-301", "ctl-401", "ctl-302"])
+
+    def test_task_type_is_kept(self) -> None:
+        tasks = {task.test_id: task for task in parse_study_tasks(TASK_PAGE)}
+        self.assertEqual(tasks["ctl-301"].task_type, ep.TASK_KIND_HOMEWORK)
+        self.assertEqual(tasks["ctl-401"].task_type, ep.TASK_KIND_TEST)
 
     def test_ctl_id_is_the_test_id(self) -> None:
         task = parse_study_tasks(TASK_PAGE)[0]
@@ -166,11 +181,11 @@ class StudyTaskParseTest(unittest.TestCase):
         self.assertEqual(task.course_name, "高等数学")
 
     def test_string_status_and_type_are_accepted(self) -> None:
-        tasks = parse_study_tasks(TASK_PAGE)
+        by_id = {task.test_id: task for task in parse_study_tasks(TASK_PAGE)}
         # type 是字符串 "3" 也能认出是作业；studyStatus 是字符串 "2" 也能认出已完成
-        self.assertEqual(tasks[1].test_id, "ctl-302")
-        self.assertEqual(tasks[1].study_status, ep.STUDY_STATUS_DONE)
-        self.assertTrue(tasks[1].is_completed)
+        self.assertEqual(by_id["ctl-302"].task_type, ep.TASK_KIND_HOMEWORK)
+        self.assertEqual(by_id["ctl-302"].study_status, ep.STUDY_STATUS_DONE)
+        self.assertTrue(by_id["ctl-302"].is_completed)
 
     def test_tolerates_non_list_payload(self) -> None:
         self.assertEqual(parse_study_tasks(None), [])
@@ -187,7 +202,9 @@ class StudyTaskRequestTest(unittest.IsolatedAsyncioTestCase):
 
         tasks = await list_study_tasks(client, "term-2026-1")
 
-        self.assertEqual([task.test_id for task in tasks], ["ctl-301", "ctl-302"])
+        self.assertEqual(
+            [task.test_id for task in tasks], ["ctl-301", "ctl-401", "ctl-302"]
+        )
         self.assertEqual(transport.paths(), [ep.STUDY_TASK_PAGE])
         body = transport.body_of("/study-task/page")
         self.assertEqual(body["termId"], "term-2026-1")

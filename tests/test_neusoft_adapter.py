@@ -164,14 +164,19 @@ class AssignmentTest(unittest.IsolatedAsyncioTestCase):
                 {"ctlId": "300000000000000003", "resName": "别的课的作业",
                  "teachCourseName": "另一门课", "teachCourseId": "100000000000000009",
                  "type": 3, "studyStatus": 1},
+                {"ctlId": "300000000000000004", "resName": "单元测试一",
+                 "teachCourseName": "示例课程（一）", "teachCourseId": COURSE_ID,
+                 "type": 2, "studyStatus": 0},
             ]
         })
 
     async def test_filters_by_course_and_kind(self) -> None:
         adapter = make_adapter(self.transport)
         items = await adapter.list_assignments(course())
-        self.assertEqual([item.remote_id for item in items], [TEST_ID])
+        # 作业（type 3）与单元测试（type 2）都属于可作答任务；视频与别的课要滤掉
+        self.assertEqual([item.remote_id for item in items], [TEST_ID, "300000000000000004"])
         self.assertEqual(items[0].kind, TaskKind.HOMEWORK)
+        self.assertEqual(items[1].kind, TaskKind.EXAM)
         self.assertFalse(items[0].finished)
 
     async def test_term_tasks_are_cached(self) -> None:
