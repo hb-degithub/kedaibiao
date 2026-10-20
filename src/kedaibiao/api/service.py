@@ -2204,6 +2204,7 @@ class ConsoleService:
         max_groups: int = 60,
         subjective_placeholder: str = "",
         llm_subjective: bool = False,
+        resubmit_incomplete: bool = False,
         mode: str = "",
         viewer: Viewer | None = None,
     ) -> dict[str, Any]:
@@ -2287,7 +2288,7 @@ class ConsoleService:
             args=(job_id, scope, course, minutes, bool(confirm), bool(submit_pending),
                   bool(only_required), interval, owner_id, cookie_file, creds,
                   do_duration, mode, max_groups, str(subjective_placeholder or ""),
-                  bool(llm_subjective)),
+                  bool(llm_subjective), bool(resubmit_incomplete)),
             name=f"kedaibiao-brush-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
@@ -2404,6 +2405,7 @@ class ConsoleService:
         do_duration: bool = True, mode: str = "both", max_groups: int = 60,
         subjective_placeholder: str = "",
         llm_subjective: bool = False,
+        resubmit_incomplete: bool = False,
     ) -> None:
         from kedaibiao.platforms.unipus import duration as duration_mod
 
@@ -2441,15 +2443,29 @@ class ConsoleService:
             tree = asyncio.run(adapter.native_course_tree(course, with_state=True))
             groups = [g for unit in tree["units"] for g in unit["groups"]]
             required = [g for g in groups if g["required"]]
-            pending = [
-                g for g in groups
-                if not g.get("finished") and (g["required"] or not only_required)
+            scope_groups = [
+                g for g in groups if (g["required"] or not only_required)
             ]
+            done = [g for g in scope_groups if g.get("finished")]
+            full = [g for g in done if g.get("full_marks")]
+            incomplete = [g for g in done if not g.get("full_marks")]
+            pending = [g for g in scope_groups if not g.get("finished")]
+            if resubmit_incomplete:
+                # 已完成但没全对的也重交（实测不改分，仅供排查/死马当活马医）
+                pending = incomplete + pending
             self._job_log(
                 job_id, "info",
                 f"  {tree['group_count']} 个任务组，必修 {tree['required_count']}；"
-                f"未完成 {len(pending)}（范围：{'仅必修' if only_required else '全部'}）",
+                f"范围（{'仅必修' if only_required else '全部'}）{len(scope_groups)} 组："
+                f"未做 {len(scope_groups) - len(done)}，已完成 {len(done)}"
+                f"（其中满分 {len(full)}、未满分 {len(incomplete)}）；本次待提交 {len(pending)}",
             )
+            if resubmit_incomplete and incomplete:
+                self._job_log(
+                    job_id, "warn",
+                    f"· 已开启「已完成未满分也重交」：{len(incomplete)} 组会再交一次。"
+                    f"注意：平台留存首条记录，实测重交**不改分**，只为排查",
+                )
 
             stopped_any = False
             if len(pending) > max_groups:

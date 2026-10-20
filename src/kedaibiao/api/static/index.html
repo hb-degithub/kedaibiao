@@ -325,6 +325,7 @@
               <div class="action-submit">
                 <button id="batch-dry" class="btn btn-run" type="button">① 先干跑（只规划）</button>
                 <button id="batch-live" class="btn btn-warn" type="button" hidden>② 确认全部真交</button>
+                <span id="batch-live-note" class="field-hint"></span>
                 <button id="batch-close" class="btn" type="button">收起</button>
                 <span id="batch-counts" class="field-hint"></span>
               </div>
@@ -368,6 +369,11 @@
               <span class="field-label">翻译/写作用占位文本</span>
               <input id="brush-placeholder" type="checkbox">
               <span class="field-hint">服务端没有标准答案时填「[已提交]」；能得完成分，但内容不是人写的</span>
+            </label>
+            <label class="field" for="brush-resubmit">
+              <span class="field-label">已完成未满分也重交</span>
+              <input id="brush-resubmit" type="checkbox">
+              <span class="field-hint">平台留存首条记录，实测重交不改分；仅为排查/碰运气</span>
             </label>
             <label class="field" for="brush-only-required">
               <span class="field-label">只处理必修</span>

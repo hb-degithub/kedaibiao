@@ -5971,17 +5971,32 @@
         // 后端已经往 logs 里写过一行「■ 汇总」，这里不再重复
         batchSetState(job.summary || '完成');
         var counts = job.counts || {};
-        if (!job.confirm && (counts.planned || 0) > 0) {
+        if (!job.confirm) {
           batch.dryDone = true;
           batchShowLive(true);
-          /* 干跑已完成：① 只剩「参数改过才需要重跑」，② 直接按同样参数真交。
-             不需要再点一次 ① —— ② 内部会重新读内容/答案再提交。 */
+          /* 干跑完成后**总是**给出「② 确认全部真交」：
+             没有可提交的组时按钮置灰并说明原因，而不是让它凭空消失。 */
           var dryBtn = $('batch-dry');
           if (dryBtn) { dryBtn.textContent = '① 重新干跑（参数改过才需要）'; }
-          batchLog('→ 干跑完成。直接点「② 确认全部真交」即可（无需再干跑一次；' +
-                   '真交会用同样的参数重新读一遍内容与标准答案再提交）。');
-        } else if (!job.confirm) {
-          batchLog('→ 干跑完成：没有可提交的任务组。');
+          var planned = counts.planned || 0;
+          var liveBtn = $('batch-live');
+          if (liveBtn) {
+            liveBtn.disabled = planned === 0;
+            liveBtn.title = planned === 0
+              ? '没有可提交的任务组（都已完成，或按平台策略重交不改分）—— 换一门课或关掉「跳过已完成」再试'
+              : '用同样的参数逐组真交（不可撤销）';
+          }
+          setText('batch-live-note', planned === 0
+            ? '没有可提交的组：都已完成或重交不改分'
+            : '可提交 ' + planned + ' 组');
+          if (planned > 0) {
+            batchLog('→ 干跑完成。直接点「② 确认全部真交」即可（无需再干跑一次；' +
+                     '真交会用同样的参数重新读一遍内容与标准答案再提交）。');
+          } else {
+            batchLog('→ 干跑完成：**没有可提交的任务组**（' +
+                     '全部已完成/已满分，或按平台策略重交不改分）。' +
+                     '换一门课，或取消「跳过已完成」再试；「② 确认全部真交」已置灰。');
+          }
         }
       } else {
         batchSetState('失败：' + (job.error || '未知错误'));
@@ -6524,6 +6539,7 @@
       subjective_placeholder: ($('brush-placeholder') && $('brush-placeholder').checked)
         ? '[已提交]' : '',
       llm_subjective: !!($('brush-llm') && $('brush-llm').checked),
+      resubmit_incomplete: !!($('brush-resubmit') && $('brush-resubmit').checked),
       interval: 20
     };
     var what = mode === 'submit' ? '提交未完成任务'
@@ -6534,6 +6550,7 @@
       (mode === 'submit' ? '' : '\n时长：' + minutes + ' 分钟') +
       '\n提交已完成？：' + (params.submit_pending ? '会提交未完成的组' : '不提交') +
       '\n翻译/写作：' + (params.llm_subjective ? '大模型生成' : (params.subjective_placeholder ? '占位文本' : '空答案')) +
+      '\n已完成未满分也重交：' + (params.resubmit_incomplete ? '是（实测不改分）' : '否') +
       '\n只处理必修：' + (params.only_required ? '是' : '否（非必修不计入进度）') +
       '\n本轮最多：' + params.max_groups + ' 组' +
       '\n\n' + (confirm ? '确定执行？' : '开始干跑？');
