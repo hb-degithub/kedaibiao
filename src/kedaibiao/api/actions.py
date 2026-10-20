@@ -1766,11 +1766,230 @@ def _register_pinco() -> None:
     )
 
 
+# --------------------------------------------------------------------------
+# U校园（unipus）
+# --------------------------------------------------------------------------
+
+
+def _unipus_platform(adapter: Any) -> str:
+    return getattr(adapter, "name", "unipus") or "unipus"
+
+
+def _unipus_require(params: dict[str, Any], key: str, label: str) -> str:
+    value = str(params.get(key) or "").strip()
+    if not value:
+        raise ActionInputError(f"缺少{label}（{key}）")
+    return value
+
+
+def _unipus_flag(params: dict[str, Any], key: str) -> bool:
+    raw = params.get(key)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "y", "on", "是")
+
+
+def _unipus_short(text: str, limit: int = 120) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _unipus_answers_text(answers: Any) -> str:
+    """把标准答案的逐子题答案摊成一行：``1:A 2:B``。"""
+    if answers is None or not getattr(answers, "children", ()):
+        return "—"
+    parts: list[str] = []
+    for index, group in enumerate(answers.children, start=1):
+        values = [str(item) for item in (group or ()) if str(item)]
+        if values:
+            parts.append(f"{index}:{'/'.join(values)}")
+    return " ".join(parts) or "—"
+
+
+def _unipus_options_text(question: Any) -> str:
+    options = list(getattr(question, "options", ()) or [])
+    if not options:
+        return "—"
+    return " / ".join(_unipus_short(option, 40) for option in options)
+
+
+async def _unipus_answers(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """列出某道任务的内容题目 + 服务端标准答案（只读）。"""
+    from kedaibiao.platforms.unipus import parsing as unipus_parsing
+
+    name = _unipus_platform(adapter)
+    assignment_id = _unipus_require(params, "assignment_id", "任务号")
+    try:
+        course_instance_id, group_id = unipus_parsing.split_assignment_id(assignment_id)
+    except Exception as exc:  # noqa: BLE001 - 输入格式错误 → 400
+        raise ActionInputError(str(exc)) from exc
+
+    client = adapter.client()
+    try:
+        questions = list(await client.fetch_content(course_instance_id, group_id))
+        answers = list(await client.fetch_answers(course_instance_id, group_id))
+    except Exception as exc:  # noqa: BLE001 - 平台异常由服务层翻成 502
+        raise
+
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(questions):
+        answer = answers[index] if index < len(answers) else None
+        rows.append(
+            {
+                "index": index + 1,
+                "qid": item.instance_id,
+                "type": item.unipus_type or "—",
+                "children": item.child_count,
+                "stem": _unipus_short(item.stem, 160) or "（无文字题干）",
+                "options": _unipus_options_text(item),
+                "answers": _unipus_answers_text(answer),
+                "points": item.item_count,
+            }
+        )
+
+    return detail(
+        platform=name,
+        action="answers",
+        label="题目与标准答案",
+        title=f"{group_id} · 题目与标准答案",
+        note=(
+            "只读：内容与答案都来自平台（答案由服务端下发，适配器原样转发）。"
+            "「计分点」= 提交时该题贡献的判分项数量。"
+        ),
+        fields=[
+            _field("任务号", assignment_id),
+            _field("课程实例", course_instance_id),
+            _field("分组", group_id),
+            _field("题目数", len(rows)),
+            _field("计分点合计", sum(int(row["points"] or 0) for row in rows)),
+        ],
+        sections=[
+            _table_section(
+                "题目",
+                [
+                    {"key": "index", "label": "#"},
+                    {"key": "type", "label": "平台题型"},
+                    {"key": "children", "label": "子题"},
+                    {"key": "stem", "label": "题干"},
+                    {"key": "options", "label": "选项"},
+                    {"key": "answers", "label": "标准答案"},
+                    {"key": "points", "label": "计分点"},
+                ],
+                rows,
+            )
+        ],
+    )
+
+
+async def _unipus_duration(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """学习时长上报：默认干跑，confirm=true 才真的建连接（写操作）。"""
+    from kedaibiao.platforms.unipus import duration as duration_mod
+    from kedaibiao.platforms.unipus import endpoints as unipus_endpoints
+
+    name = _unipus_platform(adapter)
+    seconds = float(params.get("seconds") or 60)
+    if seconds <= 0:
+        raise ActionInputError("seconds 必须是正数")
+    confirm = _unipus_flag(params, "confirm")
+    kick = _unipus_flag(params, "kick")
+    module = str(params.get("module") or "").strip()
+    module_group = str(params.get("module_group") or "").strip()
+
+    client = adapter.client()
+    if not client.session.open_id:
+        raise ActionInputError("会话里没有 open_id（先到「账号」页登录一次）")
+    token = client.auth_headers(unipus_endpoints.UnipusApp.UCONTENT).get(
+        unipus_endpoints.UCONTENT_AUTH_HEADER, ""
+    )
+    if not token:
+        raise ActionInputError("取不到 annotator token（会话不完整）")
+
+    report = await asyncio.to_thread(
+        duration_mod.report_duration,
+        client.session.open_id,
+        token,
+        seconds,
+        confirm=confirm,
+        enable_kick=kick,
+        module=module,
+        module_group=module_group,
+    )
+    plan = report.plan
+    lines = [
+        f"干跑：{'否（已真实建立连接）' if confirm else '是（未建立任何连接）'}",
+        f"计划时长：{plan.requested_seconds:g} 秒；心跳 {plan.planned_pings} 次（间隔 {plan.ping_interval:g}s）",
+    ]
+    if kick:
+        lines.append(f"kick-v2：已启用（module={module or '-'} / group={module_group or '-'}）")
+    else:
+        lines.append("kick-v2：未启用（源码事实：不 kick 不记账，是否替用户做由你决定）")
+    lines.append(
+        f"连接={report.connected} 入房={report.namespace_acked} "
+        f"ping={report.pings_sent} pong={report.pongs_received} 观测记账秒数={report.credited_seconds:g}"
+    )
+    if report.error:
+        lines.append(f"错误：{report.error}")
+    for warning in report.warnings:
+        lines.append(f"⚠️ {warning}")
+    return message(
+        platform=name,
+        action="duration",
+        label="学习时长上报",
+        title="学习时长上报（写操作）",
+        message="\n".join(lines),
+    )
+
+
+def _register_unipus() -> None:
+    register(
+        ActionSpec(
+            platform="unipus",
+            name="answers",
+            label="题目与标准答案",
+            description=(
+                "按任务号取内容题目与服务端标准答案（只读）。"
+                "U校园的作答是转发服务端答案，这里能看到将要提交什么。"
+            ),
+            params=(ActionParam("assignment_id", "任务号", required=True),),
+        ),
+        _unipus_answers,
+    )
+    register(
+        ActionSpec(
+            platform="unipus",
+            name="duration",
+            label="学习时长上报（写操作）",
+            description=(
+                "按 engine.io v3 协议维持学习时长会话。默认干跑（不建连接），"
+                "confirm=true 才真连；kick 需要平台记账时再显式打开。"
+            ),
+            params=(
+                ActionParam("seconds", "上报时长（秒）", type="int", hint="默认 60"),
+                ActionParam(
+                    "confirm",
+                    "确认真连",
+                    hint="填 true 才会建立连接；留空 = 干跑（默认）",
+                ),
+                ActionParam(
+                    "kick",
+                    "发送 kick-v2",
+                    hint="填 true 才发；报文形状未实测，且是账号级记账",
+                ),
+                ActionParam("module", "module", hint="仅 kick 需要"),
+                ActionParam("module_group", "moduleGroup", hint="仅 kick 需要"),
+            ),
+            mutates=True,
+        ),
+        _unipus_duration,
+    )
+
+
 def load_builtin_actions() -> int:
     """登记所有内置动作。新增平台在这里加一行注册函数即可。"""
     _register_pigai()
     _register_itest()
     _register_pinco()
+    _register_unipus()
     return len(_HANDLERS)
 
 
