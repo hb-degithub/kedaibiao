@@ -5854,7 +5854,7 @@
      一键全部提交（批量提交：后台任务 + 轮询进度）
      只对「原生提交链路」的平台开放（当前是 U校园）：
        POST /api/platforms/<name>/batch-submit
-         {course, confirm, limit, interval, skip_full} → 202 {job_id,...}
+         {course, confirm, limit, interval, skip_done} → 202 {job_id,...}
        GET /api/jobs/<job_id> → {status, logs, counts, summary, error}
      两步：先干跑（只读、不写平台），确认后再逐组真交（不可逆）。
      ================================================================== */
@@ -5980,7 +5980,7 @@
       confirm: !!confirm,
       limit: isNaN(limit) ? 0 : limit,
       interval: isNaN(interval) ? 8 : interval,
-      skip_full: !!(skipEl && skipEl.checked)
+      skip_done: !!(skipEl && skipEl.checked)
     };
     if (!confirm) {
       var okDry = window.confirm(

@@ -108,10 +108,13 @@ class NativeBatchAdapter(FakeAdapter):
                 "finished": True, "score_pct": 1.0,
                 "total_items": 2, "correct_items": 2, "full_marks": True,
             }
-        return {
-            "finished": True, "score_pct": 1.0,   # 注意：平台的 score_pct 不可信
-            "total_items": 2, "correct_items": 1, "full_marks": False,
-        }
+        if assignment_id == "a2":
+            return {
+                "finished": True, "score_pct": 1.0,   # 平台 score_pct 不可信（只对一半）
+                "total_items": 2, "correct_items": 1, "full_marks": False,
+            }
+        return {"finished": False, "score_pct": None,
+                "total_items": 0, "correct_items": 0, "full_marks": False}
 
     async def native_plan(self, assignment_id: str) -> dict[str, Any]:
         if assignment_id == "a3":
@@ -858,20 +861,32 @@ class TestBatchSubmit(ServiceTestBase):
         self.assertEqual(done["status"], "done", done)
         self.assertEqual(
             done["counts"],
-            {"planned": 1, "submitted": 0, "skipped": 1, "blocked": 1, "failed": 0},
+            {"planned": 0, "submitted": 0, "skipped": 2, "blocked": 1, "failed": 0},
         )
         self.assertEqual(NativeBatchAdapter.submitted, [], "干跑绝不能真交")
-        self.assertIn("可提交 1", done["summary"])
+        self.assertIn("可提交 0", done["summary"])
 
-    def test_live_submits_only_planned(self) -> None:
+    def test_live_submits_only_not_started(self) -> None:
+        """已完成（哪怕没全对）默认跳过：平台留存首条记录，重交不改分。"""
         NativeBatchAdapter.submitted = []
         job = self.service.start_batch_submit(NATIVE, confirm=True, interval=0.5)
         done = self._wait(job)
         self.assertEqual(done["status"], "done", done)
-        self.assertEqual(done["counts"]["submitted"], 1)
-        self.assertEqual(done["counts"]["skipped"], 1)
+        self.assertEqual(done["counts"]["submitted"], 0)
+        self.assertEqual(done["counts"]["skipped"], 2)
         self.assertEqual(done["counts"]["blocked"], 1)
-        self.assertEqual(NativeBatchAdapter.submitted, ["a2"])
+        self.assertEqual(NativeBatchAdapter.submitted, [])
+
+    def test_skip_done_false_resubmits(self) -> None:
+        """显式关掉 skip_done 才会重交已完成但没全对的组。"""
+        NativeBatchAdapter.submitted = []
+        job = self.service.start_batch_submit(
+            NATIVE, confirm=True, interval=0.5, skip_done=False
+        )
+        done = self._wait(job)
+        self.assertEqual(done["status"], "done")
+        self.assertEqual(done["counts"]["submitted"], 2)
+        self.assertEqual(sorted(NativeBatchAdapter.submitted), ["a1", "a2"])
 
     def test_course_filter_mismatch_fails_softly(self) -> None:
         job = self.service.start_batch_submit(NATIVE, course="不存在的课", interval=0.5)
@@ -889,14 +904,13 @@ class TestBatchSubmit(ServiceTestBase):
         self.assertEqual(done["counts"]["planned"], 0)
         self.assertEqual(NativeBatchAdapter.submitted, [])
 
-    def test_score_pct_one_but_not_all_correct_is_resubmitted(self) -> None:
-        """平台 score_pct=1 不代表全对（实测语义不可靠），必须按逐项得分重交。"""
+    def test_score_pct_one_but_not_all_correct_is_still_skipped(self) -> None:
+        """平台 score_pct=1 不代表全对（实测语义不可靠）→ 未全对时日志要写明。"""
         NativeBatchAdapter.submitted = []
-        job = self.service.start_batch_submit(NATIVE, confirm=True, interval=0.5)
+        job = self.service.start_batch_submit(NATIVE, confirm=False, interval=0.5)
         done = self._wait(job)
-        self.assertEqual(done["status"], "done")
-        self.assertEqual(NativeBatchAdapter.submitted, ["a2"],
-                         "a2 的 score_pct=1 但只对了一半，应当重交")
+        texts = " ".join(line["text"] for line in done["logs"])
+        self.assertIn("已完成但未全对", texts)
 
     def test_platform_without_native_flow_is_501(self) -> None:
         with self.assertRaises(ConsoleError) as ctx:

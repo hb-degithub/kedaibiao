@@ -349,7 +349,7 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 **请求**：
 
 ```json
-{ "course": "", "confirm": false, "limit": 50, "interval": 8, "skip_full": true }
+{ "course": "", "confirm": false, "limit": 50, "interval": 8, "skip_done": true }
 ```
 
 | 字段 | 类型 | 默认 | 说明 |
@@ -358,7 +358,7 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 | `confirm` | bool | `false` | `false` = 干跑（只读、只规划）；`true` = 逐组真交（不可逆） |
 | `limit` | int | `0` | 最多处理多少个任务，0 = 不限 |
 | `interval` | number | `8` | 真交时组间间隔秒数（0.5~120），防风控 |
-| `skip_full` | bool | `true` | 跳过已满分（`score_pct >= 1`）的任务组 |
+| `skip_done` | bool | `true` | 跳过**所有已完成**（`first_pass` 有值）的任务组。平台留存首条记录、重交不改分（实测）；设为 `false` 才会重交 |
 
 **响应**（202）：
 

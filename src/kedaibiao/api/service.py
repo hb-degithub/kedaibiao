@@ -2146,15 +2146,17 @@ class ConsoleService:
         confirm: bool = False,
         limit: int = 0,
         interval: float = 8.0,
-        skip_full: bool = True,
+        skip_done: bool = True,
         viewer: Viewer | None = None,
     ) -> dict[str, Any]:
         """一键全部提交：后台任务，逐组「读状态 → 干跑计划 →（确认后）真交」。
 
         - ``confirm=False``（默认）= **只规划不提交**，回报「哪些会交、哪些跳过/被拦」；
         - ``confirm=True`` 才逐组真的写平台（不可逆），组间默认停 ``interval`` 秒；
-        - ``skip_full=True``（默认）跳过**已满分**（``score_pct >= 1``）的组，
-          做过但没满分的组会被重交（U校园转发标准答案，重交只会更好）；
+        - ``skip_done=True``（默认）跳过**所有已完成**（``first_pass`` 有值）的组。
+          为什么连"没全对"也跳过：2026-10-20 实测，平台的留存策略
+          ``record_every_submit=false`` —— 一组只保留首条记录，重交**不会改分**
+          （提交前后 ``state.score`` 完全一致）。想覆盖旧记录只能人工在网页端重做；
         - ``course`` 可填课程号或课程名片段，留空 = 全部课程；
         - ``limit`` 最多处理多少个任务（0 = 不限），给首次试跑限流用。
 
@@ -2206,7 +2208,7 @@ class ConsoleService:
                 "confirm": bool(confirm),
                 "limit": limit,
                 "interval": interval,
-                "skip_full": bool(skip_full),
+                "skip_done": bool(skip_done),
                 "status": "running",
                 "started_at": _now(),
                 "finished_at": None,
@@ -2236,7 +2238,7 @@ class ConsoleService:
         threading.Thread(
             target=self._run_batch_submit,
             args=(job_id, scope, course, bool(confirm), limit, interval,
-                  bool(skip_full), owner_id, cookie_file, creds),
+                  bool(skip_done), owner_id, cookie_file, creds),
             name=f"kedaibiao-batch-{job_id}",
             daemon=True,
         ).start()
@@ -2250,7 +2252,7 @@ class ConsoleService:
         confirm: bool,
         limit: int,
         interval: float,
-        skip_full: bool,
+        skip_done: bool,
         owner_id: int,
         cookie_file: str | None,
         credentials: Any,
@@ -2301,7 +2303,7 @@ class ConsoleService:
                     processed += 1
                     self._batch_one(
                         job_id, adapter, assignment,
-                        confirm=confirm, skip_full=skip_full, interval=interval,
+                        confirm=confirm, skip_done=skip_done, interval=interval,
                     )
                     if limit and processed >= limit:
                         break
@@ -2339,7 +2341,7 @@ class ConsoleService:
         assignment: Any,
         *,
         confirm: bool,
-        skip_full: bool,
+        skip_done: bool,
         interval: float,
     ) -> None:
         """处理一个任务组：读状态 → 干跑计划 →（确认后）真交。"""
@@ -2362,26 +2364,20 @@ class ConsoleService:
 
         # 「要不要跳过」只看**逐项得分**：平台的 score_pct 不是正确率
         # （实测：score=[1,1,1,1,1,0,0,0,0,0] 也回 score_pct=1）。
-        skip_reason = ""
-        if skip_full and state.get("finished"):
+        if skip_done and state.get("finished"):
             total_items = int(state.get("total_items") or 0)
             correct_items = int(state.get("correct_items") or 0)
-            if total_items and correct_items == total_items:
-                skip_reason = f"已满分（{correct_items}/{total_items} 项全对）"
-            elif not total_items:
-                skip_reason = "已完成（无计分点：纯学习/内容组，平台已记过账）"
-        if skip_reason:
+            if not total_items:
+                reason = "已完成（无计分点：纯学习/内容组）"
+            elif correct_items == total_items:
+                reason = f"已满分（{correct_items}/{total_items} 项全对）"
+            else:
+                # 没全对也跳过：平台留存首条记录，重交不改分（实测）
+                reason = (f"已完成但未全对（{correct_items}/{total_items} 项）；"
+                          f"平台留存首条记录，重交不改分")
             self._bump(job_id, "skipped")
-            self._job_log(job_id, "info", f"· 跳过 {title}（{skip_reason}）")
+            self._job_log(job_id, "info", f"· 跳过 {title}（{reason}）")
             return
-        if state.get("finished"):
-            total_items = int(state.get("total_items") or 0)
-            correct_items = int(state.get("correct_items") or 0)
-            if total_items:
-                self._job_log(
-                    job_id, "info",
-                    f"· {title} 做过但未全对（{correct_items}/{total_items} 项），重交",
-                )
 
         try:
             plan = asyncio.run(adapter.native_plan(assignment_id))

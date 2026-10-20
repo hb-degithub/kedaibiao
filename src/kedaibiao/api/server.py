@@ -290,7 +290,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 confirm=bool(payload.get("confirm", False)),
                 limit=limit,
                 interval=interval,
-                skip_full=bool(payload.get("skip_full", True)),
+                skip_done=bool(payload.get("skip_done", True)),
                 viewer=viewer,
             ))
 
@@ -472,7 +472,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 confirm=bool(payload.get("confirm", False)),
                 limit=limit,
                 interval=interval,
-                skip_full=bool(payload.get("skip_full", True)),
+                skip_done=bool(payload.get("skip_done", True)),
                 viewer=viewer,
             ))
 
