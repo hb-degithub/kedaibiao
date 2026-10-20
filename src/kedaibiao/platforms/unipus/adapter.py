@@ -644,7 +644,14 @@ class UnipusAdapter(PlatformAdapter):
                         entry["state_error"] = f"{type(exc).__name__}: {exc}"
 
             await asyncio.gather(*(_load(entry, coro) for entry, coro in waiting))
+        grade: dict[str, Any] = {}
+        try:
+            grade = await self.native_grade_ledger(course)
+        except UnipusError as exc:
+            self.log.info("读取成绩账本失败（不影响教材树）：%s", exc)
+
         return {
+            "grade": grade,
             "course": course.name,
             "course_remote_id": course.remote_id,
             "instance_id": instance_id,
@@ -663,6 +670,73 @@ class UnipusAdapter(PlatformAdapter):
             "required_count": sum(
                 1 for unit in units for group in unit["groups"] if group["required"]
             ),
+        }
+
+    async def native_grade_ledger(self, course: Course) -> dict[str, Any]:
+        """门户的「学习成绩」账本（只读）。
+
+        为什么要它：门户的课程进度由**两个等权项**组成 ——
+
+        - **必修学习时长**（``/api/aca/plan/detail`` 的 ``minHours``/``maxHours``）：
+          ``queryUserScore`` 里逐教材给 ``duration``（如 ``00:31:40``）；
+        - **教程学习成绩**（任务点）：逐教材给 ``process``（如 ``0/33``）。
+
+        所以「任务都做过、进度还是 0」的常见原因是**学习时长为 0**，
+        而不是任务没交。两者都不为 0 才可能出分。
+        """
+        raw = course.raw if isinstance(course.raw, dict) else {}
+        resource_id = str(raw.get("course_resource_id") or "")
+        if not resource_id:
+            raise UnipusProtocolError("缺少班级教材 ID（courseResourceId），无法读成绩账本")
+        info = await self.client().request(
+            endpoints.UnipusApp.PORTAL, "GET",
+            endpoints.PORTAL_COURSE_RESOURCE_INFO.format(course_resource_id=resource_id),
+            family=endpoints.UnipusApp.PORTAL.value,
+        )
+        detail = parsing.dig(info, "value", "courseResource") or {}
+        course_id = detail.get("courseId")
+        class_id = detail.get("classId")
+        if course_id is None or class_id is None:
+            raise UnipusProtocolError("教材详情里没有 courseId/classId，无法读成绩账本")
+        payload = {"courseInstanceId": course_id, "classId": str(class_id)}
+        plan = await self.client().request(
+            endpoints.UnipusApp.PORTAL, "POST", endpoints.PORTAL_PLAN_DETAIL,
+            family=endpoints.UnipusApp.PORTAL.value, host_headers=True, payload=payload,
+        )
+        score = await self.client().request(
+            endpoints.UnipusApp.PORTAL, "POST", endpoints.PORTAL_USER_SCORE,
+            family=endpoints.UnipusApp.PORTAL.value, host_headers=True, payload=payload,
+        )
+        items: list[dict[str, Any]] = []
+        value = score.get("value") or {}
+        for node in value.get("templateScoreList") or []:
+            if not isinstance(node, dict):
+                continue
+            books = [
+                {
+                    "name": book.get("name"),
+                    "process": book.get("process"),
+                    "duration": book.get("duration"),
+                    "score": book.get("score"),
+                    "percent": book.get("percent"),
+                }
+                for book in (node.get("businessScoreList") or [])
+                if isinstance(book, dict)
+            ]
+            items.append(
+                {
+                    "name": node.get("name"),
+                    "percent": node.get("percent"),
+                    "score": node.get("score"),
+                    "finish_process": node.get("finishProcess"),
+                    "books": books,
+                }
+            )
+        return {
+            "course_id": course_id,
+            "class_id": str(class_id),
+            "items": items,
+            "plan": (plan.get("value") or {}),
         }
 
     async def _fetch_required_ids(self, course: Course, catalog: Any) -> dict[str, bool]:

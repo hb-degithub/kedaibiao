@@ -286,7 +286,10 @@ PYTHONPATH=src python3 -m kedaibiao action unipus answers \
   生成译文/短文再提交（默认关；生成内容会写进日志可复查；主观点提交后需等老师批阅
   才出分）。也可以只交占位文本拿完成分。
 
-> ⚠️ 刷时长的**记账仍未验证**（本机多次实测 credited=0），详见
+- **成绩构成**：门户把课程成绩分成「必修学习时长 50% + 教程学习成绩（任务点）50%」，
+  刷课面板里直接显示这两项（当前账号时长 `00:00:00`、任务点 `0/204`）。
+
+> ⚠️ 刷时长的**记账仍未验证**（三次实测 credited=0，含 5 分钟房间池），详见
 > [docs/verification/unipus-brush.md](docs/verification/unipus-brush.md)。
 
 #### U校园「一键全部提交」（控制台）

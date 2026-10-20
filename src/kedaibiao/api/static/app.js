@@ -6394,9 +6394,26 @@
       clear(fields);
       var activatedText = tree.activated === true ? '已激活'
         : (tree.activated === false ? '未激活（无法提交，需网页端输入激活码）' : '未知');
+      var grade = tree.grade || {};
+      var gradeItems = grade.items || [];
+      var durationItem = null, taskItem = null;
+      gradeItems.forEach(function (it) {
+        if (String(it.name || '').indexOf('学习时长') >= 0) { durationItem = it; }
+        if (String(it.name || '').indexOf('学习成绩') >= 0) { taskItem = it; }
+      });
+      var durationText = durationItem
+        ? String(durationItem.finish_process || '00:00:00') +
+          '（' + (durationItem.score || 0) + ' 分 / 权重 ' + (durationItem.percent || 0) + '%）'
+        : '—';
+      var taskText = taskItem
+        ? String(taskItem.finish_process || '—') +
+          '（' + (taskItem.score || 0) + ' 分 / 权重 ' + (taskItem.percent || 0) + '%）'
+        : '—';
       var pairs = [
         ['课程号', tree.course_remote_id],
         ['激活', activatedText],
+        ['成绩·时长', durationText],
+        ['成绩·任务点', taskText],
         ['班级', tree.class_name || '—'],
         ['进度', (tree.finish_points === null || tree.finish_points === undefined
                  ? '—' : tree.finish_points + '/' + (tree.total_points || '—'))],
