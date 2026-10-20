@@ -1480,6 +1480,11 @@ def plan_duration_pool(
         warnings.append("r_set 记账约每 60 秒一批：短于 60 秒的会话大概率记 0")
     if len(pool) < 2:
         warnings.append("只开 1 个房间时服务端**不记账**（实测），至少 2 个房间")
+    if len(pool) > SAFE_ROOMS:
+        warnings.append(
+            f"并发 {len(pool)} 个房间超过实测安全区 {SAFE_ROOMS}：再多握手会被服务端随机拒绝，"
+            f"建议 6~10"
+        )
     warnings.append(
         "房间池是**账号级**记账（不含课程/分组信息），门户按教材归集可能有延迟"
     )

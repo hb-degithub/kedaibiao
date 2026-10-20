@@ -351,9 +351,17 @@
               <span class="field-hint">任务模式 1× 封顶；记账未验证，建议先干跑</span>
             </label>
             <label class="field" for="brush-rooms">
-              <span class="field-label">刷时长房间数</span>
-              <input id="brush-rooms" class="mono" type="number" min="2" max="20" step="1" value="6">
-              <span class="field-hint">实测：单房间不记账，6 房间约 4 倍时长；建议 6~10</span>
+              <span class="field-label">刷时长并发数</span>
+              <input id="brush-rooms" class="mono" type="number" min="2" max="60" step="1" value="6"
+                     list="brush-rooms-presets">
+              <datalist id="brush-rooms-presets">
+                <option value="2"></option><option value="4"></option><option value="6"></option>
+                <option value="8"></option><option value="10"></option><option value="12"></option>
+                <option value="16"></option><option value="20"></option>
+              </datalist>
+              <span class="field-hint">
+                同时开的连接数（每个房间一条）。实测单房间不记账、6 约 4 倍；&gt;20 可能握手被拒
+              </span>
             </label>
             <label class="field" for="brush-submit-pending">
               <span class="field-label">提交未完成任务</span>

@@ -2289,7 +2289,8 @@ class ConsoleService:
             args=(job_id, scope, course, minutes, bool(confirm), bool(submit_pending),
                   bool(only_required), interval, owner_id, cookie_file, creds,
                   do_duration, mode, max_groups, str(subjective_placeholder or ""),
-                  bool(llm_subjective), bool(resubmit_incomplete), int(rooms or 6)),
+                  bool(llm_subjective), bool(resubmit_incomplete),
+                  max(2, min(int(rooms or 6), 60))),
             name=f"kedaibiao-brush-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
@@ -2624,6 +2625,11 @@ class ConsoleService:
                 confirm=confirm,
             )
             counts["rooms"] = len(pool_report.plan.rooms)
+            self._job_log(
+                job_id, "info",
+                f"· 并发数（房间）：{len(pool_report.plan.rooms)}"
+                + ("（超过安全区 20，可能握手被拒）" if len(pool_report.plan.rooms) > 20 else ""),
+            )
             counts["credited_seconds"] = int(pool_report.credited_seconds)
             counts["r_set"] = pool_report.r_set_updates
             for line in pool_report.plan.warnings:

@@ -1107,3 +1107,21 @@ class TestRoomPool(unittest.TestCase):
         self.assertEqual(report.rooms_kicked, 3)
         self.assertEqual(report.credited_seconds, 300.0)
         self.assertEqual(report.r_set_updates, 15)
+
+
+class TestConcurrencyOption(unittest.TestCase):
+    """并发数（=房间数）可调；超过安全区要提示。"""
+
+    def test_warns_above_safe_rooms(self) -> None:
+        plan = duration.plan_duration_pool("oid", "tok", seconds=600, rooms=30)
+        self.assertTrue(any("安全区" in w for w in plan.warnings))
+        self.assertEqual(len(plan.rooms), 30)
+
+    def test_no_warning_within_safe_rooms(self) -> None:
+        plan = duration.plan_duration_pool("oid", "tok", seconds=600, rooms=10)
+        self.assertFalse(any("安全区" in w for w in plan.warnings))
+
+    def test_concurrency_changes_estimate(self) -> None:
+        low = duration.plan_duration_pool("oid", "tok", seconds=600, rooms=4)
+        high = duration.plan_duration_pool("oid", "tok", seconds=600, rooms=10)
+        self.assertLess(low.estimated_ratio, high.estimated_ratio)
