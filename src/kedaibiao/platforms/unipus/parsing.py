@@ -967,20 +967,30 @@ def parse_group_state(body: Any) -> GroupState:
     first_pass = first_pass if isinstance(first_pass, dict) else {}
     first_pass_datetime = first_pass.get("datetime")
     if first_pass_datetime is not None and not isinstance(first_pass_datetime, str):
-        raise UnipusProtocolError(
-            f"first_pass.datetime 期望字符串或 null，实际 {type(first_pass_datetime).__name__}"
-        )
+        # 2026-10-20 实测：线上 ``first_pass.datetime`` 是**整数**（epoch 秒），
+        # 不是规格里记的字符串。两种都接受，统一转成文本保留；判「做过没有」
+        # 只看是否为空，所以类型不影响语义。
+        if isinstance(first_pass_datetime, bool) or not isinstance(first_pass_datetime, int):
+            raise UnipusProtocolError(
+                "first_pass.datetime 期望字符串 / 整数 / null，"
+                f"实际 {type(first_pass_datetime).__name__}"
+            )
+        first_pass_datetime = str(first_pass_datetime)
     state = data.get("state")
     state = state if isinstance(state, dict) else {}
     scores: list[int] = []
     raw_score = state.get("score")
+    if isinstance(raw_score, str):
+        # 2026-10-20 实测：线上 ``state.score`` 是**字符串化的 JSON 数组**
+        # （如 ``"[1,1,1]"``），不是规格里记的数组。两种都接受。
+        raw_score = loads_json(raw_score, what="state.score")
     if isinstance(raw_score, list):
         for entry in raw_score:
             value = as_optional_int(entry, field_name="state.score[]")
             if value is not None:
                 scores.append(value)
     elif raw_score is not None:
-        raise UnipusProtocolError("state.score 期望数组")
+        raise UnipusProtocolError("state.score 期望数组或字符串化 JSON 数组")
     flow = data.get("flowStrategy")
     flow = flow if isinstance(flow, dict) else {}
     strategy = data.get("strategy")

@@ -1246,6 +1246,32 @@ class TestParseGroupState(unittest.TestCase):
         with self.assertRaises(UnipusProtocolError):
             parsing.parse_group_state({"code": 1, "data": None, "msg": "data not exist"})
 
+    def test_live_shape_int_datetime_and_stringified_score(self) -> None:
+        """2026-10-20 线上真实形状：datetime 是整数、score 是字符串化数组。"""
+        body = {
+            "code": 0,
+            "data": {
+                "__extenddata__": {"version": 3},
+                "first_pass": {"datetime": 1779086911, "score_pct": 1},
+                "flowStrategy": {"required": False},
+                "state": {
+                    "expired": False,
+                    "lastSubmit": 1779086911,
+                    "score": "[1,1,1]",
+                    "score_avg": 100,
+                    "score_pct": 1,
+                    "state": 1,
+                },
+                "strategy": {"task_mini_score_pct": 0},
+            },
+        }
+        state = parsing.parse_group_state(body)
+        self.assertEqual(state.first_pass_datetime, "1779086911")
+        self.assertTrue(state.finished)
+        self.assertEqual(state.score, (1, 1, 1))
+        self.assertEqual(state.score_pct, 1.0)
+        self.assertIs(state.flow_required, False)
+
     def test_empty_score_list(self) -> None:
         state = parsing.parse_group_state(
             progress_response(state={"state": 1, "score": []}).json()

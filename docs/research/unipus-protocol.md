@@ -27,6 +27,10 @@
 >    `children[].quesText` 是题干（HTML）、`children[].options[]` 是选项；
 >    答案侧 `answer` 为 `{"children":[{"answers":["A"]},…]}`，按子题顺序对齐。
 > 5. 口语/角色扮演题在核心枚举里仍映射为 `UNKNOWN`；`record` 相关结论未实测。
+> 6. `progress/v2` 的线上形状与 §6.4/§8.2 不同：`first_pass.datetime` 是**整数**
+>    （epoch 秒），`state.score` 是**字符串化 JSON 数组**（`"[1,1,1]"`）；解析已兼容。
+> 7. **提交载荷已被线上确认一次**（已满分任务组，服务端 `code=0`、得分率 1.0），
+>    见 `docs/verification/unipus-submit.md` §10；其余题型仍未实测。
 
 **本规格的目标能力**：登录 → 拉课程（班级/教材）→ 拉任务（单元/分组）→ 拉题目（内容 + 标准答案），并**记录**提交语义（不实现提交）。
 

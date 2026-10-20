@@ -283,3 +283,36 @@ docs/verification/unipus-submit.md             （新建）
 未改 `api/`、`endpoints.py`、`parsing.py`、`client.py`、`README.md`，未 `git commit`，
 未提交 `data/` 下的联调样本（已被 `.gitignore` 覆盖）。
 （工作区里 `tests/test_unipus.py`、`tasks/pipeline.py` 的改动是 Lead 的，不属于本任务。）
+
+---
+
+## 10. Lead 补充：2026-10-20 真实提交实测（一组）
+
+> 上面正文里「线上访问：零」描述的是 **task-2 实现与验证过程**（确实零请求）。
+> 本节是 Lead 在同一账号上做的**唯一一次真实提交**，用来确认载荷字段语义。
+
+| 项 | 值 |
+| --- | --- |
+| 任务组 | 「大学英语I（二）B班 · 视听说教程1」Exercise 1，`groupId=6ea8bfd48002a2c` |
+| 为什么选它 | 平台已记录 `first_pass` 且 `score=[1,1,1]`、`score_pct=1`（已满分完成）；提交内容是**服务端标准答案**，即使平台重录也不会把成绩改差 |
+| 请求 | `POST /course/api/v3/newExploration/submit`（`x-annotator-auth-token`） |
+| 响应 | `code=0`（**整数**）、`score_pct=1.0` |
+| 回读 `progress/v2` | `server_finish=True`、`score=[1,1,1]`、`score_pct=1.0`、`first_pass` 更新为本次提交时间 |
+| 课程进度 | 提交前后都是 **18/18**，未回退 |
+| 结论 | `isCompleted` / `thirdPartyJudges` 的长度与形状、`answer.children`、`submitType=1` 全部被服务端接受 —— **载荷语义第一次得到线上确认** |
+| 仍未验证 | 非客观题（oral / role-play / upload）、字符串 `"0"` 成功码、纯学习题组（`submitType=2`）、限流表现 |
+
+复现（同一条命令，注意 `confirm=true` 才会真发）：
+
+```bash
+PYTHONPATH=src python3 -m kedaibiao action unipus submit \
+  assignment_id='course-v2:74fa98b310020a7+nsce_3_vls_1+20240130/6ea8bfd48002a2c'
+# 加 confirm=true 才是真提交
+```
+
+同时修掉两处**线上真实形状**与规格不一致导致的解析崩溃（`parsing.parse_group_state`）：
+
+- `first_pass.datetime` 是**整数**（epoch 秒），规格记的是字符串；
+- `state.score` 是**字符串化的 JSON 数组**（`"[1,1,1]"`），规格记的是数组。
+
+两者现在都兼容，并各有一条离线用例锁住（`test_live_shape_int_datetime_and_stringified_score`）。

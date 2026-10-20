@@ -184,6 +184,17 @@ Exercise 1（视听说教程1 U1 听力）→ 5 个子题 singlechoice，选项 
   标准答案: A B A B B
 ```
 
+### 4.2.1 进度响应的真实形状（与规格不同，已兼容）
+
+`GET /api/mobile/user_module/{inst}/{gid}/progress/v2` 线上返回：
+
+- `data.first_pass.datetime` 是**整数**（epoch 秒），规格记的是字符串；
+- `data.state.score` 是**字符串化的 JSON 数组**（如 `"[1,1,1]"`），规格记的是数组；
+- `data.state.score_pct` / `score_avg`、`data.last_pass.lastSubmit` 也都存在。
+
+`parse_group_state` 已同时兼容字符串与数字两种 datetime、数组与字符串化数组两种
+score，并各加了一条离线用例。
+
 ### 4.3 仍未解决
 
 - **答案字符串的语义**仍只做「原样转发」（多选/排序保序，不排序不去重）；
@@ -202,9 +213,9 @@ Exercise 1（视听说教程1 U1 听力）→ 5 个子题 singlechoice，选项 
 | 目录（单元 → 分组） | ✅ 实测（6 单元，分组 ID 与 `url` 一致） |
 | 内容解密 + 题干/选项 | ✅ 实测（多门教材、多种题型） |
 | 标准答案解密 | ✅ 实测（选择题答案逐子题对齐） |
-| 进度 `progress/v2` | ✅ 实测（鉴权探针） |
+| 进度 `progress/v2` | ✅ 实测（鉴权探针；真实形状见下） |
 | 必修集 `leafs` | ⚠️ 未联调（接口已实现，未验证 tasks 参数与口径） |
-| 提交 | ❌ 未实测（见 `unipus-submit.md`） |
+| 提交 | ✅ 一组实测（已满分任务组，服务端接受、得分率 1.0；见 `unipus-submit.md` §10） |
 | 学习时长 / 语音评测 | ❌ 未实测（见各自文档） |
 | 限流退避的真实表现 | ❌ 未触发过 |
 
