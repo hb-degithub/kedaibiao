@@ -624,6 +624,8 @@ class UnipusAdapter(PlatformAdapter):
             "course_resource_id": raw.get("course_resource_id", ""),
             "strategy_id": raw.get("strategy_id", ""),
             "page_base": page_base,
+            # 激活标记：True=已激活 / False=未激活 / None=未知（教材不在书架里）
+            "activated": raw.get("activated"),
             "finish_points": raw.get("finish_point_num"),
             "total_points": raw.get("total_point_num"),
             "units": units,

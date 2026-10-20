@@ -346,12 +346,12 @@
             <label class="field" for="brush-minutes">
               <span class="field-label">刷多长时间（分钟）</span>
               <input id="brush-minutes" class="mono" type="number" min="0.5" max="240" step="0.5" value="10">
-              <span class="field-hint">任务模式是 1× 封顶；记账未验证，建议先干跑</span>
+              <span class="field-hint">任务模式 1× 封顶；记账未验证，建议先干跑</span>
             </label>
             <label class="field" for="brush-submit-pending">
               <span class="field-label">提交未完成任务</span>
               <input id="brush-submit-pending" type="checkbox" checked>
-              <span class="field-hint">只提交没做过的组；已做过的不重交（平台不改分）</span>
+              <span class="field-hint">只提交没做过的组；组间默认停 20 秒，遇限流会自动停手</span>
             </label>
             <label class="field" for="brush-only-required">
               <span class="field-label">只处理必修</span>

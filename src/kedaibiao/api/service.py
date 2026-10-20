@@ -2198,7 +2198,7 @@ class ConsoleService:
         confirm: bool = False,
         submit_pending: bool = False,
         only_required: bool = True,
-        interval: float = 8.0,
+        interval: float = 20.0,
         mode: str = "",
         viewer: Viewer | None = None,
     ) -> dict[str, Any]:
@@ -2228,7 +2228,7 @@ class ConsoleService:
             raise ConsoleError("minutes 必须是数字", kind="bad_request", status=400) from exc
         if not (0.5 <= minutes <= 240):
             raise ConsoleError("minutes 要在 0.5~240 之间", kind="bad_request", status=400)
-        interval = max(0.5, min(float(interval or 8.0), 120.0))
+        interval = max(5.0, min(float(interval or 20.0), 120.0))
         mode = str(mode or "").strip().lower()
         if mode and mode not in ("submit", "duration", "both"):
             raise ConsoleError("mode 只能是 submit / duration / both", kind="bad_request", status=400)
@@ -2327,7 +2327,13 @@ class ConsoleService:
             )
 
             if submit_pending:
-                for group in pending:
+                rate_limited = 0
+                permission_denied = 0
+                aborted = False
+                for index, group in enumerate(pending):
+                    if aborted:
+                        counts["skipped"] += 1
+                        continue
                     if not confirm:
                         counts["skipped"] += 1
                         self._job_log(
@@ -2338,17 +2344,55 @@ class ConsoleService:
                     try:
                         result = asyncio.run(adapter.native_submit(group["assignment_id"]))
                         counts["submitted"] += 1
+                        rate_limited = 0
                         self._job_log(
                             job_id, "ok",
                             f"✓ 已提交 {group['name']}：code={result.get('code')!r}",
                         )
-                        time.sleep(interval)
+                        if index < len(pending) - 1:
+                            time.sleep(interval)
                     except Exception as exc:  # noqa: BLE001
                         counts["failed"] += 1
+                        code = getattr(exc, "code", None)
+                        is_limit = type(exc).__name__ == "UnipusRateLimited"
+                        if is_limit:
+                            rate_limited += 1
+                        elif code == 100002:
+                            permission_denied += 1
+                        hint = ""
+                        if code == 100002:
+                            activated = tree.get("activated")
+                            state_text = {True: "已激活", False: "**未激活**"}.get(
+                                activated, "激活状态未知"
+                            )
+                            hint = (
+                                f"（没有权限；教材{state_text}：未激活的教材无法提交，"
+                                "需要先在网页端输入激活码；也可能是任务在本班还没打开过）"
+                            )
                         self._job_log(
                             job_id, "error",
-                            f"✗ {group['name']} 提交失败：{type(exc).__name__}: {exc}",
+                            f"✗ {group['name']} 提交失败：{type(exc).__name__}: {exc}{hint}",
                         )
+                        if is_limit:
+                            # 平台明确说「休息几分钟」：继续打只会把号打进更长的冷却
+                            wait = float(getattr(exc, "retry_after", 0) or 0)
+                            self._job_log(
+                                job_id, "warn",
+                                f"  ⚠️ 平台限流（{code}）：停止本轮提交，剩余 "
+                                f"{len(pending) - index - 1} 个未尝试。建议等 "
+                                f"{max(wait, 180):.0f} 秒以上再跑。",
+                            )
+                            aborted = True
+                        elif permission_denied >= 2:
+                            self._job_log(
+                                job_id, "warn",
+                                "  ⚠️ 连续 2 个任务「没有权限」（100002）：停止本轮提交。"
+                                "常见原因是这本教材还没激活（网页端需输入激活码）"
+                                "或任务在本班还没打开过。",
+                            )
+                            aborted = True
+                        elif rate_limited >= 2:
+                            aborted = True
             else:
                 self._job_log(job_id, "info", "· 未勾选「提交未完成后任务」，只刷时长")
 

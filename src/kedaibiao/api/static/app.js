@@ -6310,8 +6310,11 @@
     var fields = $('brush-detail-fields');
     if (fields) {
       clear(fields);
+      var activatedText = tree.activated === true ? '已激活'
+        : (tree.activated === false ? '未激活（无法提交，需网页端输入激活码）' : '未知');
       var pairs = [
         ['课程号', tree.course_remote_id],
+        ['激活', activatedText],
         ['班级', tree.class_name || '—'],
         ['进度', (tree.finish_points === null || tree.finish_points === undefined
                  ? '—' : tree.finish_points + '/' + (tree.total_points || '—'))],
@@ -6437,7 +6440,7 @@
       submit_pending: mode !== 'duration' &&
         !!($('brush-submit-pending') && $('brush-submit-pending').checked),
       only_required: !!($('brush-only-required') && $('brush-only-required').checked),
-      interval: 8
+      interval: 20
     };
     var what = mode === 'submit' ? '提交未完成任务'
       : (mode === 'duration' ? '刷时长' : '提交 + 刷时长');
