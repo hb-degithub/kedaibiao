@@ -1,10 +1,11 @@
-"""品课（pinco）控制台只读动作测试 —— 完全离线。
+"""品课（pinco）控制台动作测试 —— 完全离线。
 
 覆盖四块：
 
-1. **注册表**：learning / material / answers / connection 四个动作已登记，
-   全部 ``builtin=False``、``mutates=False``，参数形态与任务约定一致；
-   ``ConsoleService.actions("pinco")`` 能列出它们（且通用动作仍是 builtin）；
+1. **注册表**：learning / material / answers / connection 四个只读动作，外加
+   ``progress``（写操作）已登记；只读动作 ``mutates=False``、``progress``
+   ``mutates=True``，参数形态与任务约定一致；``ConsoleService.actions("pinco")``
+   能列出它们（且通用动作仍是 builtin）；
 2. **信封**：四个动作各自的 table / detail 形状与关键字段；
 3. **错误边界**：缺参数 / 找不到目标抛 ``ActionInputError``（服务层 400），
    平台异常原样上抛（由服务层统一翻成 502），不吞、不静默；
@@ -30,6 +31,7 @@ from kedaibiao.api.service import ConsoleService
 from kedaibiao.platforms.base import NotSupportedError
 from kedaibiao.platforms.pinco import parsing
 from kedaibiao.platforms.pinco.errors import PincoError, PincoNotLoggedIn
+from kedaibiao.platforms.pinco.progress import ProgressReport
 
 FIXTURES = Path(__file__).parent / "fixtures" / "pinco"
 
@@ -100,6 +102,8 @@ class FakePincoAdapter:
         self.questions_error: Exception | None = None
         self.material_error: Exception | None = None
         self.submitted: list[Any] = []
+        #: 记录 progress 动作对适配器的调用：(material_id, dry_run, target)。
+        self.advance_calls: list[tuple[str, bool, float]] = []
 
     # -- 只读方法 --------------------------------------------------------
 
@@ -138,6 +142,37 @@ class FakePincoAdapter:
         if self.questions_error is not None:
             raise self.questions_error
         return list(self.questions)
+
+    async def advance_learning(
+        self,
+        course: Any,
+        material_id: str,
+        *,
+        dry_run: bool = True,
+        policy: Any = None,
+        target_ratio: float = 1.0,
+        on_page: Any = None,
+    ) -> ProgressReport:
+        """模拟「按页推进」：不发网络、不 sleep，只记录参数并返回报告。"""
+        self.advance_calls.append((material_id, dry_run, target_ratio))
+        item = next(
+            (m for m in self.materials.get(course.remote_id, []) if m.remote_id == material_id),
+            None,
+        )
+        before = float(getattr(item, "progress", 0.0) or 0.0)
+        after = before if dry_run else max(before, target_ratio)
+        return ProgressReport(
+            course_id=course.remote_id,
+            material_id=material_id,
+            dry_run=dry_run,
+            ratio_before=before,
+            ratio_after=after,
+            stopped="dry_run" if dry_run else "target_reached",
+            total_pages=10,
+            start_page_index=-1,
+            planned_pages=10 if dry_run else 0,
+            sent_pages=0 if dry_run else 5,
+        )
 
     # -- 写方法（不该被调用）--------------------------------------------
 
@@ -197,6 +232,27 @@ class TestRegistry(unittest.TestCase):
     def test_connection_takes_no_params(self) -> None:
         spec = next(s for s in actions.register_platform("pinco") if s.name == "connection")
         self.assertEqual(spec.params, ())
+
+    def test_progress_is_explicitly_a_write_action(self) -> None:
+        spec = next(s for s in actions.register_platform("pinco") if s.name == "progress")
+        self.assertFalse(spec.builtin)
+        self.assertTrue(spec.mutates, "推进学习进度会改平台状态，必须标成写操作")
+        params = {p.name: p for p in spec.params}
+        self.assertEqual(
+            set(params),
+            {
+                "course",
+                "material_id",
+                "target",
+                "confirm",
+                "max_seconds",
+                "max_materials",
+                "page_interval",
+            },
+        )
+        self.assertTrue(params["course"].required)
+        self.assertFalse(params["material_id"].required, "留空应表示整课未达标材料")
+        self.assertFalse(params["confirm"].required, "默认干跑，confirm 不是必填")
 
 
 class TestConsoleServiceListing(unittest.TestCase):
@@ -473,6 +529,92 @@ class TestConnectionAction(unittest.IsolatedAsyncioTestCase):
         self.assertIn("读取失败", field)
         self.assertIn("403", field)
         self.assertEqual(_fields(out)["is_logged_in"], "有效")
+
+
+class TestProgressAction(unittest.IsolatedAsyncioTestCase):
+    """progress（刷课）动作：默认干跑、confirm 才写、可留空处理整课未达标材料。"""
+
+    async def test_default_is_dry_run_and_sends_nothing(self) -> None:
+        adapter = FakePincoAdapter()
+        out = await _run(
+            "progress",
+            adapter,
+            {"course": COURSE_A.remote_id, "material_id": MATERIALS[0].remote_id},
+        )
+        self.assertEqual(out["kind"], "detail")
+        self.assertEqual(_fields(out)["模式"], "干跑")
+        self.assertIn("没有发送任何写请求", out["note"])
+        self.assertEqual(
+            adapter.advance_calls, [(MATERIALS[0].remote_id, True, 1.0)]
+        )
+        row = _sections(out)["处理结果"]["rows"][0]
+        self.assertEqual(row["before"], "0%")
+        self.assertEqual(row["after"], "0%")
+        self.assertEqual(row["stopped"], "干跑")
+
+    async def test_confirm_true_actually_writes(self) -> None:
+        adapter = FakePincoAdapter()
+        out = await _run(
+            "progress",
+            adapter,
+            {
+                "course": COURSE_A.remote_id,
+                "material_id": MATERIALS[0].remote_id,
+                "confirm": "true",
+            },
+        )
+        self.assertEqual(_fields(out)["模式"], "写入")
+        self.assertEqual(_fields(out)["目标进度"], "100%")
+        self.assertEqual(
+            adapter.advance_calls, [(MATERIALS[0].remote_id, False, 1.0)]
+        )
+        row = _sections(out)["处理结果"]["rows"][0]
+        self.assertEqual(row["before"], "0%")
+        self.assertEqual(row["after"], "100%")
+        self.assertEqual(row["pages"], "5")
+        self.assertEqual(row["stopped"], "已达标")
+
+    async def test_blank_material_picks_unfinished_up_to_limit(self) -> None:
+        adapter = FakePincoAdapter()
+        out = await _run(
+            "progress",
+            adapter,
+            {"course": COURSE_A.remote_id, "max_materials": "1"},
+        )
+        # 样本里 3 份材料：0%、50%、100%；目标 100% → 未达标 2 份，本次只处理 1 份
+        self.assertEqual(len(adapter.advance_calls), 1)
+        self.assertEqual(_fields(out)["本次材料"], "1 份")
+        self.assertEqual(_fields(out)["剩余未处理"], "1 份（可再执行一次继续）")
+
+    async def test_blank_material_with_no_unfinished_is_empty(self) -> None:
+        adapter = FakePincoAdapter()
+        out = await _run(
+            "progress",
+            adapter,
+            {"course": COURSE_A.remote_id, "target": "0.0"},
+        )
+        self.assertEqual(adapter.advance_calls, [])
+        self.assertEqual(_sections(out)["处理结果"]["rows"], [])
+
+    async def test_unknown_material_is_action_input_error(self) -> None:
+        adapter = FakePincoAdapter()
+        with self.assertRaises(ActionInputError):
+            await _run(
+                "progress",
+                adapter,
+                {"course": COURSE_A.remote_id, "material_id": "no-such"},
+            )
+
+    async def test_bad_target_and_interval_are_action_input_errors(self) -> None:
+        adapter = FakePincoAdapter()
+        for params in (
+            {"course": COURSE_A.remote_id, "target": "1.5"},
+            {"course": COURSE_A.remote_id, "target": "abc"},
+            {"course": COURSE_A.remote_id, "page_interval": "0.1"},
+            {"course": COURSE_A.remote_id, "max_seconds": "1"},
+        ):
+            with self.subTest(params=params), self.assertRaises(ActionInputError):
+                await _run("progress", adapter, params)
 
 
 if __name__ == "__main__":

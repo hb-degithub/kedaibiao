@@ -190,6 +190,10 @@ PYTHONPATH=src python3 -m kedaibiao action pinco answers assignment_id=…
 四个动作都**只读**：`learning`（材料 + 进度）、`material`（材料详情/下载地址）、
 `answers`（作业题目与作答槽）、`connection`（会话/健康检查/课程数）。
 
+另有一个写操作 `progress`（推进学习进度，控制台「工具」页会显示「写操作」徽标）：
+默认干跑，参数 `confirm=true` 才真的翻页；`material_id` 留空时处理整课未达标的
+材料（一次最多 `max_materials` 份，可重复执行续推）。批量推进仍用下面的脚本。
+
 #### 品课「刷课」（按页推进学习进度）
 
 机制已实测确认：**材料进度 = 看过的最大页 / 总页数**。把材料当课件打开

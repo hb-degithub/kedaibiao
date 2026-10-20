@@ -1101,6 +1101,40 @@ def _pinco_percent(progress: Any) -> str:
     return f"{value * 100:.0f}%"
 
 
+def _pinco_number(
+    params: dict[str, Any],
+    key: str,
+    label: str,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    """取数值参数；留空用默认值，非法/越界抛 ``ActionInputError``。"""
+    raw = params.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as error:
+        raise ActionInputError(f"{label}（{key}）必须是数字") from error
+    if minimum is not None and value < minimum:
+        raise ActionInputError(f"{label}（{key}）不能小于 {minimum:g}")
+    if maximum is not None and value > maximum:
+        raise ActionInputError(f"{label}（{key}）不能大于 {maximum:g}")
+    return value
+
+
+def _pinco_stop_text(stopped: str) -> str:
+    return {
+        "dry_run": "干跑",
+        "target_reached": "已达标",
+        "max_pages": "页数上限",
+        "max_total_seconds": "时长上限",
+        "ratio_stalled": "进度不涨已停",
+    }.get(stopped, stopped or "—")
+
+
 def _pinco_material_source(raw: Any) -> str:
     """材料来源列：平台原始码，语义未确认，所以不编中文映射，只如实展示。"""
     data = raw if isinstance(raw, dict) else {}
@@ -1428,6 +1462,119 @@ async def _pinco_connection(adapter: Any, params: dict[str, Any]) -> dict[str, A
     )
 
 
+async def _pinco_progress(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """按页推进材料学习进度（「刷课」）—— **写操作**，``confirm=true`` 才真写。"""
+    # 平台专属策略对象：延迟导入，避免 API 层在模块导入期就依赖 pinco 包。
+    from kedaibiao.platforms.pinco.progress import ProgressPolicy
+
+    name = _pinco_platform(adapter)
+    course_id = _pinco_require(params, "course", "课程号")
+    material_id = str(params.get("material_id") or "").strip()
+    confirm = str(params.get("confirm") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "是",
+    }
+    target = _pinco_number(params, "target", "目标进度", 1.0, minimum=0.0, maximum=1.0)
+    max_seconds = _pinco_number(params, "max_seconds", "每份时间上限", 60.0, minimum=5.0)
+    page_interval = _pinco_number(
+        params, "page_interval", "翻页间隔", 1.0, minimum=0.2
+    )
+    max_materials = int(
+        _pinco_number(params, "max_materials", "本次最多处理几份", 3, minimum=1)
+    )
+
+    course = await _pinco_find_course(adapter, course_id)
+    materials = list(await adapter.list_learning_tasks(course))
+    remaining = 0
+    if material_id:
+        targets = [item for item in materials if item.remote_id == material_id]
+        if not targets:
+            raise ActionInputError(f"课程 {course_id} 里没有材料号 {material_id!r}")
+    else:
+        unfinished = [item for item in materials if item.progress + 1e-9 < target]
+        targets = unfinished[:max_materials]
+        remaining = max(0, len(unfinished) - len(targets))
+
+    policy = ProgressPolicy(
+        page_interval_seconds=page_interval,
+        max_total_seconds=max_seconds,
+        refresh_every_pages=10,
+        ratio_stall_checks=2,
+    )
+    rows: list[dict[str, Any]] = []
+    for item in targets:
+        report = await adapter.advance_learning(
+            course,
+            item.remote_id,
+            dry_run=not confirm,
+            policy=policy,
+            target_ratio=target,
+        )
+        rows.append(
+            {
+                "material_id": item.remote_id,
+                "name": item.title,
+                "before": _pinco_percent(report.ratio_before),
+                "after": _pinco_percent(report.ratio_after),
+                "pages": (
+                    f"{report.planned_pages}（计划）"
+                    if report.dry_run and report.total_pages
+                    else ("—" if report.dry_run else str(report.sent_pages))
+                ),
+                "stopped": _pinco_stop_text(report.stopped),
+            }
+        )
+
+    mode = "写入" if confirm else "干跑"
+    fields = [
+        _field("课程", course.name or course_id),
+        _field("模式", mode),
+        _field("目标进度", _pinco_percent(target)),
+        _field("本次材料", f"{len(targets)} 份"),
+    ]
+    if remaining:
+        fields.append(_field("剩余未处理", f"{remaining} 份（可再执行一次继续）"))
+
+    note = (
+        "写操作：会按页推进平台上的学习进度（不可撤销，建议一次少推几份）。"
+        if confirm
+        else (
+            "干跑：只读材料/进度，**没有发送任何写请求**。"
+            "确认无误后把 confirm 填 true 再执行一次才会真的翻页。"
+        )
+    )
+    if confirm:
+        stalled = [row for row in rows if row["stopped"] == "进度不涨已停"]
+        if stalled:
+            note += " 有材料的进度连续回读都没涨，已按熔断停止。"
+
+    return detail(
+        platform=name,
+        action="progress",
+        label="推进学习进度（写操作）",
+        title=f"推进学习进度 · {course.name or course_id}（{mode}）",
+        note=note,
+        fields=fields,
+        sections=[
+            {
+                "label": "处理结果",
+                "kind": "table",
+                "columns": [
+                    column("material_id", "材料号", mono=True),
+                    column("name", "名称"),
+                    column("before", "进度前"),
+                    column("after", "进度后"),
+                    column("pages", "翻页"),
+                    column("stopped", "停止原因"),
+                ],
+                "rows": rows,
+            }
+        ],
+    )
+
+
 def _register_pinco() -> None:
     register(
         ActionSpec(
@@ -1473,6 +1620,40 @@ def _register_pinco() -> None:
             description="检查品课会话、健康检查与课程数量（只读，会真的访问平台）",
         ),
         _pinco_connection,
+    )
+    register(
+        ActionSpec(
+            platform="pinco",
+            name="progress",
+            label="推进学习进度（写操作）",
+            description=(
+                "按页推进材料学习进度：先打开课件拿总页数，再逐页上报 maxPageIndex。"
+                "默认干跑（只算不写），confirm=true 才真的翻页。"
+            ),
+            params=(
+                ActionParam("course", "课程号", required=True),
+                ActionParam(
+                    "material_id",
+                    "材料号",
+                    hint="留空 = 该课程下未达标的材料（最多 max_materials 份）",
+                ),
+                ActionParam("target", "目标进度 0~1", hint="默认 1.0"),
+                ActionParam(
+                    "confirm",
+                    "确认写入",
+                    hint="填 true 才会真的翻页；留空 = 干跑（默认）",
+                ),
+                ActionParam("max_seconds", "每份时间上限（秒）", hint="默认 60"),
+                ActionParam(
+                    "max_materials",
+                    "本次最多处理几份",
+                    hint="默认 3；只对 material_id 留空时生效",
+                ),
+                ActionParam("page_interval", "翻页间隔（秒）", hint="默认 1.0，不得小于 0.2"),
+            ),
+            mutates=True,
+        ),
+        _pinco_progress,
     )
 
 

@@ -128,6 +128,7 @@ POST ?actionName=PostV1CourseByCourseIdMaterialStudentLearningDurationReport
 | `platforms/pinco/progress.py` | `CoursewareProgressReporter`：按页推进，**默认 dry-run**；带页数/总时长上限与「连续几次回读不涨就停」 |
 | `platforms/pinco/adapter.py` | `open_courseware()`（页数 + 当前页）与 `advance_learning(dry_run=True, …)` |
 | `scripts/pinco_progress.py` | CLI：不带 `--live` 只列材料/算计划；`--material` 单份；`--all` 全部 |
+| `api/actions.py` | 控制台动作 `progress`（`mutates=True`）：默认干跑，`confirm=true` 才写；`material_id` 留空处理未达标材料，最多 `max_materials` 份 |
 | `tests/test_pinco_progress.py` | 19 个离线用例：策略校验、dry-run 零请求、逐页报文、达标/页数/时长/停滞熔断、目标比例换算、从当前页续推、适配器接线 |
 
 安全默认值：
