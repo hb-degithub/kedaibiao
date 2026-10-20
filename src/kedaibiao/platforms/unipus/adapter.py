@@ -587,6 +587,9 @@ class UnipusAdapter(PlatformAdapter):
         for unit in catalog.units:
             groups: list[dict[str, Any]] = []
             for group in unit.groups:
+                base = (group.raw or {}).get("base")
+                tab_type = (group.raw or {}).get("tab_type")
+                type_key, type_label = parsing.task_type_of(base, tab_type)
                 entry: dict[str, Any] = {
                     "id": group.group_id,
                     "name": group.name or group.group_id,
@@ -594,6 +597,12 @@ class UnipusAdapter(PlatformAdapter):
                     "unit_name": unit.name or unit.unit_id,
                     "required": bool(required_ids.get(group.group_id)),
                     "assignment_id": pack_assignment_id(instance_id, group.group_id),
+                    "base": base,
+                    "tab_type": tab_type,
+                    "type": type_key,
+                    "type_label": type_label,
+                    "needs_answer": type_key in parsing.SUBJECTIVE_TYPES,
+                    "is_study": type_key in parsing.STUDY_TYPES,
                 }
                 want_state = with_state and (
                     state_scope == "all" or (state_scope == "required" and entry["required"])

@@ -2202,6 +2202,7 @@ class ConsoleService:
         only_required: bool = True,
         interval: float = 20.0,
         max_groups: int = 60,
+        subjective_placeholder: str = "",
         mode: str = "",
         viewer: Viewer | None = None,
     ) -> dict[str, Any]:
@@ -2284,7 +2285,7 @@ class ConsoleService:
             target=self._run_brush,
             args=(job_id, scope, course, minutes, bool(confirm), bool(submit_pending),
                   bool(only_required), interval, owner_id, cookie_file, creds,
-                  do_duration, mode, max_groups),
+                  do_duration, mode, max_groups, str(subjective_placeholder or "")),
             name=f"kedaibiao-brush-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
@@ -2294,6 +2295,7 @@ class ConsoleService:
         confirm: bool, submit_pending: bool, only_required: bool, interval: float,
         owner_id: int, cookie_file: str | None, credentials: Any,
         do_duration: bool = True, mode: str = "both", max_groups: int = 60,
+        subjective_placeholder: str = "",
     ) -> None:
         from kedaibiao.platforms.unipus import duration as duration_mod
 
@@ -2307,6 +2309,13 @@ class ConsoleService:
                 cookie_file=cookie_file, owner_id=owner_id,
             )
             adapter = runtime.make_adapter(platform)
+            if subjective_placeholder and hasattr(adapter, "subjective_placeholder"):
+                adapter.subjective_placeholder = str(subjective_placeholder)
+                self._job_log(
+                    job_id, "warn",
+                    f"· 翻译/写作将用占位文本「{subjective_placeholder}」提交"
+                    f"（服务端没有标准答案；能得完成分但内容不是人写的）",
+                )
             restore_adapter_session(adapter, cookie_file)
             self._job_log(job_id, "info", "$ 恢复登录会话…")
             if not asyncio.run(adapter.refresh_session(credentials)):

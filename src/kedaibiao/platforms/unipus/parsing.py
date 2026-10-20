@@ -714,6 +714,75 @@ def core_question_type(unipus_type: str) -> QuestionType:
 # 内容（题目）与答案
 # --------------------------------------------------------------------------
 
+#: 任务类型的中文标签（控制台「刷课」页展示用）。
+#:
+#: 依据：目录节点 ``base``（`src/api/catalog` 里 group 节点的题型串，逗号分隔的
+#: 复合串如 ``single-choice,short_answer``）+ ``tab_type``。这是**平台事实**，
+#: 不是猜的：2026-10-20 对两本已激活教材逐组统计得出。
+TASK_TYPE_LABELS: dict[str, str] = {
+    "single-choice": "客观题",
+    "multichoice": "多选",
+    "sequence": "排序",
+    "short_answer": "简答/翻译",
+    "translation": "翻译",
+    "writing": "写作",
+    "vocabulary": "词汇",
+    "material-banked-cloze": "选词填空",
+    "basic-scoop-content": "阅读/内容",
+    "rich-text-read": "阅读",
+    "text-learn": "学习内容",
+    "discussion": "讨论",
+    "role-play": "角色扮演",
+    "oral": "口语",
+    "oral-sentence": "口语跟读",
+    "oralAloud": "朗读",
+    "dialog-follow": "对话跟读",
+    "ai-spoken": "AI 口语",
+    "oral-personal-state": "口语（情景）",
+    "oral-state-shortAnswer": "口语（情景）",
+    "oral-state-fillblank": "口语（情景）",
+    "basic-scoop-content-dropdown": "阅读/内容",
+    "text-macth": "阅读（匹配）",
+    "multiFileUpload": "上传作业",
+    "video-point-read": "视频学习",
+    "audio-learn": "听力学习",
+    "exit-ticket": "单元测验",
+    "evaluation": "互评",
+}
+
+#: 需要**自拟内容**（服务端不提供标准答案）的类型 —— 这些要么靠模型生成，
+#: 要么只能占位提交。
+SUBJECTIVE_TYPES: frozenset[str] = frozenset(
+    {"writing", "translation", "short_answer", "discussion"}
+)
+
+#: 纯学习行为（观看/阅读，不产出判分项，靠「做没做」记账）
+STUDY_TYPES: frozenset[str] = frozenset(
+    {"text-learn", "video-point-read", "audio-learn", "rich-text-read", "basic-scoop-content"}
+)
+
+
+def task_type_of(base: object, tab_type: object = "") -> tuple[str, str]:
+    """把目录里的 ``base``/``tab_type`` 翻译成 ``(类型键, 中文标签)``。
+
+    复合串（``single-choice,short_answer``）取**第一个**可识别的作为主类型；
+    ``exit-ticket`` / ``evaluation`` 这类以 ``tab_type`` 兜底。
+    """
+    text = str(base or "").strip()
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    for part in parts:
+        if part in TASK_TYPE_LABELS:
+            return part, TASK_TYPE_LABELS[part]
+    tab = str(tab_type or "").strip()
+    if tab in TASK_TYPE_LABELS:
+        return tab, TASK_TYPE_LABELS[tab]
+    if tab == "check":
+        return "check", "课堂检查"
+    if tab in ("video", "audio", "text"):
+        return tab, {"video": "视频学习", "audio": "听力学习", "text": "学习内容"}[tab]
+    return text or "unknown", TASK_TYPE_LABELS.get(text, text or "未知")
+
+
 #: 只有 ``type == 1``（音频）与 ``2``（视频）算媒体项；还见过 4/5/6（正文等）
 MEDIA_CONTENT_TYPES: frozenset[int] = frozenset({1, 2})
 

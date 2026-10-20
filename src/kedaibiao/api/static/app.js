@@ -6395,7 +6395,15 @@
         fields.appendChild(d);
       });
     }
-    setText('brush-detail-hint', (tree.unit_count || (tree.units || []).length) + ' 个单元');
+    var typeCounts = {};
+    (tree.units || []).forEach(function (unit) {
+      (unit.groups || []).forEach(function (g) {
+        var key = g.type_label || '未知';
+        typeCounts[key] = (typeCounts[key] || 0) + 1;
+      });
+    });
+    var typeText = Object.keys(typeCounts).map(function (k) { return k + ' ' + typeCounts[k]; }).join(' · ');
+    setText('brush-detail-hint', (tree.unit_count || (tree.units || []).length) + ' 个单元 · ' + typeText);
 
     var box = $('brush-tree-body');
     if (!box) { return; }
@@ -6408,7 +6416,7 @@
       var table = el('table', 'table');
       var thead = el('thead');
       var hr = el('tr');
-      ['任务', '必修', '状态', '得分', '分组号', '操作'].forEach(function (label) {
+      ['任务', '类型', '必修', '状态', '得分', '分组号', '操作'].forEach(function (label) {
         hr.appendChild(el('th', '', label));
       });
       thead.appendChild(hr);
@@ -6417,6 +6425,9 @@
       (unit.groups || []).forEach(function (group) {
         var tr = el('tr');
         tr.appendChild(el('td', '', String(group.name || '—')));
+        var typeCell = el('td', '', String(group.type_label || '—'));
+        if (group.needs_answer) { typeCell.title = '服务端没有标准答案：需要用自拟内容（翻译/写作）'; }
+        tr.appendChild(typeCell);
         tr.appendChild(el('td', '', group.required ? '是' : '—'));
         var status = (group.finished === undefined) ? '—' : '未做';
         if (group.finished) {
@@ -6510,6 +6521,8 @@
         !!($('brush-submit-pending') && $('brush-submit-pending').checked),
       only_required: !!($('brush-only-required') && $('brush-only-required').checked),
       max_groups: parseInt(($('brush-max-groups') && $('brush-max-groups').value) || '60', 10) || 60,
+      subjective_placeholder: ($('brush-placeholder') && $('brush-placeholder').checked)
+        ? '[已提交]' : '',
       interval: 20
     };
     var what = mode === 'submit' ? '提交未完成任务'

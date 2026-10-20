@@ -189,3 +189,36 @@ UnipusApiError: [ucontent] 业务失败（code=100002）…/newExploration/submi
 
 未激活的教材只能在 U校园网页端**输入激活码**激活（平台侧权限，代码绕不过）。
 激活后再刷新控制台，徽标会变成「已激活」，提交才会成功。
+
+
+---
+
+## 7. 题型与作答方式（2026-10-20，按真实目录统计）
+
+参考实现里 U校园的题型不是"一套题一套接口"，而是**同一条提交 API + 不同的载荷形状**；
+每类题在目录节点 `base` 里有明确标识（复合串如 `single-choice,short_answer`）。
+本项目已把 `base`/`tab_type` 翻译成中文类型，显示在教材树的「类型」列。
+
+| 类型 | 目录里的 `base` | 服务端有标准答案？ | 我们怎么交 |
+| --- | --- | --- | --- |
+| 客观题（听力/阅读/词汇） | `single-choice`、`multichoice`、`sequence`、`vocabulary`、`material-banked-cloze` | ✅ | 转发标准答案（已验证 `code=0`） |
+| 阅读/内容、学习内容 | `basic-scoop-content`、`rich-text-read`、`text-learn` | —（无判分项） | 按 `submitType=2` 提交记进度 |
+| 视频/听力学习 | `video-point-read`、`audio-learn` | —（学习行为） | 同上；时长另走 WS（见 §4） |
+| **翻译** | `translation`、`short_answer` | ❌ | 需要自拟文本；可用「占位文本」选项（会得完成分，内容非人所写），或后续接大模型 |
+| **写作** | `writing` | ❌ | 同上 |
+| 讨论 | `discussion` | ❌ | 同上 |
+| **单元测验** | `exit-ticket`（`tab_type=check`） | ✅（测验有标准答案） | 与客观题同一条提交 API |
+| 口语 | `role-play`、`oral*`、`dialog-follow`、`ai-spoken` | ❌（客户端自报 record） | `self_report_scores=True` 才会带满分 record；默认关（合规决定） |
+| 上传作业 | `multiFileUpload` | ❌ | 参考实现自述未接入，本项目同样不做 |
+
+统计样例（综合教程2 的 325 个任务组）：词汇 47、阅读/内容 40、简答/翻译 39、
+视频学习 36、客观题 32、选词填空 23、翻译 22、学习内容 21、口语（情景）10、
+排序 8、多选 7、上传 6、写作 2、单元测验走 `check` 分组。
+
+### 7.1 已实现 / 未实现
+
+- 已实现：类型识别（树里 `type` / `type_label` / `needs_answer` / `is_study`）、
+  客观题与测验的标准答案转发、学习类 `submitType=2`、占位文本选项
+  （`subjective_placeholder`，默认空 = 不发占位）。
+- 未实现（需要用户决策）：翻译/写作**自动生成内容**（可接本项目已有的大模型，
+  但要先确认"AI 代写"是否可接受）、口语自报满分、上传作业。

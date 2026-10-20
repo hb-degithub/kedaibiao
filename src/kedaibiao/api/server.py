@@ -453,6 +453,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 only_required=bool(payload.get("only_required", True)),
                 interval=payload.get("interval") or 20,
                 max_groups=payload.get("max_groups") or 60,
+                subjective_placeholder=str(payload.get("subjective_placeholder") or ""),
                 mode=str(payload.get("mode") or ""),
                 viewer=viewer,
             ))
