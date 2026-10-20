@@ -48,7 +48,13 @@ SESSION_COOKIE = "kdb_session"
 #:
 #: **登录页本身必须公开** —— 它就在 index.html 里，被登录门拦住的话
 #: 浏览器只会看到一个 401，用户连输入账号密码的地方都没有。
-PUBLIC_PATHS = {"/", "/index.html", "/api/auth/login", "/api/auth/me"}
+PUBLIC_PATHS = {
+    # 新版控制台（v2）就是 / —— 它和旧版一样自带登录门，所以入口必须公开。
+    "/", "/index.html",
+    # 旧版控制台保留在 /classic；/next 作为别名，老书签不失效。
+    "/classic", "/classic/index.html", "/next",
+    "/api/auth/login", "/api/auth/me",
+}
 PUBLIC_PREFIXES = ("/static/",)
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
@@ -64,6 +70,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     #: 由 ``make_server`` 注入
     service: ConsoleService
     allowed_hosts: set[str] = set()
+    #: 本次请求的 body 缓存（keep-alive 复用实例，每个请求开头重置）
+    _raw_body: bytes | None = None
+    _body_too_large: bool = False
 
     # -- 基础设施 ---------------------------------------------------------
 
@@ -103,6 +112,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").strip().lower()
         if not host:
             return False
+        # 含 userinfo 的 Host（user@p host）不是合法请求，出现就是伪造
+        if "@" in host:
+            return False
         bare = host.rsplit(":", 1)[0].strip("[]")
         return host in self.allowed_hosts or bare in self.allowed_hosts
 
@@ -120,6 +132,13 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if not self.allowed_hosts:
             return True
         host = (parsed.netloc or "").lower()
+        # ⚠️ 这里必须显式拒绝 userinfo：`http://127.0.0.1:8765@evil.example` 的
+        # netloc 是 `127.0.0.1:8765@evil.example`，下面 rsplit(":") 会得到
+        # `127.0.0.1` 从而命中白名单 —— 等于放行了跨站请求。
+        # 浏览器序列化 Origin 时不带 userinfo，所以真实浏览器发不出这种值；
+        # 但守卫自己要严格，不能依赖「浏览器不会这么发」。
+        if "@" in host:
+            return False
         bare = host.rsplit(":", 1)[0].strip("[]")
         return host in self.allowed_hosts or bare in self.allowed_hosts
 
@@ -177,18 +196,44 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     def _query(self) -> dict[str, list[str]]:
         return parse_qs(urlparse(self.path).query)
 
+    def _drain_body(self) -> None:
+        """把请求体读进缓存 —— 即使这条路由根本不解析它。
+
+        为什么必须读：HTTP/1.1 是 keep-alive，socket 上没被读走的 body 字节会被
+        当成**下一个请求行**。实测：``POST /api/accounts/1/activate`` 带 ``{}``
+        （该路由不解析 body）之后，同一连接上的下一个请求报
+        ``501 Unsupported method ('{}GET')``。
+        缓存进 ``_raw_body`` 后，``_body_json`` 仍按需解析，行为不变。
+        """
+        if self._raw_body is not None:
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            self._raw_body = b""
+            return
+        if length > MAX_BODY:
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 64 * 1024))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+            self._raw_body = b""
+            self._body_too_large = True
+            return
+        self._raw_body = self.rfile.read(length)
+
     def _body_json(self) -> Any:
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype != "application/json":
             raise ConsoleError(
                 "POST 必须使用 Content-Type: application/json", kind="bad_request", status=415
             )
-        length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0:
-            return {}
-        if length > MAX_BODY:
+        if self._body_too_large:
             raise ConsoleError("请求体过大", kind="bad_request", status=413)
-        raw = self.rfile.read(length)
+        raw = self._raw_body if self._raw_body is not None else b""
+        if not raw:
+            return {}
         try:
             return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -205,7 +250,30 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         self._dispatch("POST")
 
+    # 契约要求「失败一律 JSON」。http.server 对未实现的方法会回一段 HTML 501，
+    # 既不走 {error,kind} 也不带安全响应头，所以在路由层显式接住这几种方法。
+    def _method_not_allowed(self) -> None:
+        self._raw_body = None
+        if not self._guard():
+            return
+        self._error(
+            HTTPStatus.METHOD_NOT_ALLOWED,
+            f"{self.command} 不被支持；本控制台只有 GET / HEAD / POST",
+            "method_not_allowed",
+        )
+
+    do_PUT = _method_not_allowed       # noqa: N815
+    do_DELETE = _method_not_allowed    # noqa: N815
+    do_PATCH = _method_not_allowed     # noqa: N815
+    do_OPTIONS = _method_not_allowed   # noqa: N815
+
     def _dispatch(self, method: str) -> None:
+        # keep-alive 下每个请求都要重置 body 缓存（handler 实例是复用的）
+        self._raw_body = None
+        self._body_too_large = False
+        if method == "POST":
+            # 先把 body 读掉：路由不解析它时也不能留在 socket 里（见 _drain_body）
+            self._drain_body()
         if not self._guard():
             return
         path = urlparse(self.path).path.rstrip("/") or "/"
@@ -225,8 +293,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
     def _route_get(self, path: str, viewer: Viewer) -> None:
         svc = self.service
-        if path in ("/", "/index.html"):
+        # / 与 /next = 新版控制台（同一份外壳，资源在 /static/next/）
+        if path in ("/", "/index.html", "/next"):
             return self._static("index.html")
+        # /classic = 旧版控制台（v1.html），功能对齐后可以删
+        if path in ("/classic", "/classic/index.html"):
+            return self._static("v1.html")
         if path.startswith("/static/"):
             return self._static(path[len("/static/") :])
 
@@ -427,6 +499,31 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 str(payload.get("exam_id") or ""),
                 {str(k): str(v) for k, v in answers.items()},
                 viewer=viewer,
+            ))
+
+        # -- 品课：计划 → 人工复核 → 提交 --
+        # 两步必须分开：plan 只读，把「要交什么」和内容 digest 摆给用户看；
+        # submit-reviewed 带回那个 digest，服务层重新 plan 比对一致才真提交。
+        if path == "/api/platforms/pinco/plan":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.pinco_plan(
+                viewer,
+                course=str(payload.get("course") or ""),
+                limit=self._body_int(payload, "limit", default=0),
+            ))
+        if path == "/api/platforms/pinco/submit-reviewed":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.pinco_submit_reviewed(
+                viewer,
+                str(payload.get("assignment_id") or ""),
+                # 字段名两种都收：digest 是新接口的名字，plan_digest 是早期草稿用的
+                str(payload.get("digest") or payload.get("plan_digest") or ""),
+                course=str(payload.get("course") or ""),
+                limit=self._body_int(payload, "limit", default=0),
             ))
 
         if path.startswith("/api/jobs/") and path.endswith("/cancel"):
@@ -639,6 +736,23 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return int(raw)
         except ValueError:
             raise ConsoleError(f"{name} 必须是整数", kind="bad_request", status=400) from None
+
+    @staticmethod
+    def _body_int(payload: dict[str, Any], name: str, *, default: int = 0) -> int:
+        """从 JSON body 里取一个整数（缺省/空串用默认值）。
+
+        与 ``_int_param`` 分开：查询参数是字符串，body 里已经是 JSON 数字或
+        字符串，两种都得认，且错误信息要指向 body 字段。
+        """
+        raw = payload.get(name)
+        if raw is None or raw == "":
+            return default
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            raise ConsoleError(
+                f"{name} 必须是整数", kind="bad_request", status=400
+            ) from None
 
     def _static(self, relative: str) -> None:
         base = STATIC_DIR.resolve()

@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<!-- 本地工具：禁止一切外部资源与外发请求（无 CDN、无埋点、无远程字体） -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'none'; base-uri 'none'">
+<title>课代表 kedaibiao · 旧版控制台</title>
+<link rel="stylesheet" href="/static/style.css?v=20261020e">
+</head>
+<body>
+<!-- v1 旧版控制台：新界面在 /（v2），这里保留到功能对齐为止。 -->
+
+
+<!-- ==================================================================
+     登录门：未登录（任意 /api/* 返回 401 kind=unauthorized）时全屏显示。
+     令牌由 HttpOnly Cookie（kdb_session）承载，本页不写 localStorage。
+     ================================================================== -->
+<div id="login-screen" class="login-screen" hidden>
+  <div class="login-card">
+    <div class="login-brand">
+      <span class="brand-name">课代表</span>
+      <span class="brand-slug mono">kedaibiao</span>
+    </div>
+    <p class="login-sub">控制台需要登录。会话由 <span class="mono">HttpOnly Cookie</span> 承载，
+      本页不读取也不保存任何令牌。</p>
+
+    <form id="login-form" class="login-form" autocomplete="off">
+      <label class="field" for="login-username">
+        <span class="field-label">用户名</span>
+        <input id="login-username" class="mono" type="text" autocomplete="username"
+               spellcheck="false" required>
+      </label>
+      <label class="field" for="login-password">
+        <span class="field-label">密码</span>
+        <input id="login-password" class="mono" type="password" autocomplete="current-password" required>
+      </label>
+      <div class="login-actions">
+        <button id="login-submit" class="btn btn-run" type="submit">登录</button>
+        <button id="login-retry" class="btn btn-ghost btn-sm" type="button" hidden>重试连接</button>
+        <span id="login-state" class="field-hint"></span>
+      </div>
+    </form>
+
+    <div id="login-error" class="err-box" hidden></div>
+    <p id="login-note" class="note">登录后所有数据按当前用户隔离；超管可以切换「用户」筛选查看某个用户的数据。</p>
+  </div>
+</div>
+
+<!-- 脚本未加载 / file:// 直开时的人话提示（放在最外层，登录页与主界面都能看到） -->
+<div id="boot-note" class="banner banner-boot" role="alert" hidden></div>
+
+<div class="layout" id="app" hidden>
+
+  <!-- ==================================================================
+       左侧栏：一列两段
+         上段 = 平台切换（全部平台 / 批改网 / 希沃品课 / U校园 …）
+         下段 = 当前平台的功能切换（概览 / 课程 / 作业 / 题库 / 工具 /
+                运行日志 / 统计 / 账号 /〔仅超管〕用户）
+       底部 = 连接状态 + 刷新 + 版本信息
+       ================================================================== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-name">课代表</span>
+      <span class="brand-slug mono">kedaibiao</span>
+    </div>
+
+    <!-- ---------- 上段：平台 ---------- -->
+    <div class="side-block side-platforms">
+      <div class="side-head">
+        <h2 class="side-title">平台</h2>
+        <span class="hint">点击切换</span>
+      </div>
+      <ul id="platform-nav" class="plat-nav" hidden></ul>
+      <p id="platform-nav-empty" class="empty" hidden></p>
+    </div>
+
+    <!-- ---------- 下段：功能 ---------- -->
+    <div class="side-block side-funcs">
+      <div class="side-head">
+        <h2 class="side-title">功能</h2>
+        <span id="func-scope" class="hint">当前平台</span>
+      </div>
+      <nav aria-label="功能导航">
+        <ul id="func-nav" class="func-nav">
+          <li><a class="nav-item" data-page="overview"    href="#/overview">概览</a></li>
+          <li><a class="nav-item" data-page="courses"     href="#/courses">课程</a></li>
+          <li><a class="nav-item" data-page="assignments" href="#/assignments">作业</a></li>
+          <li><a class="nav-item" data-page="bank"        href="#/bank">题库</a></li>
+          <li><a class="nav-item" data-page="tools"       href="#/tools">工具</a></li>
+          <li><a class="nav-item" data-page="logs"        href="#/logs">运行日志</a></li>
+          <li><a class="nav-item" data-page="stats"       href="#/stats">统计</a></li>
+          <li><a class="nav-item" data-page="account"     href="#/account">账号</a></li>
+          <!-- 仅超管可见；普通用户即使手改 hash 走到 #/users，后端也会 403，页面给中文说明 -->
+          <li id="nav-users" data-admin="1" hidden>
+            <a class="nav-item" data-page="users" href="#/users">用户<span class="nav-tag">超管</span></a>
+          </li>
+        </ul>
+      </nav>
+    </div>
+
+    <div class="side-foot">
+      <div class="side-status">
+        <span id="conn-state" class="conn conn-idle">未连接</span>
+        <button id="refresh-btn" class="btn btn-ghost btn-sm" type="button"
+                title="重新拉取平台列表与当前页数据">刷新</button>
+      </div>
+      <dl id="side-meta" class="side-meta">
+        <div><dt>版本</dt><dd id="meta-version" class="mono">—</dd></div>
+        <div><dt>环境</dt><dd id="meta-env" class="mono">—</dd></div>
+        <div><dt>Python</dt><dd id="meta-python" class="mono">—</dd></div>
+        <div><dt>数据库</dt><dd id="meta-db" class="mono">—</dd></div>
+      </dl>
+    </div>
+  </aside>
+
+  <div class="content">
+
+    <!-- ============================ 顶栏 ============================ -->
+    <header class="topbar">
+      <span class="top-scope">
+        <span class="hint">当前平台</span>
+        <b id="cur-platform">全部平台</b>
+      </span>
+      <div class="topbar-right">
+        <!-- 超管专属：归属用户筛选（选中后所有数据请求带 ?owner_id=<id>） -->
+        <label id="owner-filter-wrap" class="owner-filter" for="owner-filter" hidden>
+          <span class="hint">用户</span>
+          <select id="owner-filter" class="mono"
+                  title="超管：按归属用户过滤所有数据接口；留空 = 看全部（不传 owner_id）"></select>
+        </label>
+        <span id="top-env" class="badge badge-idle" title="尚未取到配置">—</span>
+        <span id="top-user" class="top-user">
+          <span id="top-username" class="mono">—</span>
+          <span id="top-role" class="badge badge-idle">—</span>
+        </span>
+        <button id="logout-btn" class="btn btn-ghost btn-sm" type="button"
+                title="清掉会话 cookie（POST /api/auth/logout）">退出</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" role="alert" hidden></div>
+    <div id="toast" class="toast" role="status" hidden></div>
+
+    <main id="main">
+
+      <!-- ==================================================================
+           页面 1/9：概览
+           ================================================================== -->
+      <section id="page-overview" class="page" hidden aria-labelledby="h-overview">
+        <div class="page-head">
+          <h1 id="h-overview">概览</h1>
+          <span id="ov-scope" class="hint">—</span>
+        </div>
+
+        <div class="cards">
+          <div class="card">
+            <div class="card-label">当前平台</div>
+            <div id="ov-plat" class="card-value">—</div>
+            <div id="ov-plat-sub" class="card-sub">—</div>
+          </div>
+          <div class="card">
+            <div class="card-label" id="ov-bank-label">题库</div>
+            <div id="ov-bank" class="card-value mono">—</div>
+            <div id="ov-bank-sub" class="card-sub">—</div>
+          </div>
+          <div class="card">
+            <div class="card-label" id="ov-runs-label">跑批记录</div>
+            <div id="ov-runs" class="card-value mono">—</div>
+            <div id="ov-runs-sub" class="card-sub">—</div>
+          </div>
+          <div class="card">
+            <div class="card-label">运行参数</div>
+            <div id="ov-runtime" class="card-value mono">—</div>
+            <div id="ov-runtime-sub" class="card-sub">—</div>
+          </div>
+        </div>
+        <dl id="env-list" class="env-list" hidden></dl>
+
+        <!-- 当前平台的能力（只看这一个平台；跨平台对比在「统计」） -->
+        <div class="panel">
+          <div class="panel-head">
+            <h2>平台能力</h2>
+            <span id="ov-cap-hint" class="hint"></span>
+          </div>
+          <p id="ov-cap-empty" class="empty" hidden></p>
+          <div id="ov-cap-list" class="caps caps-lg" hidden></div>
+          <p id="ov-cap-note" class="note">
+            能力由适配器自己声明；这里只显示<strong>当前平台</strong>的能力。
+            跨平台对比只在「统计」页。
+          </p>
+        </div>
+
+        <!-- 当前任务 -->
+        <div class="panel">
+          <div class="panel-head">
+            <h2>当前任务</h2>
+            <span id="job-poll" class="hint"></span>
+          </div>
+          <p id="job-empty" class="empty">暂无进行中的任务。（本控制台不再提供「触发跑批」入口；作业页的「一键全部提交」与各平台动作会在这里显示进度。）</p>
+          <div id="job-body" hidden>
+            <dl class="kv-grid">
+              <div><dt>job_id</dt><dd id="job-id" class="mono">—</dd></div>
+              <div><dt>平台</dt><dd id="job-platform" class="mono">—</dd></div>
+              <div><dt>模式</dt><dd id="job-live">—</dd></div>
+              <div><dt>状态</dt><dd id="job-status">—</dd></div>
+              <div><dt>开始</dt><dd id="job-started" class="mono">—</dd></div>
+              <div><dt>结束</dt><dd id="job-finished" class="mono">—</dd></div>
+              <div><dt>已耗时</dt><dd id="job-elapsed" class="mono">—</dd></div>
+            </dl>
+            <p id="job-summary" class="job-summary" hidden></p>
+            <p id="job-error" class="job-error" hidden></p>
+            <div id="job-counts" class="counts"></div>
+            <div class="panel-head sub-head">
+              <h3>任务记录</h3>
+              <span id="job-records-count" class="hint"></span>
+            </div>
+            <p id="job-records-empty" class="empty" hidden></p>
+            <div class="table-wrap">
+              <table id="job-records-table" hidden>
+                <thead>
+                  <tr><th>assignment_id</th><th>状态</th><th>备注</th></tr>
+                </thead>
+                <tbody id="job-records-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           页面 2/9：课程（通用动作 courses，只读，会真的登录平台）
+           ================================================================== -->
+      <section id="page-courses" class="page" hidden aria-labelledby="h-courses">
+        <div class="page-head">
+          <h1 id="h-courses">课程</h1>
+          <span class="badge badge-ro">只读</span>
+          <span id="courses-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>课程 / 班级</h2>
+            <span id="courses-hint" class="hint"></span>
+          </div>
+          <p id="courses-gate" class="empty" hidden></p>
+          <div id="courses-body" hidden>
+            <div class="action-submit">
+              <button id="courses-reload" class="btn btn-run" type="button">重新加载</button>
+              <span id="courses-state" class="field-hint"></span>
+            </div>
+            <div id="courses-error" class="err-box" hidden></div>
+            <div id="courses-result" class="action-result" hidden></div>
+          </div>
+        </div>
+
+        <p class="note">
+          调平台只读动作 <span class="mono">courses</span>（<span class="mono">list_courses()</span>）：
+          会<strong>真的登录平台</strong>并读取课程 / 班级列表（只读 GET），不会改动平台上任何内容。
+          失败时显示后端返回的中文错误。
+        </p>
+      </section>
+
+      <!-- ==================================================================
+           页面 3/9：作业（通用动作 assignments，只读，会真的登录平台）
+           ================================================================== -->
+      <section id="page-assignments" class="page" hidden aria-labelledby="h-assignments">
+        <div class="page-head">
+          <h1 id="h-assignments">作业</h1>
+          <span class="badge badge-ro">只读</span>
+          <span id="assignments-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>作业 / 任务</h2>
+            <span id="assignments-hint" class="hint"></span>
+          </div>
+          <p id="assignments-gate" class="empty" hidden></p>
+          <div id="assignments-body" hidden>
+            <form id="assignments-form" class="action-form" autocomplete="off">
+              <div class="action-params">
+                <label class="field" for="assign-course">
+                  <span class="field-label">course（可选）</span>
+                  <input id="assign-course" class="mono" type="text" autocomplete="off"
+                         placeholder="留空 = 遍历全部课程">
+                  <span class="field-hint">course · string · 可选</span>
+                </label>
+              </div>
+              <div class="action-submit">
+                <button id="assignments-submit" class="btn btn-run" type="submit">加载作业</button>
+                <button id="assignments-reload" class="btn" type="button">清空并重新加载全部</button>
+                <button id="batch-toggle" class="btn btn-warn" type="button" hidden>一键全部提交</button>
+                <button id="auto-reopen" class="btn" type="button" hidden>继续查看自动化</button>
+                <button id="plog-open" class="btn" type="button">详细日志</button>
+                <span id="assignments-state" class="field-hint"></span>
+              </div>
+            </form>
+            <div id="assignments-error" class="err-box" hidden></div>
+            <!-- 「提交」被禁用时的原因（平台 capabilities.submit = false，或后端 501 not_supported） -->
+            <div id="assign-submit-note" class="alert-box alert-soft" hidden></div>
+            <!-- 一键全部提交：后台任务 + 轮询进度（仅支持原生提交链路的平台，如 U校园） -->
+            <div id="batch-panel" class="panel" hidden>
+              <div class="panel-head">
+                <h2>一键全部提交</h2>
+                <span id="batch-state" class="hint">—</span>
+              </div>
+              <div class="action-params">
+                <label class="field" for="batch-limit">
+                  <span class="field-label">最多处理任务数</span>
+                  <input id="batch-limit" class="mono" type="number" min="0" step="1" value="50">
+                  <span class="field-hint">0 = 不限；首次建议 20~50</span>
+                </label>
+                <label class="field" for="batch-interval">
+                  <span class="field-label">组间间隔（秒）</span>
+                  <input id="batch-interval" class="mono" type="number" min="0.5" max="120" step="0.5" value="8">
+                  <span class="field-hint">平台有限流，建议 ≥5 秒</span>
+                </label>
+                <label class="field" for="batch-skip-full">
+                  <span class="field-label">跳过已完成</span>
+                  <input id="batch-skip-full" type="checkbox" checked>
+                  <span class="field-hint">平台留存首条记录：重交不改分，已做过的组默认跳过</span>
+                </label>
+              </div>
+              <div class="action-submit">
+                <button id="batch-dry" class="btn btn-run" type="button">① 先干跑（只规划）</button>
+                <button id="batch-live" class="btn btn-warn" type="button" hidden>② 确认全部真交</button>
+                <span id="batch-live-note" class="field-hint"></span>
+                <button id="batch-close" class="btn" type="button">收起</button>
+                <span id="batch-counts" class="field-hint"></span>
+              </div>
+              <pre id="batch-log" class="text-block mono" style="max-height:360px;overflow:auto;white-space:pre-wrap"></pre>
+              <p class="note">
+                干跑只读内容与标准答案、做本地校验，<strong>不写平台</strong>；确认后逐组提交，
+                每组提交完回读 <span class="mono">progress/v2</span>。任务在后台运行，切页不会中断。
+              </p>
+            </div>
+
+            <!-- 教材目录视图 + 刷课（原独立页已合并到这里） -->
+        <div id="brush-detail" class="panel" hidden>
+          <div class="panel-head">
+            <h2 id="brush-detail-title">教材详情</h2>
+            <span id="brush-detail-hint" class="hint"></span>
+          </div>
+          <dl class="kv-grid" id="brush-detail-fields"></dl>
+          <p id="brush-inactive" class="alert-box alert-soft" hidden></p>
+          <div class="action-params">
+            <label class="field" for="brush-minutes">
+              <span class="field-label">刷多长时间（分钟）</span>
+              <input id="brush-minutes" class="mono" type="number" min="0.5" max="240" step="0.5" value="10">
+              <span class="field-hint">任务模式 1× 封顶；记账未验证，建议先干跑</span>
+            </label>
+            <label class="field" for="brush-rooms">
+              <span class="field-label">刷时长并发数</span>
+              <input id="brush-rooms" class="mono" type="number" min="2" max="60" step="1" value="6"
+                     list="brush-rooms-presets">
+              <datalist id="brush-rooms-presets">
+                <option value="2"></option><option value="4"></option><option value="6"></option>
+                <option value="8"></option><option value="10"></option><option value="12"></option>
+                <option value="16"></option><option value="20"></option>
+              </datalist>
+              <span class="field-hint">
+                同时开的连接数（每个房间一条）。实测单房间不记账、6 约 4 倍；&gt;20 可能握手被拒
+              </span>
+            </label>
+            <label class="field" for="brush-submit-pending">
+              <span class="field-label">提交未完成任务</span>
+              <input id="brush-submit-pending" type="checkbox" checked>
+              <span class="field-hint">只提交没做过的组；组间默认停 20 秒，遇限流会自动停手</span>
+            </label>
+            <label class="field" for="brush-max-groups">
+              <span class="field-label">本轮最多提交几组</span>
+              <input id="brush-max-groups" class="mono" type="number" min="1" max="500" step="1" value="60">
+              <span class="field-hint">防止一口气跑两小时；每轮 20 秒一组，可分批</span>
+            </label>
+            <label class="field" for="brush-llm">
+              <span class="field-label">翻译/写作用大模型作答</span>
+              <input id="brush-llm" type="checkbox">
+              <span class="field-hint">读完题面生成译文/作文再提交；生成内容会写进日志可复查（默认关）</span>
+            </label>
+            <label class="field" for="brush-placeholder">
+              <span class="field-label">翻译/写作用占位文本</span>
+              <input id="brush-placeholder" type="checkbox">
+              <span class="field-hint">服务端没有标准答案时填「[已提交]」；能得完成分，但内容不是人写的</span>
+            </label>
+            <label class="field" for="brush-resubmit">
+              <span class="field-label">已完成未满分也重交</span>
+              <input id="brush-resubmit" type="checkbox">
+              <span class="field-hint">平台留存首条记录，实测重交不改分；仅为排查/碰运气</span>
+            </label>
+            <label class="field" for="brush-only-required">
+              <span class="field-label">只处理必修</span>
+              <input id="brush-only-required" type="checkbox" checked>
+              <span class="field-hint">按班级策略里的必修任务（门户进度就是按它算的）</span>
+            </label>
+          </div>
+          <div class="action-submit">
+            <button id="brush-submit-dry" class="btn btn-run" type="button">提交未完成（干跑）</button>
+            <button id="brush-submit-live" class="btn btn-warn" type="button">提交未完成（真交）</button>
+            <button id="brush-duration-dry" class="btn btn-run" type="button">刷时长（干跑）</button>
+            <button id="brush-duration-live" class="btn btn-warn" type="button">刷时长（真跑）</button>
+            <button id="brush-stop" class="btn" type="button" hidden>停止任务</button>
+            <button id="brush-back" class="btn" type="button">收起面板</button>
+            <span id="brush-state" class="field-hint"></span>
+          </div>
+          <pre id="brush-log" class="text-block mono" style="max-height:320px;overflow:auto;white-space:pre-wrap"></pre>
+        </div>
+
+        <div id="brush-tree" class="panel" hidden>
+          <div class="panel-head">
+            <h2>单元与任务</h2>
+            <span id="brush-tree-hint" class="hint"></span>
+          </div>
+          <div id="brush-tree-body" class="action-result"></div>
+        </div>
+
+
+            <div id="assignments-result" class="action-result" hidden></div>
+
+          </div>
+        </div>
+
+        <p class="note">
+          调平台只读动作 <span class="mono">assignments</span>（<span class="mono">list_assignments()</span>）：
+          会<strong>真的登录平台</strong>并读取各课程下的作业 / 任务（只读 GET）。
+          <span class="mono">course</span> 留空 = 遍历全部课程。
+          已完成的历史作业 / 课程与详细作答在「工具」页的平台专属动作里（如批改网的
+          <span class="mono">finished</span> 历史作文、<span class="mono">essay</span> 作文详情）。
+        </p>
+        <!-- ==================================================================
+             平台执行日志：每个平台独立一份（动作调用 / 跑批 / 评分循环 / 自动化）
+             ================================================================== -->
+        <div class="panel" id="plog-panel" hidden>
+          <div class="panel-head">
+            <h2>执行日志</h2>
+            <span id="plog-hint" class="hint">—</span>
+            <button id="plog-refresh" class="btn btn-sm" type="button">刷新</button>
+            <button id="plog-close" class="btn btn-sm" type="button">关闭</button>
+          </div>
+          <pre id="plog-log" class="auto-log" aria-live="polite"></pre>
+          <p class="note">
+            只显示<strong>当前平台</strong>的执行记录（动作调用、跑批、评分循环、一键自动化），
+            按时间倒序滚动；每个平台各存一份，切平台就换一份。
+          </p>
+        </div>
+
+        <!-- ==================================================================
+             一键自动化（iTEST）：取卷 → 转写答题 → 填 → 核验 → 复核 → 人工补 → 交卷
+             下面这块就是「终端」：执行日志逐行追加，自动滚到底。
+             ================================================================== -->
+        <div class="panel" id="auto-panel" hidden>
+          <div class="panel-head">
+            <h2>一键自动化</h2>
+            <span id="auto-hint" class="hint">—</span>
+            <button id="auto-close" class="btn btn-sm" type="button">关闭</button>
+          </div>
+
+          <div id="auto-steps" class="stat-row"></div>
+          <div id="auto-progress" class="auto-progress"><span id="auto-progress-bar"></span></div>
+
+          <pre id="auto-log" class="auto-log" aria-live="polite"></pre>
+
+          <div id="auto-verify" class="auto-verify" hidden></div>
+
+          <div id="auto-manual" class="auto-manual" hidden>
+            <h3>需要人工的题<span class="hint">（选完点「保存并复核」）</span></h3>
+            <div id="auto-manual-list" class="auto-manual-list"></div>
+            <div class="action-submit">
+              <button id="auto-manual-save" class="btn btn-run" type="button">保存并复核</button>
+              <span id="auto-manual-state" class="field-hint"></span>
+            </div>
+          </div>
+
+          <div class="action-submit auto-foot">
+            <button id="auto-submit" class="btn btn-warn" type="button" disabled>确认交卷</button>
+            <span id="auto-status" class="field-hint">流程未开始</span>
+          </div>
+          <p class="note">
+            <strong>不可逆</strong>：进考场即开始计时，交卷后不能再次作答。
+            交卷前会再填一遍并逐项核验，核验不符或缺题都会拒绝。
+          </p>
+        </div>
+
+        <p class="note">
+          <strong>双击任意一行</strong>看该作业的详情（<span class="mono">POST /api/assignments/detail</span>，
+          只读，结果在右侧抽屉里，不跳页）。每行也有「详情」与「提交」按钮。
+          <strong>「提交」是两步的</strong>：先干跑（<span class="mono">confirm=false</span>）看每题打算怎么答与置信度，
+          确认后才真提交（<span class="mono">confirm=true</span>）。
+          平台没实现提交时后端返回 <span class="mono">501 not_supported</span>，
+          界面会写明「该平台尚未实现提交」并禁用「提交」——<strong>不会假装成功</strong>。
+        </p>
+      </section>
+
+      <!-- ==================================================================
+           页面 4/9：题库（/api/bank?platform=）
+           ================================================================== -->
+      <section id="page-bank" class="page" hidden aria-labelledby="h-bank">
+        <div class="page-head">
+          <h1 id="h-bank">题库</h1>
+          <span id="bank-scope" class="hint">—</span>
+        </div>
+
+        <p id="bank-gate" class="empty" hidden></p>
+
+        <div id="bank-body" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>判分准确率</h2>
+              <span id="bank-hint" class="hint"></span>
+            </div>
+            <p id="bank-empty" class="empty" hidden></p>
+            <div id="bank-stats" hidden>
+              <div class="stat-row">
+                <span class="stat"><span class="stat-label">题目总数</span><span id="bank-total" class="stat-value mono">—</span></span>
+                <span class="stat"><span class="stat-label">已判分</span><span id="bank-graded" class="stat-value mono">—</span></span>
+                <span class="stat"><span class="stat-label">正确</span><span id="bank-correct" class="stat-value mono">—</span></span>
+                <span class="stat"><span class="stat-label">准确率</span><span id="bank-accuracy" class="stat-value mono">—</span></span>
+                <span class="stat"><span class="stat-label">未判分</span><span id="bank-ungraded" class="stat-value mono">—</span></span>
+              </div>
+              <div class="meter" id="bank-acc-meter" hidden>
+                <div class="meter-bar"><span id="bank-acc-fill" class="meter-fill"></span></div>
+                <span id="bank-acc-note" class="hint"></span>
+              </div>
+              <p class="note">数据库：<span id="bank-dbpath" class="mono">—</span></p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>按来源构成</h2>
+              <span id="bank-source-hint" class="hint"></span>
+            </div>
+            <p id="bank-source-empty" class="empty" hidden></p>
+            <div class="table-wrap">
+              <table id="bank-source-table" hidden>
+                <thead><tr><th>来源</th><th class="num">数量</th><th class="num">占比</th><th>分布</th></tr></thead>
+                <tbody id="bank-source-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <p id="bank-error" class="err-box" hidden></p>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           页面 5/9：工具（平台只读动作，通用渲染，不为平台写专属页面）
+           ================================================================== -->
+      <section id="page-tools" class="page" hidden aria-labelledby="h-tools">
+        <div class="page-head">
+          <h1 id="h-tools">工具</h1>
+          <span class="badge badge-ro">只读</span>
+          <span id="tools-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>平台只读动作</h2>
+            <span class="hint">动作清单 / 参数表单 / kind 视图全部通用渲染</span>
+          </div>
+          <p id="tools-gate" class="empty" hidden></p>
+          <div id="tools-body" hidden>
+            <p id="actions-note" class="empty" hidden></p>
+            <div id="actions-nav" class="actions-nav" hidden></div>
+            <form id="action-form" class="action-form" autocomplete="off" hidden></form>
+            <div id="action-result" class="action-result" hidden></div>
+            <div id="action-error" class="err-box" hidden></div>
+          </div>
+        </div>
+
+        <p class="note">
+          只读动作只读取平台数据，不提交任何内容。列表类结果（如批改网
+          <span class="mono">finished</span> 历史作文）若有「查看详情」按钮，是按动作声明的必填参数
+          从该行自动填好参数 —— 点「执行」即可看详细作答（<span class="mono">kind: detail</span> 的
+          fields + sections 通用渲染）。详情里的正文与批注属于个人内容：仅在本页展示，不缓存、不外发、不做导出。
+        </p>
+      </section>
+
+      <!-- ==================================================================
+           页面 6/9：运行日志
+           ================================================================== -->
+      <section id="page-logs" class="page" hidden aria-labelledby="h-logs">
+        <div class="page-head">
+          <h1 id="h-logs">运行日志</h1>
+          <span id="logs-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>跑批历史</h2>
+            <span id="runs-count" class="hint"></span>
+          </div>
+          <p id="runs-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="runs-table" hidden>
+              <thead>
+                <tr>
+                  <th>id</th><th data-col="platform">平台</th><th data-col="owner">归属</th>
+                  <th>assignment_id</th><th>状态</th>
+                  <th class="num">尝试</th><th>开始</th><th>结束</th><th>错误</th><th>detail</th>
+                </tr>
+              </thead>
+              <tbody id="runs-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>提交记录</h2>
+            <span id="subs-count" class="hint"></span>
+          </div>
+          <p id="subs-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="subs-table" hidden>
+              <thead>
+                <tr>
+                  <th>id</th><th data-col="platform">平台</th><th data-col="owner">归属</th>
+                  <th>assignment_id</th><th>结果</th>
+                  <th class="num">得分</th><th>说明</th><th>时间</th>
+                </tr>
+              </thead>
+              <tbody id="subs-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>任务历史</h2>
+            <span id="jobs-filter" class="hint"></span>
+            <span id="jobs-count" class="hint"></span>
+          </div>
+          <p id="jobs-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="jobs-table" hidden>
+              <thead>
+                <tr>
+                  <th>job_id</th><th data-col="platform">平台</th><th data-col="owner">归属</th>
+                  <th>模式</th><th>状态</th>
+                  <th>开始</th><th>结束</th><th>摘要</th><th>错误</th><th class="ctr">操作</th>
+                </tr>
+              </thead>
+              <tbody id="jobs-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>事件流</h2>
+            <span id="events-hint" class="hint">任务运行中每 1 秒刷新</span>
+          </div>
+          <p id="events-empty" class="empty" hidden></p>
+          <ul id="events-list" class="events" hidden></ul>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           页面 7/9：统计（跨平台对比，唯一允许横向看全平台的地方）
+           ================================================================== -->
+      <section id="page-stats" class="page" hidden aria-labelledby="h-stats">
+        <div class="page-head">
+          <h1 id="h-stats">统计</h1>
+          <span id="stats-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>各平台成败对比</h2>
+            <span class="hint">跨平台对比 · 唯一横向视图（不传 platform）</span>
+          </div>
+          <p id="stats-cmp-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="stats-cmp-table" hidden>
+              <thead>
+                <tr>
+                  <th>平台</th><th class="num">跑批</th><th class="num">成功</th><th class="num">失败</th>
+                  <th class="num">跳过</th><th class="num">成功率</th>
+                  <th class="num">提交</th><th class="num">提交成功</th>
+                  <th class="num">题目</th><th class="num">准确率</th>
+                </tr>
+              </thead>
+              <tbody id="stats-cmp-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>题库总览（全部平台）</h2>
+            <span id="stats-bank-hint" class="hint"></span>
+          </div>
+          <p id="stats-bank-empty" class="empty" hidden></p>
+          <div id="stats-bank-body" hidden>
+            <div class="stat-row">
+              <span class="stat"><span class="stat-label">题库总量</span><span id="stats-total" class="stat-value mono">—</span></span>
+              <span class="stat"><span class="stat-label">已判分</span><span id="stats-graded" class="stat-value mono">—</span></span>
+              <span class="stat"><span class="stat-label">正确</span><span id="stats-correct" class="stat-value mono">—</span></span>
+              <span class="stat"><span class="stat-label">准确率</span><span id="stats-accuracy" class="stat-value mono">—</span></span>
+              <span class="stat"><span class="stat-label">未判分</span><span id="stats-ungraded" class="stat-value mono">—</span></span>
+            </div>
+            <div class="panel-head sub-head">
+              <h3>按来源</h3>
+              <span id="stats-source-hint" class="hint"></span>
+            </div>
+            <p id="stats-source-empty" class="empty" hidden></p>
+            <div class="table-wrap">
+              <table id="stats-source-table" hidden>
+                <thead><tr><th>来源</th><th class="num">数量</th><th class="num">占比</th><th>分布</th></tr></thead>
+                <tbody id="stats-source-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>最近趋势（全部平台）</h2>
+            <span id="stats-trend-hint" class="hint"></span>
+          </div>
+          <p id="stats-trend-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="stats-trend-table" hidden>
+              <thead>
+                <tr>
+                  <th>日期</th><th class="num">总计</th><th class="num">成功</th>
+                  <th class="num">失败</th><th class="num">跳过</th><th>分布</th>
+                </tr>
+              </thead>
+              <tbody id="stats-trend-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           页面 8/9：账号
+             上半 = 平台多账号（/api/accounts）：每个平台下多个号、当前号切换、
+                    重新登录、增删改；详细信息系统一律用 <details> 折叠。
+             下半 = 配置现状（/api/settings）：凭据状态与可选依赖，凭据值后端不返回。
+           ================================================================== -->
+      <section id="page-account" class="page" hidden aria-labelledby="h-account">
+        <div class="page-head">
+          <h1 id="h-account">账号</h1>
+          <span id="account-scope" class="hint">—</span>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>平台账号</h2>
+            <span id="account-hint" class="hint"></span>
+          </div>
+          <!-- 会话失效（last_login_ok === false）的显眼提示 + 重新登录入口 -->
+          <div id="account-needrelogin" class="alert-box" hidden></div>
+          <div id="account-error" class="err-box" hidden></div>
+          <p id="account-empty" class="empty" hidden></p>
+          <div id="account-groups" class="acct-groups" hidden></div>
+          <p class="note">
+            平台密码<strong>不落盘</strong>：只在登录那一刻用来换 cookie，换完就丢；每个账号的 cookie
+            存在自己的文件里，切换当前号 = 切换 cookie，互不影响。所以会话过期后要重新输一次密码 ——
+            「上次登录」列会显眼地标出来。
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>新增账号</h2>
+            <span class="hint">平台 + 标签 + 用户名 + 密码（可选立即登录）</span>
+          </div>
+          <form id="account-create-form" class="run-form" autocomplete="off">
+            <div class="field">
+              <label for="na-platform">平台</label>
+              <select id="na-platform" class="mono"></select>
+              <span class="field-hint">平台机器名，必填</span>
+            </div>
+            <div class="field">
+              <label for="na-label">标签 label</label>
+              <input id="na-label" type="text" autocomplete="off" placeholder="例如：我的号">
+              <span class="field-hint">给人看的名字，可留空</span>
+            </div>
+            <div class="field">
+              <label for="na-username">平台用户名</label>
+              <input id="na-username" class="mono" type="text" autocomplete="off" spellcheck="false" required>
+            </div>
+            <div class="field">
+              <label for="na-password">平台密码</label>
+              <input id="na-password" class="mono" type="password" autocomplete="new-password" required>
+              <span class="field-hint">不落盘、不回显；只在登录时使用</span>
+            </div>
+            <div class="field field-wide live-field">
+              <label class="switch" for="na-login">
+                <input id="na-login" type="checkbox" checked>
+                <span class="switch-text">创建后立即登录</span>
+              </label>
+              <span class="field-hint">取消勾选则只记账号、暂不登录（<span class="mono">login: false</span>）</span>
+            </div>
+            <div class="field field-wide field-actions">
+              <button id="na-submit" class="btn btn-run" type="submit">新增账号</button>
+              <span id="na-state" class="field-hint"></span>
+            </div>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>配置现状</h2>
+            <span id="set-hint" class="hint"></span>
+          </div>
+          <p id="settings-empty" class="empty" hidden></p>
+          <dl id="settings-grid" class="env-list" hidden></dl>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>环境变量键名</h2>
+            <span class="hint">只列键名、不列值 —— 用来确认 .env 到底被读到没有</span>
+          </div>
+          <p id="settings-keys-empty" class="empty" hidden></p>
+          <ul id="settings-keys" class="key-list" hidden></ul>
+          <p class="note">.env 文件：<span id="settings-dotenv" class="mono">—</span></p>
+        </div>
+
+        <!-- ==================================================================
+             大模型答题：只读展示是否已启用。
+             前端**不收集 api_key** —— 密钥写在服务端环境变量里，本页不读也不回显。
+             ================================================================== -->
+        <div class="panel">
+          <div class="panel-head">
+            <h2>大模型答题</h2>
+            <span id="llm-hint" class="hint"></span>
+          </div>
+          <p id="llm-empty" class="empty" hidden></p>
+          <div id="llm-body" hidden>
+            <div id="llm-status" class="stat-row"></div>
+            <dl id="llm-grid" class="env-list"></dl>
+          </div>
+          <form id="llm-form" class="llm-form" hidden>
+            <div class="action-params">
+              <label class="field" for="llm-base-url">
+                <span class="field-label">接口地址</span>
+                <input id="llm-base-url" class="mono" autocomplete="off"
+                       placeholder="https://api.example.com/v1">
+                <span class="field-hint">OpenAI 兼容协议，通常以 /v1 结尾</span>
+              </label>
+              <label class="field" for="llm-model">
+                <span class="field-label">模型</span>
+                <input id="llm-model" class="mono" autocomplete="off"
+                       placeholder="deepseek-chat">
+                <span class="field-hint">网关里允许的模型名</span>
+              </label>
+              <label class="field" for="llm-api-key">
+                <span class="field-label">API Key</span>
+                <input id="llm-api-key" class="mono" type="password"
+                       autocomplete="new-password" placeholder="留空 = 不修改">
+                <span class="field-hint">只写不读：保存后界面再也拿不到明文</span>
+              </label>
+              <label class="field" for="llm-timeout">
+                <span class="field-label">超时（秒）</span>
+                <input id="llm-timeout" class="mono" type="number" step="1" min="1" max="600">
+              </label>
+              <label class="field" for="llm-temperature">
+                <span class="field-label">温度</span>
+                <input id="llm-temperature" class="mono" type="number" step="0.1" min="0" max="2">
+              </label>
+            </div>
+            <div class="action-submit">
+              <button id="llm-save" class="btn btn-run" type="button">保存</button>
+              <button id="llm-test" class="btn" type="button">测试连接</button>
+              <button id="llm-clear-key" class="btn" type="button">清除 Key</button>
+              <span id="llm-msg" class="field-hint"></span>
+            </div>
+            <p class="note">
+              保存后<strong>立即生效，不用重启</strong>；值存在本机数据库，优先级高于
+              <span class="mono">.env</span>，留空表示回落到 <span class="mono">.env</span>。
+              密钥只写不读，界面不会回显。
+            </p>
+          </form>
+        </div>
+
+        <!-- ==================================================================
+             浏览器会话抓取：需要浏览器 cookie 的平台（如希沃品课）
+             契约里没有 cookie 写入接口，所以这里给的是可复制的命令行。
+             ================================================================== -->
+        <div class="panel">
+          <div class="panel-head">
+            <h2>浏览器会话抓取</h2>
+            <span class="hint">需要浏览器会话 cookie 的平台（如希沃品课）</span>
+          </div>
+          <form class="run-form" autocomplete="off">
+            <div class="field">
+              <label for="cap-platform">平台</label>
+              <select id="cap-platform" class="mono"></select>
+              <span class="field-hint">命令行里的平台机器名，命令在服务端 / 仓库根目录执行</span>
+            </div>
+          </form>
+          <div id="cap-cmds" class="cmd-list"></div>
+          <p class="note">
+            <strong>未登录的登录页也会下发匿名 <span class="mono">csrfToken</span></strong>，
+            所以不能只看「有没有那个 cookie」—— <span class="mono">capture</span> 抓完会真的打一次只读接口
+            验证会话；验证不过会删掉并报错。<br>
+            抓取不接触密码、不碰验证码：用的是你自己已经登录过的浏览器用户目录。
+            平台密码走上面的「新增账号」（不落盘）；这里只解决 cookie 与浏览器上下文绑定的情况。
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>平台凭据状态</h2>
+            <span id="settings-plat-hint" class="hint"></span>
+          </div>
+          <p id="settings-plat-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="settings-plat-table" hidden>
+              <thead>
+                <tr>
+                  <th>平台</th><th>显示名</th><th>凭据</th>
+                  <th>期望环境变量键名</th><th>该平台能力</th>
+                </tr>
+              </thead>
+              <tbody id="settings-plat-body"></tbody>
+            </table>
+          </div>
+          <p class="note">
+            能力按平台各自显示（不横向铺矩阵）：每行是那个平台自己声明的能力。
+            跨平台对比在「统计」页。
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>可选依赖</h2>
+            <span class="hint">控制台本体零第三方依赖，这些只是可选能力</span>
+          </div>
+          <p id="settings-deps-empty" class="empty" hidden></p>
+          <div class="table-wrap">
+            <table id="settings-deps-table" hidden>
+              <thead><tr><th>依赖</th><th>状态</th><th>用途</th></tr></thead>
+              <tbody id="settings-deps-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           页面 9/9：用户（仅超管；非超管后端一律 403，页面给人话说明）
+           ================================================================== -->
+      <section id="page-users" class="page" hidden aria-labelledby="h-users">
+        <div class="page-head">
+          <h1 id="h-users">用户</h1>
+          <span class="badge badge-admin">仅超管</span>
+          <span id="users-scope" class="hint">—</span>
+        </div>
+
+        <p id="users-gate" class="empty" hidden></p>
+
+        <div id="users-body" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>新建用户</h2>
+              <span class="hint">密码至少 8 位（前端先校验，后端也会拦）</span>
+            </div>
+            <form id="user-create-form" class="run-form" autocomplete="off">
+              <div class="field">
+                <label for="nu-username">用户名</label>
+                <input id="nu-username" class="mono" type="text" autocomplete="off" spellcheck="false" required>
+              </div>
+              <div class="field">
+                <label for="nu-password">密码</label>
+                <input id="nu-password" class="mono" type="password" autocomplete="new-password" required>
+                <span class="field-hint">至少 8 位</span>
+              </div>
+              <div class="field">
+                <label for="nu-role">角色</label>
+                <select id="nu-role" class="mono">
+                  <option value="user">user（普通用户）</option>
+                  <option value="superadmin">superadmin（超管）</option>
+                </select>
+              </div>
+              <div class="field field-wide">
+                <label for="nu-note">备注（可选）</label>
+                <input id="nu-note" type="text" autocomplete="off">
+              </div>
+              <div class="field field-wide field-actions">
+                <button id="nu-submit" class="btn btn-run" type="submit">创建用户</button>
+                <span id="nu-state" class="field-hint"></span>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>用户列表</h2>
+              <span id="users-count" class="hint"></span>
+            </div>
+            <div id="users-error" class="err-box" hidden></div>
+            <p id="users-empty" class="empty" hidden></p>
+            <div class="table-wrap">
+              <table id="users-table" hidden>
+                <thead>
+                  <tr>
+                    <th>用户</th><th>角色</th><th>状态</th><th>创建时间</th>
+                    <th class="num">账号数</th><th>备注</th><th class="ctr">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="users-rows"></tbody>
+              </table>
+            </div>
+            <p class="note">
+              增删改由后端校验：删除最后一个超管会被拒绝（400），中文错误原样显示在上面的错误框里。
+              响应永远不返回密码或哈希，本页也不回显任何密码。
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span>本地控制台 · 仅绑定回环地址 · 页面不外发任何数据</span>
+        <span class="footer-sep">|</span>
+        <span>接口契约：<span class="mono">docs/web-console-api.md</span></span>
+        <span class="footer-sep">|</span>
+        <span>会话在 <span class="mono">HttpOnly Cookie</span> 里，页面不碰 localStorage</span>
+        <span class="footer-sep">|</span>
+        <span>导航状态存在 URL hash 里（<span class="mono">#/功能/平台</span>），刷新后仍在同一页同一平台</span>
+      </footer>
+
+    </main>
+
+    <!-- ==================================================================
+         作业抽屉：作业详情（双击作业行）与单作业提交（两步：干跑 → 确认）
+         固定定位覆盖内容区，不用整页跳走；Esc / 点遮罩 / 「关闭」都能关。
+         内容一律由 app.js 用 textContent 构建，这里只放骨架。
+         ================================================================== -->
+    <div id="drawer" class="drawer" hidden>
+      <div id="drawer-backdrop" class="drawer-backdrop"></div>
+      <aside id="drawer-panel" class="drawer-panel" role="dialog" aria-modal="true"
+             aria-labelledby="drawer-title">
+        <header class="drawer-head">
+          <div class="drawer-head-main">
+            <h2 id="drawer-title">作业详情</h2>
+            <div id="drawer-meta" class="res-meta"></div>
+          </div>
+          <button id="drawer-close" class="btn btn-ghost btn-sm" type="button"
+                  title="关闭抽屉（Esc）">关闭</button>
+        </header>
+        <div id="drawer-status" class="drawer-status" hidden></div>
+        <div id="drawer-error" class="err-box" hidden></div>
+        <div id="drawer-body" class="drawer-body"></div>
+        <footer id="drawer-foot" class="drawer-foot" hidden></footer>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<!-- 仅用于 file:// 直开 / 脚本未加载时给人话提示；业务逻辑在 /static/app.js -->
+<script>
+(function () {
+  function note(msg) {
+    var n = document.getElementById('boot-note');
+    if (!n) return;
+    n.hidden = false;
+    n.textContent = msg;
+  }
+  window.__kedaibiaoNote = note;
+  if (location.protocol === 'file:') {
+    note('当前以 file:// 直接打开，浏览器不允许读取本地接口数据，页面无法加载任何状态，' +
+         '也无法登录。请先启动控制台服务，再通过 http://127.0.0.1:<端口> 访问本页。');
+  }
+  window.addEventListener('load', function () {
+    setTimeout(function () {
+      if (!window.__kedaibiao) {
+        note('前端脚本 /static/app.js 未加载成功：页面为静态骨架，所有数据均为占位符。' +
+             '请确认通过控制台服务访问，且 /static/app.js 可访问。');
+      }
+    }, 400);
+  });
+})();
+</script>
+<script src="/static/app.js?v=20261020e"></script>
+</body>
+</html>
