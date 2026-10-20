@@ -6124,6 +6124,21 @@
     return { text: '—', pct: null };
   }
 
+  function courseActivationByName(name) {
+    var books = state.brush.books || [];
+    for (var i = 0; i < books.length; i++) {
+      if (String(books[i].name || '') === String(name || '')) {
+        return { text: String(books[i].activated || '—'), raw: books[i].activated_raw };
+      }
+    }
+    return { text: '—', raw: null };
+  }
+
+  /* 未激活的教材：行内「提交」禁用（平台的 100002 没有权限就是它） */
+  function inactiveCourse(name) {
+    return courseActivationByName(name).text === '未激活';
+  }
+
   function progressBar(pct) {
     var wrap = el('span', 'progress-bar');
     var inner = el('span', 'progress-fill');
@@ -6164,6 +6179,14 @@
       var title = el('span', 'book-name', name);
       summary.appendChild(title);
       summary.appendChild(el('span', 'hint', ' · ' + rows.length + ' 个任务'));
+      var act = courseActivationByName(name);
+      if (act.text === '未激活') {
+        summary.appendChild(badge('未激活', 'badge-warn'));
+      } else if (act.text === '已激活') {
+        summary.appendChild(badge('已激活', 'badge-ok'));
+      } else {
+        summary.appendChild(badge('激活未知', 'badge-idle'));
+      }
       var prog = courseProgressByName(name);
       summary.appendChild(el('span', 'hint', ' · 完成 '));
       summary.appendChild(el('span', 'mono book-progress', prog.text));
@@ -6184,7 +6207,33 @@
       }
       det.appendChild(summary);
       var inner = el('div', 'book-body');
-      inner.appendChild(tableBlock(grouped.columns, rows, '这本书没有任务。', o));
+      if (inactiveCourse(name)) {
+        inner.appendChild(el('p', 'alert-box alert-soft',
+          '这本教材未激活：平台会拒绝提交（业务码 100002 没有权限）。' +
+          '需要先在 U校园网页端输入激活码激活；在此之前只能看，不能交。'));
+        var inactiveOpts = Object.assign({}, o, {
+          rowActions: function (rowObj) {
+            var id = assignmentIdOf(rowObj);
+            var btn = el('button', 'btn btn-sm', '提交');
+            btn.type = 'button';
+            btn.disabled = true;
+            btn.title = '教材未激活，平台会拒绝（100002 没有权限）';
+            var nodes = [btn];
+            if (id) {
+              var detail = el('button', 'btn btn-sm', '详情');
+              detail.type = 'button';
+              detail.addEventListener('click', function () {
+                openAssignmentDetail(state.platform, id, rowObj);
+              });
+              nodes.push(detail);
+            }
+            return nodes;
+          }
+        });
+        inner.appendChild(tableBlock(grouped.columns, rows, '这本书没有任务。', inactiveOpts));
+      } else {
+        inner.appendChild(tableBlock(grouped.columns, rows, '这本书没有任务。', o));
+      }
       det.appendChild(inner);
       box.appendChild(det);
     });
@@ -6306,6 +6355,15 @@
   function renderBrushTree() {
     var tree = state.brush.tree;
     if (!tree) { return; }
+    var inactive = tree.activated === false || tree.in_bookshelf === false;
+    show($('brush-inactive'), inactive);
+    if ($('brush-submit-dry')) { $('brush-submit-dry').disabled = inactive; }
+    if ($('brush-submit-live')) { $('brush-submit-live').disabled = inactive; }
+    if (inactive && $('brush-inactive')) {
+      $('brush-inactive').textContent =
+        '这本教材未激活（不在书架里）：平台会拒绝提交（100002 没有权限）。' +
+        '请先在 U校园网页端输入激活码；「刷时长」不受影响。';
+    }
     setText('brush-detail-title', tree.course || '教材详情');
     var fields = $('brush-detail-fields');
     if (fields) {

@@ -340,10 +340,28 @@ class UnipusAdapter(PlatformAdapter):
         """
         client = self.client()
         bindings = list(await client.fetch_course_bindings())
+        shelf_instances: set[str] = set()
         if with_bookshelf:
             books = await client.fetch_bookshelf()
+            shelf_instances = {
+                book.course_instance_id for book in books if book.course_instance_id
+            }
             bindings = _merge_bookshelf(bindings, books)
-        return [_to_course(binding) for binding in bindings]
+        courses: list[Course] = []
+        for binding in bindings:
+            course = _to_course(binding)
+            # 不在书架里 ≈ 这本书还没激活/没开通（2026-10-20 实测：未激活的两本教材
+            # 既不在 CLASS_COURSE 也不在 PERSONAL/EXPIRED；且对其提交返回 100002）
+            in_shelf = bool(
+                with_bookshelf
+                and (binding.course_instance_id in shelf_instances)
+            )
+            course.raw["in_bookshelf"] = in_shelf
+            if with_bookshelf and binding.activated is None and not in_shelf:
+                # 没查书架时无从判断，保持 None（未知）；查了且不在书架里才算未激活
+                course.raw["activated"] = False
+            courses.append(course)
+        return courses
 
     # -- 任务 -------------------------------------------------------------
 
@@ -624,8 +642,9 @@ class UnipusAdapter(PlatformAdapter):
             "course_resource_id": raw.get("course_resource_id", ""),
             "strategy_id": raw.get("strategy_id", ""),
             "page_base": page_base,
-            # 激活标记：True=已激活 / False=未激活 / None=未知（教材不在书架里）
+            # 激活标记：True=已激活 / False=**未激活**（不在书架里，需激活码）
             "activated": raw.get("activated"),
+            "in_bookshelf": raw.get("in_bookshelf"),
             "finish_points": raw.get("finish_point_num"),
             "total_points": raw.get("total_point_num"),
             "units": units,

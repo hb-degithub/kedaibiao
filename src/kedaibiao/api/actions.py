@@ -2164,6 +2164,12 @@ async def _generic_courses(adapter: Any, params: dict[str, Any]) -> dict[str, An
                 "term": c.term or "—",
                 "progress": progress,
                 "progress_pct": pct,
+                "activated": (
+                    "已激活" if raw.get("activated") is True
+                    else ("未激活" if raw.get("activated") is False else "—")
+                ),
+                "activated_raw": raw.get("activated"),
+                "in_bookshelf": raw.get("in_bookshelf"),
             }
         )
     columns = [
@@ -2172,6 +2178,8 @@ async def _generic_courses(adapter: Any, params: dict[str, Any]) -> dict[str, An
     ]
     if has_progress:
         columns.append(column("progress", "完成进度", mono=True))
+    if any(row.get("activated") is not None for row in rows):
+        columns.append(column("activated", "激活", mono=True))
     columns.extend([column("teacher", "教师"), column("term", "学期")])
     return table(
         platform=name,
