@@ -69,3 +69,38 @@ data/console-selftest/unipus/08-tools-answers.png
 - 语音评测没有控制台入口（报文形状大部分未实测，见
   [unipus-speech.md](unipus-speech.md)）。
 - 验证用的临时 admin 会话已删除，服务已关闭。
+
+---
+
+## 5. 「一键全部提交」实测（2026-10-20 新增）
+
+### 5.1 做了什么
+
+- 后端：`POST /api/platforms/<name>/batch-submit`（202 + job），后台线程逐组
+  「读 `progress/v2` → native_plan →（确认后）native_submit → 回读」，
+  进度写 `job.logs` 并同步到平台日志；
+- 前端：作业页顶部「一键全部提交」按钮（仅 U校园显示）→ 面板（最多处理数 /
+  组间间隔 / 跳过已满分）→ **① 先干跑** → 看完清单再 **② 确认全部真交**；
+  日志 1.2s 轮询滚动，切页不中断；
+- 安全默认：干跑不写平台；真交必须二次确认；已满分（`score_pct >= 1`）默认跳过；
+  组间默认停 8 秒防限流；撞限流会按 `retry_after` 等待后继续。
+
+### 5.2 实测结果
+
+| 项 | 结果 |
+| --- | --- |
+| 服务层批量干跑（课程 `20000943839`，limit=3） | `done`；可提交 2 / 跳过 1（已满分）/ 被拦 0；**零 POST** |
+| HTTP 路由（limit=2） | 202 返回 `b-1`；轮询 `GET /api/jobs/b-1` → `done`，日志完整 |
+| 浏览器 UI（Playwright，真实 8765） | 按钮可见 → 面板打开 → 干跑完成 → 计数「可提交 2 · 已提交 0 · …」→「② 确认全部真交」自动出现 |
+| 离线测试 | `tests/test_api_service.py::TestBatchSubmit`（干跑零提交、真交只交可提交项、limit、课程不匹配、501/404）+ `native_assignment_state` 用例；全量 1514 条通过 |
+
+截图：`data/console-selftest/unipus/10-batch-dryrun.png`（本地，不入库）。
+
+### 5.3 边界
+
+- **批量真交没有在真实账号上跑过**（只跑了批量干跑）：单组真交已在
+  [unipus-submit.md](unipus-submit.md) §10 验证；批量真交与它共用
+  `native_submit`，差异只在循环、节流与计数。
+- 口语/角色扮演/上传类任务可能因「客户端自报 record」策略被平台拒绝：
+  批量任务会把它记成 `failed` 并继续下一组，不会拖垮整批。
+- 批量提交会跳过已满分，但**做过但 0 分**的组会被重交（转发标准答案，重交只会更好）。

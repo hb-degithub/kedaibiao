@@ -938,3 +938,20 @@ class TestNativeHooks(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNativeAssignmentState(unittest.IsolatedAsyncioTestCase):
+    """批量提交用到的「单任务状态」读取。"""
+
+    async def test_finished_and_score(self) -> None:
+        adapter, _ = make_adapter(progress_response(first_pass="2026-10-20 10:00:00"))
+        state = await adapter.native_assignment_state("course-v2:x/u1g1")
+        self.assertTrue(state["finished"])
+        self.assertEqual(state["score_pct"], 1.0)
+        self.assertEqual(state["score"], [1, 1])
+        self.assertEqual(state["first_pass"], "2026-10-20 10:00:00")
+
+    async def test_not_started(self) -> None:
+        adapter, _ = make_adapter(progress_response(first_pass=None))
+        state = await adapter.native_assignment_state("course-v2:x/u1g1")
+        self.assertFalse(state["finished"])

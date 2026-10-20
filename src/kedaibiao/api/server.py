@@ -263,6 +263,37 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             })
 
         # 注意顺序：/api/platforms/<name>/actions 必须先于 /api/platforms 判断
+        if path.startswith("/api/platforms/") and path.endswith("/batch-submit"):
+            name = path[len("/api/platforms/") : -len("/batch-submit")].strip("/")
+            if not name or "/" in name:
+                return self._error(404, f"没有这个路由: {path}", "not_found")
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError(
+                    "请求体必须是 JSON 对象", kind="bad_request", status=400
+                )
+            try:
+                limit = int(payload.get("limit") or 0)
+            except (TypeError, ValueError) as exc:
+                raise ConsoleError(
+                    "limit 必须是整数", kind="bad_request", status=400
+                ) from exc
+            try:
+                interval = float(payload.get("interval") or 8.0)
+            except (TypeError, ValueError) as exc:
+                raise ConsoleError(
+                    "interval 必须是数字（秒）", kind="bad_request", status=400
+                ) from exc
+            return self._json(202, self.service.start_batch_submit(
+                name,
+                course=str(payload.get("course") or ""),
+                confirm=bool(payload.get("confirm", False)),
+                limit=limit,
+                interval=interval,
+                skip_full=bool(payload.get("skip_full", True)),
+                viewer=viewer,
+            ))
+
         if path.startswith("/api/platforms/"):
             parts = path[len("/api/platforms/") :].split("/")
             if len(parts) == 2 and parts[1] == "logs" and parts[0]:
@@ -411,6 +442,37 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return self._json(200, self.service.save_itest_manual(
                 str(payload.get("exam_id") or ""),
                 {str(k): str(v) for k, v in answers.items()},
+                viewer=viewer,
+            ))
+
+        if path.startswith("/api/platforms/") and path.endswith("/batch-submit"):
+            name = path[len("/api/platforms/") : -len("/batch-submit")].strip("/")
+            if not name or "/" in name:
+                return self._error(404, f"没有这个路由: {path}", "not_found")
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError(
+                    "请求体必须是 JSON 对象", kind="bad_request", status=400
+                )
+            try:
+                limit = int(payload.get("limit") or 0)
+            except (TypeError, ValueError) as exc:
+                raise ConsoleError(
+                    "limit 必须是整数", kind="bad_request", status=400
+                ) from exc
+            try:
+                interval = float(payload.get("interval") or 8.0)
+            except (TypeError, ValueError) as exc:
+                raise ConsoleError(
+                    "interval 必须是数字（秒）", kind="bad_request", status=400
+                ) from exc
+            return self._json(202, self.service.start_batch_submit(
+                name,
+                course=str(payload.get("course") or ""),
+                confirm=bool(payload.get("confirm", False)),
+                limit=limit,
+                interval=interval,
+                skip_full=bool(payload.get("skip_full", True)),
                 viewer=viewer,
             ))
 

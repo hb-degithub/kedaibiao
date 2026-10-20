@@ -1106,6 +1106,7 @@
     syncRunPlatformOptions();
     syncAccountPlatformOptions();
     syncCapturePlatformOptions();
+    syncBatchPanel();
     applyRunConstraints();
   }
 
@@ -5938,6 +5939,16 @@
     if ($('auto-close')) { $('auto-close').addEventListener('click', function () { closeAuto(false); }); }
     if ($('auto-reopen')) { $('auto-reopen').addEventListener('click', reopenAuto); }
     if ($('plog-open')) { $('plog-open').addEventListener('click', openPlatLogs); }
+    /* 一键全部提交（批量） */
+    if ($('batch-toggle')) { $('batch-toggle').addEventListener('click', batchToggle); }
+    if ($('batch-dry')) { $('batch-dry').addEventListener('click', function () { batchStart(false); }); }
+    if ($('batch-live')) { $('batch-live').addEventListener('click', function () { batchStart(true); }); }
+    if ($('batch-close')) {
+      $('batch-close').addEventListener('click', function () {
+        var panel = $('batch-panel');
+        if (panel) { panel.hidden = true; }
+      });
+    }
     if ($('plog-close')) { $('plog-close').addEventListener('click', closePlatLogs); }
     if ($('plog-refresh')) { $('plog-refresh').addEventListener('click', fetchPlatLogs); }
     if ($('auto-manual-save')) { $('auto-manual-save').addEventListener('click', saveManual); }
@@ -6024,6 +6035,186 @@
     });
     window.addEventListener('pagehide', cancelTimer);
     window.addEventListener('beforeunload', cancelTimer);
+  }
+
+  /* ==================================================================
+     一键全部提交（批量提交：后台任务 + 轮询进度）
+     只对「原生提交链路」的平台开放（当前是 U校园）：
+       POST /api/platforms/<name>/batch-submit
+         {course, confirm, limit, interval, skip_full} → 202 {job_id,...}
+       GET /api/jobs/<job_id> → {status, logs, counts, summary, error}
+     两步：先干跑（只读、不写平台），确认后再逐组真交（不可逆）。
+     ================================================================== */
+
+  var batch = { jobId: '', timer: null, running: false, dryDone: false, logLen: 0 };
+
+  function batchSupported(plt) {
+    return plt === 'unipus';   /* 其余平台还没有 native 批量提交链路 */
+  }
+
+  function syncBatchPanel() {
+    var btn = $('batch-toggle');
+    var panel = $('batch-panel');
+    var supported = batchSupported(state.platform);
+    if (btn) { btn.hidden = !supported; }
+    if (panel && !supported) { panel.hidden = true; }
+  }
+
+  function batchSetState(text) {
+    var el = $('batch-state');
+    if (el) { el.textContent = text || '—'; }
+  }
+
+  function batchSetCounts(counts) {
+    var el = $('batch-counts');
+    if (!el) { return; }
+    var c = counts || {};
+    el.textContent = '可提交 ' + (c.planned || 0) +
+      ' · 已提交 ' + (c.submitted || 0) +
+      ' · 跳过 ' + (c.skipped || 0) +
+      ' · 被拦 ' + (c.blocked || 0) +
+      ' · 失败 ' + (c.failed || 0);
+  }
+
+  function batchClearLog() {
+    var log = $('batch-log');
+    if (log) { log.textContent = ''; }
+    batch.logLen = 0;
+  }
+
+  function batchLog(text) {
+    var log = $('batch-log');
+    if (!log) { return; }
+    log.textContent += (log.textContent ? '\n' : '') + text;
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function batchShowLive(show) {
+    var btn = $('batch-live');
+    if (btn) { btn.hidden = !show; }
+  }
+
+  function batchStopPolling() {
+    if (batch.timer) { clearTimeout(batch.timer); batch.timer = null; }
+  }
+
+  function batchRender(job) {
+    batchSetCounts(job.counts);
+    var logs = job.logs || [];
+    for (var i = batch.logLen; i < logs.length; i++) {
+      var line = logs[i] || {};
+      batchLog('[' + String(line.at || '').slice(11) + '] ' + (line.text || ''));
+    }
+    batch.logLen = logs.length;
+  }
+
+  function batchPoll() {
+    batch.timer = null;
+    if (!batch.jobId) { return; }
+    api('/api/jobs/' + encodeURIComponent(batch.jobId)).then(function (job) {
+      batchRender(job);
+      if (job.status === 'running') {
+        batchSetState('任务 ' + batch.jobId + ' 运行中…');
+        batch.timer = setTimeout(batchPoll, 1200);
+        return;
+      }
+      batch.running = false;
+      batchShowLive(false);
+      if (job.status === 'done') {
+        batchSetState(job.summary || '完成');
+        batchLog('■ ' + (job.summary || '批量提交结束'));
+        var counts = job.counts || {};
+        if (!job.confirm && (counts.planned || 0) > 0) {
+          batch.dryDone = true;
+          batchShowLive(true);
+          batchLog('→ 干跑完成。确认无误后点「② 确认全部真交」（不可逆）。');
+        } else if (!job.confirm) {
+          batchLog('→ 干跑完成：没有可提交的任务组。');
+        }
+      } else {
+        batchSetState('失败：' + (job.error || '未知错误'));
+        batchLog('✗ ' + (job.error || '任务失败'));
+      }
+    }).catch(function (e) {
+      batchSetState('轮询失败：' + describeError(e));
+      batch.timer = setTimeout(batchPoll, 2500);
+    });
+  }
+
+  function batchStart(confirm) {
+    if (batch.running) {
+      showToast('批量任务还在跑，等它结束。');
+      return;
+    }
+    var plt = state.platform;
+    if (!batchSupported(plt)) {
+      showToast('当前平台还不支持一键批量提交（目前是 U校园）。');
+      return;
+    }
+    var courseEl = $('assign-course');
+    var limitEl = $('batch-limit');
+    var intervalEl = $('batch-interval');
+    var skipEl = $('batch-skip-full');
+    var limit = parseInt(limitEl && limitEl.value, 10);
+    var interval = parseFloat(intervalEl && intervalEl.value);
+    var params = {
+      course: courseEl ? String(courseEl.value || '').trim() : '',
+      confirm: !!confirm,
+      limit: isNaN(limit) ? 0 : limit,
+      interval: isNaN(interval) ? 8 : interval,
+      skip_full: !!(skipEl && skipEl.checked)
+    };
+    if (!confirm) {
+      var okDry = window.confirm(
+        '先做一次干跑：只读平台内容与标准答案，只规划、不提交。\n\n' +
+        '平台：' + (platformLabel(plt) || plt) + '\n' +
+        '课程：' + (params.course || '全部课程') + '\n' +
+        '最多处理：' + (params.limit || '不限') + ' 个任务\n' +
+        '组间间隔：' + params.interval + ' 秒\n\n开始干跑？'
+      );
+      if (!okDry) { return; }
+      batchClearLog();
+      batch.dryDone = false;
+      batchShowLive(false);
+    } else {
+      var countsText = ($('batch-counts') && $('batch-counts').textContent) || '';
+      var okLive = window.confirm(
+        '⚠️ 真提交不可撤销：会逐组向平台写入答案并回读进度。\n\n' +
+        (countsText ? '干跑结果：' + countsText + '\n\n' : '') +
+        '课程：' + (params.course || '全部课程') + '\n' +
+        '最多处理：' + (params.limit || '不限') + ' 个任务\n' +
+        '组间间隔：' + params.interval + ' 秒\n\n确定全部真交？'
+      );
+      if (!okLive) { return; }
+      batchClearLog();
+      batchShowLive(false);
+    }
+
+    batch.running = true;
+    batch.jobId = '';
+    batchSetState(confirm ? '真交中…' : '干跑中…');
+    batchLog('$ POST /api/platforms/' + plt + '/batch-submit ' + JSON.stringify(params));
+    postJson('/api/platforms/' + encodeURIComponent(plt) + '/batch-submit', params)
+      .then(function (job) {
+        batch.jobId = job.job_id;
+        batchSetState('任务 ' + batch.jobId + ' 运行中…');
+        batchPoll();
+      })
+      .catch(function (e) {
+        batch.running = false;
+        batchSetState('启动失败：' + describeError(e));
+        batchLog('✗ ' + describeError(e));
+      });
+  }
+
+  function batchToggle() {
+    var panel = $('batch-panel');
+    if (!panel) { return; }
+    var willShow = panel.hidden;
+    panel.hidden = !willShow;
+    if (willShow) {
+      batchSetState(batch.running ? '任务 ' + batch.jobId + ' 运行中…' : '待开始');
+    }
   }
 
   function boot() {

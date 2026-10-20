@@ -2136,6 +2136,316 @@ class ConsoleService:
         thread.start()
         return _jsonable(job)
 
+    # -- 批量提交（原生提交链路平台，例如 U校园）---------------------------
+
+    def start_batch_submit(
+        self,
+        platform: str,
+        *,
+        course: str = "",
+        confirm: bool = False,
+        limit: int = 0,
+        interval: float = 8.0,
+        skip_full: bool = True,
+        viewer: Viewer | None = None,
+    ) -> dict[str, Any]:
+        """一键全部提交：后台任务，逐组「读状态 → 干跑计划 →（确认后）真交」。
+
+        - ``confirm=False``（默认）= **只规划不提交**，回报「哪些会交、哪些跳过/被拦」；
+        - ``confirm=True`` 才逐组真的写平台（不可逆），组间默认停 ``interval`` 秒；
+        - ``skip_full=True``（默认）跳过**已满分**（``score_pct >= 1``）的组，
+          做过但没满分的组会被重交（U校园转发标准答案，重交只会更好）；
+        - ``course`` 可填课程号或课程名片段，留空 = 全部课程；
+        - ``limit`` 最多处理多少个任务（0 = 不限），给首次试跑限流用。
+
+        任务进度写进 ``job.logs``（同时进平台日志），前端按 ``job_id`` 轮询
+        ``GET /api/jobs/<id>``。同一时刻只允许一个任务（与跑批共用闸门）。
+        """
+        scope = self._check_platform(platform)
+        assert scope is not None
+        cls: Any = adapters.get(scope)
+        caps = getattr(cls, "capabilities", None)
+        if caps is not None and not getattr(caps, "submit", False):
+            raise ConsoleError(
+                f"{getattr(cls, 'display_name', scope)} 尚未实现提交"
+                f"（capabilities.submit = False），不能批量提交。",
+                kind="not_supported", status=501,
+            )
+        if not getattr(cls, "native_submit_flow", False):
+            raise ConsoleError(
+                f"{getattr(cls, 'display_name', scope)} 没有原生提交链路"
+                f"（native_plan/native_submit），暂不支持一键批量提交。",
+                kind="not_supported", status=501,
+            )
+
+        course = str(course or "").strip()
+        limit = _clamp(int(limit or 0), 0, 10_000)
+        try:
+            interval = float(interval)
+        except (TypeError, ValueError):
+            interval = 8.0
+        interval = max(0.5, min(interval, 120.0))
+
+        # 先校验账号存在（批量任务里再登录），这样 HTTP 层能立刻回 400/404
+        creds, cookie_file = self._resolve_login(scope, viewer)
+        owner_id = viewer.user_id if (viewer and viewer.authenticated) else 0
+
+        with self._lock:
+            if self._active_job_id is not None:
+                raise ConsoleError(
+                    f"已有任务在跑（{self._active_job_id}），同一时刻只允许一个。",
+                    kind="busy", status=409,
+                )
+            self._seq += 1
+            job_id = f"b-{self._seq}"
+            job: dict[str, Any] = {
+                "job_id": job_id,
+                "kind": "batch-submit",
+                "platform": scope,
+                "course": course,
+                "confirm": bool(confirm),
+                "limit": limit,
+                "interval": interval,
+                "skip_full": bool(skip_full),
+                "status": "running",
+                "started_at": _now(),
+                "finished_at": None,
+                "summary": "",
+                "error": "",
+                "logs": [],
+                "items": [],
+                "counts": {
+                    "planned": 0, "submitted": 0, "skipped": 0,
+                    "blocked": 0, "failed": 0,
+                },
+                "owner_id": owner_id,
+            }
+            self._jobs.append(job)
+            self._jobs_by_id[job_id] = job
+            del self._jobs[:-JOB_HISTORY]
+            for stale in list(self._jobs_by_id):
+                if stale not in {j["job_id"] for j in self._jobs}:
+                    del self._jobs_by_id[stale]
+            self._active_job_id = job_id
+
+        self._plog(
+            scope, "info",
+            f"$ 批量提交 {job_id}（{'真交，不可逆' if confirm else '干跑，不提交'}；"
+            f"course={course or '全部课程'}，limit={limit or '不限'}）",
+        )
+        threading.Thread(
+            target=self._run_batch_submit,
+            args=(job_id, scope, course, bool(confirm), limit, interval,
+                  bool(skip_full), owner_id, cookie_file, creds),
+            name=f"kedaibiao-batch-{job_id}",
+            daemon=True,
+        ).start()
+        return _jsonable(job)
+
+    def _run_batch_submit(
+        self,
+        job_id: str,
+        platform: str,
+        course: str,
+        confirm: bool,
+        limit: int,
+        interval: float,
+        skip_full: bool,
+        owner_id: int,
+        cookie_file: str | None,
+        credentials: Any,
+    ) -> None:
+        """批量提交的后台线程：逐课程 → 逐任务，单组失败不拖垮整批。"""
+        runtime = None
+        adapter: Any = None
+        counts: dict[str, int] = {}
+        try:
+            runtime = build_runtime(
+                root=self.root, environ=self._llm_environ(),
+                cookie_file=cookie_file, owner_id=owner_id,
+            )
+            adapter = runtime.make_adapter(platform)
+            restore_adapter_session(adapter, cookie_file)
+            self._job_log(job_id, "info", "$ 恢复登录会话…")
+            if not asyncio.run(adapter.refresh_session(credentials)):
+                raise RuntimeError(
+                    "登录失败：会话无效且无法自动登录，请到「账号」页重新登录一次"
+                )
+            self._job_log(job_id, "ok", "✓ 会话就绪")
+
+            courses = asyncio.run(adapter.list_courses())
+            if course:
+                needle = course.lower()
+                courses = [
+                    c for c in courses
+                    if str(c.remote_id) == course
+                    or needle in (c.name or "").lower()
+                    or needle in str(c.remote_id).lower()
+                ]
+            if not courses:
+                raise RuntimeError(f"没有匹配的课程（course={course!r}）")
+            self._job_log(job_id, "info", f"· 课程 {len(courses)} 门")
+
+            processed = 0
+            for target in courses:
+                if limit and processed >= limit:
+                    break
+                self._job_log(
+                    job_id, "info", f"→ {target.name}（{target.remote_id}）"
+                )
+                assignments = asyncio.run(adapter.list_assignments(target))
+                self._job_log(job_id, "info", f"  {len(assignments)} 个任务")
+                for assignment in assignments:
+                    if limit and processed >= limit:
+                        break
+                    processed += 1
+                    self._batch_one(
+                        job_id, adapter, assignment,
+                        confirm=confirm, skip_full=skip_full, interval=interval,
+                    )
+                    if limit and processed >= limit:
+                        break
+            counts = self._batch_counts(job_id)
+            summary = (
+                f"完成：可提交 {counts['planned']}，真交 {counts['submitted']}，"
+                f"跳过 {counts['skipped']}，被拦 {counts['blocked']}，"
+                f"失败 {counts['failed']}"
+            )
+            self._finish_batch_job(job_id, "done", summary=summary)
+            self._job_log(job_id, "ok", f"■ {summary}")
+            self._plog(platform, "ok", f"■ 批量提交 {job_id} {summary}")
+        except Exception as exc:  # noqa: BLE001 - 后台任务必须落成失败状态
+            counts = self._batch_counts(job_id)
+            message = f"{type(exc).__name__}: {exc}"
+            self._finish_batch_job(job_id, "failed", error=message)
+            self._job_log(job_id, "error", f"✗ {message}")
+            self._plog(platform, "error", f"✗ 批量提交 {job_id}：{message}")
+            log.exception("批量提交失败: %s", job_id)
+        finally:
+            if adapter is not None:
+                with contextlib.suppress(Exception):
+                    asyncio.run(adapter.close())
+            if runtime is not None:
+                with contextlib.suppress(Exception):
+                    runtime.close()
+            with self._lock:
+                if self._active_job_id == job_id:
+                    self._active_job_id = None
+
+    def _batch_one(
+        self,
+        job_id: str,
+        adapter: Any,
+        assignment: Any,
+        *,
+        confirm: bool,
+        skip_full: bool,
+        interval: float,
+    ) -> None:
+        """处理一个任务组：读状态 → 干跑计划 →（确认后）真交。"""
+        assignment_id = str(getattr(assignment, "remote_id", "") or "")
+        title = str(getattr(assignment, "title", "") or assignment_id)
+        if not assignment_id:
+            self._bump(job_id, "failed")
+            self._job_log(job_id, "warn", "· 跳过：任务号为空")
+            return
+
+        state: dict[str, Any] = {}
+        if hasattr(adapter, "native_assignment_state"):
+            try:
+                state = asyncio.run(adapter.native_assignment_state(assignment_id)) or {}
+            except Exception as exc:  # noqa: BLE001 - 状态读不到就当作未知，不拦
+                self._job_log(job_id, "warn", f"· {title}：状态读取失败（{type(exc).__name__}），按未完成处理")
+
+        score_pct = state.get("score_pct")
+        if (
+            skip_full
+            and isinstance(score_pct, (int, float))
+            and float(score_pct) >= 0.999
+        ):
+            self._bump(job_id, "skipped")
+            self._job_log(job_id, "info", f"· 跳过 {title}（已满分 {float(score_pct):.0%}）")
+            return
+
+        try:
+            plan = asyncio.run(adapter.native_plan(assignment_id))
+        except Exception as exc:  # noqa: BLE001
+            self._bump(job_id, "failed")
+            self._job_log(job_id, "error", f"✗ {title}：取计划失败 {type(exc).__name__}: {exc}")
+            return
+
+        blockers = [str(item) for item in (plan.get("blockers") or [])]
+        if not plan.get("can_submit", True):
+            self._bump(job_id, "blocked")
+            self._job_log(
+                job_id, "warn",
+                f"· 被拦 {title}：" + ("；".join(blockers) or "本地校验未通过"),
+            )
+            return
+
+        self._bump(job_id, "planned")
+        detail = (
+            f"题目 {plan.get('question_count')} · 计分点 {plan.get('item_count')}"
+            f" · submitType {plan.get('submit_type')}"
+        )
+        if not confirm:
+            self._job_log(job_id, "ok", f"✓ 可提交 {title}（{detail}）")
+            return
+
+        try:
+            result = asyncio.run(adapter.native_submit(assignment_id))
+        except Exception as exc:  # noqa: BLE001
+            retry_after = getattr(exc, "retry_after", None)
+            self._bump(job_id, "failed")
+            self._job_log(job_id, "error", f"✗ {title}：提交失败 {type(exc).__name__}: {exc}")
+            if isinstance(retry_after, (int, float)) and retry_after > 0:
+                wait = min(float(retry_after), 120.0)
+                self._job_log(job_id, "warn", f"   撞上限流，等待 {wait:.0f}s 再继续")
+                time.sleep(wait)
+            return
+
+        self._bump(job_id, "submitted")
+        self._job_log(
+            job_id, "ok",
+            f"✓ 已提交 {title}：code={result.get('code')!r} "
+            f"得分率={result.get('score_pct')} "
+            f"finish={result.get('server_finish')}",
+        )
+        if interval:
+            time.sleep(interval)
+
+    def _batch_counts(self, job_id: str) -> dict[str, int]:
+        with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            return dict(job.get("counts") or {}) if job else {}
+
+    def _bump(self, job_id: str, key: str) -> None:
+        with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            if job is None:
+                return
+            counts = job.setdefault("counts", {})
+            counts[key] = int(counts.get(key) or 0) + 1
+
+    def _finish_batch_job(
+        self,
+        job_id: str,
+        status: str,
+        *,
+        summary: str = "",
+        error: str = "",
+    ) -> None:
+        with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            if job is None:
+                return
+            job["status"] = status
+            job["finished_at"] = _now()
+            if summary:
+                job["summary"] = summary
+            if error:
+                job["error"] = error
+
     def wait_for_idle(self, timeout: float = 30.0) -> bool:
         """等当前任务结束。给测试与优雅关闭用。"""
         deadline = threading.Event()

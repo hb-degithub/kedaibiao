@@ -340,6 +340,7 @@
               <div class="action-submit">
                 <button id="assignments-submit" class="btn btn-run" type="submit">加载作业</button>
                 <button id="assignments-reload" class="btn" type="button">清空并重新加载全部</button>
+                <button id="batch-toggle" class="btn btn-warn" type="button" hidden>一键全部提交</button>
                 <button id="auto-reopen" class="btn" type="button" hidden>继续查看自动化</button>
                 <button id="plog-open" class="btn" type="button">详细日志</button>
                 <span id="assignments-state" class="field-hint"></span>
@@ -349,6 +350,42 @@
             <!-- 「提交」被禁用时的原因（平台 capabilities.submit = false，或后端 501 not_supported） -->
             <div id="assign-submit-note" class="alert-box alert-soft" hidden></div>
             <div id="assignments-result" class="action-result" hidden></div>
+
+            <!-- 一键全部提交：后台任务 + 轮询进度（仅支持原生提交链路的平台，如 U校园） -->
+            <div id="batch-panel" class="panel" hidden>
+              <div class="panel-head">
+                <h2>一键全部提交</h2>
+                <span id="batch-state" class="hint">—</span>
+              </div>
+              <div class="action-params">
+                <label class="field" for="batch-limit">
+                  <span class="field-label">最多处理任务数</span>
+                  <input id="batch-limit" class="mono" type="number" min="0" step="1" value="50">
+                  <span class="field-hint">0 = 不限；首次建议 20~50</span>
+                </label>
+                <label class="field" for="batch-interval">
+                  <span class="field-label">组间间隔（秒）</span>
+                  <input id="batch-interval" class="mono" type="number" min="0.5" max="120" step="0.5" value="8">
+                  <span class="field-hint">平台有限流，建议 ≥5 秒</span>
+                </label>
+                <label class="field" for="batch-skip-full">
+                  <span class="field-label">跳过已满分</span>
+                  <input id="batch-skip-full" type="checkbox" checked>
+                  <span class="field-hint">已满分（100%）的任务组不再重交</span>
+                </label>
+              </div>
+              <div class="action-submit">
+                <button id="batch-dry" class="btn btn-run" type="button">① 先干跑（只规划）</button>
+                <button id="batch-live" class="btn btn-warn" type="button" hidden>② 确认全部真交</button>
+                <button id="batch-close" class="btn" type="button">收起</button>
+                <span id="batch-counts" class="field-hint"></span>
+              </div>
+              <pre id="batch-log" class="text-block mono" style="max-height:360px;overflow:auto;white-space:pre-wrap"></pre>
+              <p class="note">
+                干跑只读内容与标准答案、做本地校验，<strong>不写平台</strong>；确认后逐组提交，
+                每组提交完回读 <span class="mono">progress/v2</span>。任务在后台运行，切页不会中断。
+              </p>
+            </div>
           </div>
         </div>
 

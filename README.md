@@ -263,6 +263,17 @@ PYTHONPATH=src python3 -m kedaibiao action unipus answers \
   [unipus-duration.md](docs/verification/unipus-duration.md)、
   [unipus-speech.md](docs/verification/unipus-speech.md)。
 
+#### U校园「一键全部提交」（控制台）
+
+作业页顶部按钮 → 面板里填「最多处理任务数 / 组间间隔 / 跳过已满分」：
+
+1. **先干跑**：只读内容与标准答案，列出「可提交 / 跳过（已满分）/ 被拦（子题数不一致等）」；
+2. 看完清单再点 **确认全部真交**：逐组提交并回读 `progress/v2`，日志实时滚动；
+   任务在后台跑，切页不中断，同一时刻只允许一个后台任务。
+
+对应接口 `POST /api/platforms/unipus/batch-submit`（见
+[docs/web-console-api.md](docs/web-console-api.md)），默认 `confirm=false`。
+
 > ⚠️ 提交 / 时长 / 语音评测都属**写操作**，一律默认干跑；语音评测的报文形状
 > 大部分未实测，只有模块与闸门，没有控制台入口。
 

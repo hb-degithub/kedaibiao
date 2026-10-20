@@ -35,6 +35,7 @@ GOOD = "apifake"
 NOSUBMIT = "apinosubmit"
 SLOW = "apislow"
 NOCAPS = "apinocaps"
+NATIVE = "apinative"
 
 
 class FakeAdapter(PlatformAdapter):
@@ -82,6 +83,57 @@ def _creds(platform: str) -> dict[str, str]:
     return {f"KEDAIBIAO_{up}_USER": "stu", f"KEDAIBIAO_{up}_PASS": "pw"}
 
 
+class NativeBatchAdapter(FakeAdapter):
+    """带「原生提交链路」的假平台：用来离线验证一键批量提交的后台任务。
+
+    三个任务分别覆盖三种分支：a1 已满分（跳过）、a2 可提交、a3 本地校验被拦。
+    """
+
+    name = NATIVE
+    display_name = "原生批量假平台"
+    capabilities = Capabilities(submit=True)
+    native_submit_flow = True
+    submitted: list[str] = []
+
+    async def list_assignments(self, course: Course) -> list[Assignment]:
+        return [
+            Assignment(remote_id=f"a{i}", title=f"任务{i}", kind=TaskKind.HOMEWORK)
+            for i in (1, 2, 3)
+        ]
+
+    async def native_assignment_state(self, assignment_id: str) -> dict[str, Any]:
+        return {
+            "finished": True,
+            "score_pct": 1.0 if assignment_id == "a1" else 0.0,
+        }
+
+    async def native_plan(self, assignment_id: str) -> dict[str, Any]:
+        if assignment_id == "a3":
+            return {
+                "can_submit": False,
+                "blockers": ["子题数不一致"],
+                "question_count": 1,
+                "item_count": 1,
+                "submit_type": 1,
+            }
+        return {
+            "can_submit": True,
+            "question_count": 1,
+            "item_count": 2,
+            "submit_type": 1,
+            "blockers": [],
+        }
+
+    async def native_submit(self, assignment_id: str) -> dict[str, Any]:
+        type(self).submitted.append(assignment_id)
+        return {
+            "ok": True,
+            "code": 0,
+            "score_pct": 1.0,
+            "server_finish": True,
+        }
+
+
 class NoCapsAdapter(FakeAdapter):
     """连课程都读不了的平台 —— 验证「能力缺失 -> 400 而不是 502」。"""
 
@@ -103,12 +155,14 @@ class ServiceTestBase(unittest.TestCase):
             'notify = "null"\n',
             encoding="utf-8",
         )
-        for cls in (FakeAdapter, NoSubmitAdapter, SlowAdapter, NoCapsAdapter):
+        for cls in (FakeAdapter, NoSubmitAdapter, SlowAdapter, NoCapsAdapter,
+                    NativeBatchAdapter):
             adapters.register(cls.name, cls, override=True)
             self.addCleanup(adapters.unregister, cls.name)
         self.service = ConsoleService(root=self.root)
         # 凭据只来自账号库：给每个假平台绑一个号
-        for cls in (FakeAdapter, NoSubmitAdapter, SlowAdapter, NoCapsAdapter):
+        for cls in (FakeAdapter, NoSubmitAdapter, SlowAdapter, NoCapsAdapter,
+                    NativeBatchAdapter):
             self.bind_account(cls.name)
 
     def bind_account(self, platform: str, username: str = "stu") -> int:
@@ -779,3 +833,68 @@ class TestParamValidation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBatchSubmit(ServiceTestBase):
+    """一键全部提交（原生提交链路平台）的后台任务。"""
+
+    def _wait(self, job: dict[str, Any]) -> dict[str, Any]:
+        self.assertTrue(
+            self.service.wait_for_idle(timeout=30), "批量任务没有在 30s 内结束"
+        )
+        return self.service.job(job["job_id"])
+
+    def test_dry_run_counts_and_never_submits(self) -> None:
+        NativeBatchAdapter.submitted = []
+        job = self.service.start_batch_submit(NATIVE, confirm=False, interval=0.5)
+        self.assertEqual(job["kind"], "batch-submit")
+        done = self._wait(job)
+        self.assertEqual(done["status"], "done", done)
+        self.assertEqual(
+            done["counts"],
+            {"planned": 1, "submitted": 0, "skipped": 1, "blocked": 1, "failed": 0},
+        )
+        self.assertEqual(NativeBatchAdapter.submitted, [], "干跑绝不能真交")
+        self.assertIn("可提交 1", done["summary"])
+
+    def test_live_submits_only_planned(self) -> None:
+        NativeBatchAdapter.submitted = []
+        job = self.service.start_batch_submit(NATIVE, confirm=True, interval=0.5)
+        done = self._wait(job)
+        self.assertEqual(done["status"], "done", done)
+        self.assertEqual(done["counts"]["submitted"], 1)
+        self.assertEqual(done["counts"]["skipped"], 1)
+        self.assertEqual(done["counts"]["blocked"], 1)
+        self.assertEqual(NativeBatchAdapter.submitted, ["a2"])
+
+    def test_course_filter_mismatch_fails_softly(self) -> None:
+        job = self.service.start_batch_submit(NATIVE, course="不存在的课", interval=0.5)
+        done = self._wait(job)
+        self.assertEqual(done["status"], "failed")
+        self.assertIn("没有匹配的课程", done["error"])
+
+    def test_limit_caps_processed_tasks(self) -> None:
+        NativeBatchAdapter.submitted = []
+        job = self.service.start_batch_submit(NATIVE, limit=1, interval=0.5)
+        done = self._wait(job)
+        self.assertEqual(done["status"], "done")
+        # limit=1 → 只处理第一个任务（a1 已满分 → 跳过）
+        self.assertEqual(done["counts"]["skipped"], 1)
+        self.assertEqual(done["counts"]["planned"], 0)
+        self.assertEqual(NativeBatchAdapter.submitted, [])
+
+    def test_platform_without_native_flow_is_501(self) -> None:
+        with self.assertRaises(ConsoleError) as ctx:
+            self.service.start_batch_submit(GOOD)
+        self.assertEqual(ctx.exception.status, 501)
+        self.assertEqual(ctx.exception.kind, "not_supported")
+
+    def test_platform_without_submit_is_501(self) -> None:
+        with self.assertRaises(ConsoleError) as ctx:
+            self.service.start_batch_submit(NOSUBMIT)
+        self.assertEqual(ctx.exception.status, 501)
+
+    def test_unknown_platform_is_404(self) -> None:
+        with self.assertRaises(ConsoleError) as ctx:
+            self.service.start_batch_submit("ghost")
+        self.assertEqual(ctx.exception.status, 404)

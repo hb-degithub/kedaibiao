@@ -524,6 +524,23 @@ class UnipusAdapter(PlatformAdapter):
         data.update(_plan_envelope(data, assignment_id))
         return data
 
+    async def native_assignment_state(self, assignment_id: str) -> dict[str, Any]:
+        """该任务组的完成状态（``progress/v2``，单任务真源）。
+
+        批量提交用它决定「跳过谁」：``finished`` 只表示平台记录过 ``first_pass``
+        （做过，不代表满分），``score_pct`` 才是得分率。默认只跳过**已满分**的组，
+        做过但 0 分的组仍会被重交（标准答案重交只会更好）。
+        """
+        instance_id, group_id = split_assignment_id(assignment_id)
+        state = await self.client().fetch_group_state(instance_id, group_id)
+        return {
+            "finished": bool(state.first_pass_datetime),
+            "first_pass": state.first_pass_datetime,
+            "score_pct": state.score_pct,
+            "score": list(state.score),
+            "server_state": state.server_state,
+        }
+
     async def native_submit(self, assignment_id: str) -> dict[str, Any]:
         """真交：内容 → 答案 → 构造/校验 → POST → 回读 ``progress/v2``。
 

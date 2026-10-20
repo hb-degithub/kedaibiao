@@ -337,6 +337,41 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 
 同一时刻只允许一个跑批任务；已有任务在跑时返回 **409** + `kind: "busy"`。
 
+### `POST /api/platforms/<name>/batch-submit` —— 一键全部提交（后台任务）
+
+只对**有原生提交链路**（`native_submit_flow = true`）且 `capabilities.submit = true`
+的平台开放（当前是 U校园）。返回 **202** + 任务对象，进度用 `GET /api/jobs/<job_id>` 轮询。
+
+**请求**：
+
+```json
+{ "course": "", "confirm": false, "limit": 50, "interval": 8, "skip_full": true }
+```
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `course` | string | `""` | 课程号或课程名片段；留空 = 全部课程 |
+| `confirm` | bool | `false` | `false` = 干跑（只读、只规划）；`true` = 逐组真交（不可逆） |
+| `limit` | int | `0` | 最多处理多少个任务，0 = 不限 |
+| `interval` | number | `8` | 真交时组间间隔秒数（0.5~120），防风控 |
+| `skip_full` | bool | `true` | 跳过已满分（`score_pct >= 1`）的任务组 |
+
+**响应**（202）：
+
+```json
+{ "job_id": "b-1", "kind": "batch-submit", "platform": "unipus",
+  "confirm": false, "status": "running",
+  "counts": { "planned": 0, "submitted": 0, "skipped": 0, "blocked": 0, "failed": 0 },
+  "logs": [] }
+```
+
+任务对象比跑批多两样：`counts`（可提交/已提交/跳过/被拦/失败）与 `logs`
+（逐行、带 `at`/`level`/`text`，前端直接滚动显示）。完成后
+`status` ∈ `done` / `failed`，`summary` 是一行中文汇总。
+
+同一时刻只允许一个后台任务（与跑批共用闸门）；再触发返回 **409 busy**。
+平台没有原生提交链路或 `capabilities.submit = false` 时返回 **501 not_supported**。
+
 ### `GET /api/jobs` —— 任务列表（新的在前）
 
 ```json
