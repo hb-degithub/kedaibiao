@@ -142,6 +142,75 @@ PYTHONPATH=src python3 -m kedaibiao web            # 默认绑 127.0.0.1:8765
 `--host <地址> --allow-host <主机名>`，启动时会打印警告 —— 能访问到该地址的设备
 都能操作控制台（含作业提交等写操作）。
 
+#### 控制台 v2（新排版，就是 `/`）
+
+新排版默认接在 `/`，原控制台保留在 `/classic`（重启服务后生效；重启前也可直接用
+`/static/v1.html` 打开）：
+
+```bash
+PYTHONPATH=src python3 -m kedaibiao web
+#  http://127.0.0.1:8765/          ← v2：平台切换在顶栏，详情进右侧检查器
+#  http://127.0.0.1:8765/classic   ← v1：原控制台
+#  http://127.0.0.1:8765/next      ← / 的别名，老书签不失效
+```
+
+![控制台 v2 · 概览](docs/screenshots/v2/01-overview.png)
+
+和 v1 的差别只有排版与交互，**接口完全共用**：
+
+- 平台作用域升到顶栏药丸组，常驻可见；左轨只放功能，按「工作台 / 内容 / 分析 / 系统」分组；
+- 每页统一为「页头（标题·作用域·主操作）→ 指标带 → 主列表 + 右侧上下文栏」；
+- 顶栏右侧常驻「当前平台 + 当前账号」：多号时 `⇄` 直接换号（换号 = 换会话），
+  账号 chip 点开能看每个平台账号的详情；
+- 导航按平台真实能力裁剪：平台没声明的动作（如 iTEST 的考勤）就不出现对应页面，
+  不做好看但点了必然失败的入口；
+- 考勤按平台模型分流：东软是「场次列表 + 逐场签到」，希沃品课是「签到码 → 干跑解析 → 确认签到」；
+- 「工具」页只做兜底：已经有专属页面的动作（刷课 / 考勤 / 签到）默认收起并指路，
+  同一个操作不会有两个按钮；需要时一键切回全量；
+- 详情一律进右侧检查器（作业详情支持上一条/下一条），说明文字收进页脚折叠块，
+  表格只用于横向对比；
+- 刷课（教材树 + 参数 + 日志流）与 iTEST 一键自动化都在作业页内就地展开，不再另开页面；
+- 统一的 loading / empty / gate / error 四态；`⌘K` 命令面板；深色为主、可切浅色。
+
+设计说明与扩展方式见 [docs/web-console-v2-layout.md](docs/web-console-v2-layout.md)。
+
+| 运行日志（行式列表） | 跨平台统计 |
+| --- | --- |
+| ![运行日志](docs/screenshots/v2/04-logs.png) | ![统计](docs/screenshots/v2/05-stats.png) |
+
+| 账号（多号 + 大模型） | 检查器（详情统一入口） |
+| --- | --- |
+| ![账号](docs/screenshots/v2/06-accounts.png) | ![检查器](docs/screenshots/v2/12-inspector.png) |
+
+| 刷课（教材树 + 完成度 + 参数 + 日志） | iTEST 一键自动化 |
+| --- | --- |
+| ![刷课](docs/screenshots/v2/13-brush.png) | ![一键自动化](docs/screenshots/v2/15-itest.png) |
+
+| 考勤 / 签到 | 签到前的定位校验 |
+| --- | --- |
+| ![考勤](docs/screenshots/v2/32-attendance.png) | ![定位校验](docs/screenshots/v2/33-sign-guard.png) |
+
+| 批改网评分循环（提分） | 品课：计划 → 复核 → 提交 |
+| --- | --- |
+| ![评分循环](docs/screenshots/v2/40-pigai-grader.png) | ![品课复核](docs/screenshots/v2/41-pinco-plan.png) |
+
+**「计划」页**：没做完的功能在界面上单独标注，点开能看到「为什么没做、计划怎么做、
+还差哪几步、有什么必须先确认的风险」——不让它们看起来像坏了。目前列了 5 项，
+其中 U校园口语评测按当前决定**只做前端标注、不接评测链路**。
+
+![计划页](docs/screenshots/v2/45-roadmap-page.png)
+
+改完前端想确认没写坏交互，跑自带的测试（都不碰真实平台账号）：
+
+```bash
+timeout 600 .venv/bin/python -m pytest -q            # 1722 单测（离线）
+python3 scripts/api_matrix_check.py                  # 后端路由/安全/并发 125 项（自起临时服务）
+python3 scripts/ui_matrix_check.py  --base http://127.0.0.1:8765 --username admin --password '…'
+python3 scripts/ui_smoke_next.py    --base http://127.0.0.1:8765 --username admin --password '…'
+```
+
+最近一次全面测试的结果与发现见 [docs/testing-report-2026-10-21.md](docs/testing-report-2026-10-21.md)。
+
 ### 平台只读动作（CLI）
 
 各平台除框架契约之外的只读能力（批改网的待办作业 / 历史作文 / 作文详情 /
