@@ -86,7 +86,6 @@
           <li><a class="nav-item" data-page="overview"    href="#/overview">概览</a></li>
           <li><a class="nav-item" data-page="courses"     href="#/courses">课程</a></li>
           <li><a class="nav-item" data-page="assignments" href="#/assignments">作业</a></li>
-          <li><a class="nav-item" data-page="brush"       href="#/brush">刷课</a></li>
           <li><a class="nav-item" data-page="bank"        href="#/bank">题库</a></li>
           <li><a class="nav-item" data-page="tools"       href="#/tools">工具</a></li>
           <li><a class="nav-item" data-page="logs"        href="#/logs">运行日志</a></li>
@@ -265,74 +264,6 @@
       <!-- ==================================================================
            页面 3/9：作业（通用动作 assignments，只读，会真的登录平台）
            ================================================================== -->
-      <!-- ==================================================================
-           页面：刷课（按教材组织；点进一本书看单元与任务）
-           数据：GET /api/platforms/<p>/course-tree?course=<课程号>（只读）
-           动作：POST /api/platforms/<p>/brush（默认干跑）
-           ================================================================== -->
-      <section id="page-brush" class="page" hidden aria-labelledby="h-brush">
-        <div class="page-head">
-          <h1 id="h-brush">刷课</h1>
-          <span id="brush-scope" class="hint">—</span>
-        </div>
-
-        <p id="brush-gate" class="empty" hidden></p>
-
-        <div class="panel">
-          <div class="panel-head">
-            <h2>教材</h2>
-            <span id="brush-books-hint" class="hint">点一本书看单元与任务</span>
-          </div>
-          <div id="brush-books" class="action-result" hidden></div>
-        </div>
-
-        <div id="brush-detail" class="panel" hidden>
-          <div class="panel-head">
-            <h2 id="brush-detail-title">教材详情</h2>
-            <span id="brush-detail-hint" class="hint"></span>
-          </div>
-          <dl class="kv-grid" id="brush-detail-fields"></dl>
-          <div class="action-params">
-            <label class="field" for="brush-minutes">
-              <span class="field-label">刷多长时间（分钟）</span>
-              <input id="brush-minutes" class="mono" type="number" min="0.5" max="240" step="0.5" value="10">
-              <span class="field-hint">任务模式是 1× 封顶；记账未验证，建议先干跑</span>
-            </label>
-            <label class="field" for="brush-submit-pending">
-              <span class="field-label">提交未完成的任务</span>
-              <input id="brush-submit-pending" type="checkbox">
-              <span class="field-hint">只提交没做过的组；已做过的不重交（平台不改分）</span>
-            </label>
-            <label class="field" for="brush-only-required">
-              <span class="field-label">只处理必修</span>
-              <input id="brush-only-required" type="checkbox" checked>
-              <span class="field-hint">按班级策略里的必修任务（门户进度就是按它算的）</span>
-            </label>
-          </div>
-          <div class="action-submit">
-            <button id="brush-dry" class="btn btn-run" type="button">① 先干跑（只规划）</button>
-            <button id="brush-live" class="btn btn-warn" type="button" hidden>② 确认真跑</button>
-            <button id="brush-back" class="btn" type="button">返回教材列表</button>
-            <span id="brush-state" class="field-hint"></span>
-          </div>
-          <pre id="brush-log" class="text-block mono" style="max-height:320px;overflow:auto;white-space:pre-wrap"></pre>
-        </div>
-
-        <div id="brush-tree" class="panel" hidden>
-          <div class="panel-head">
-            <h2>单元与任务</h2>
-            <span id="brush-tree-hint" class="hint"></span>
-          </div>
-          <div id="brush-tree-body" class="action-result"></div>
-        </div>
-
-        <p class="note">
-          刷课 = <strong>按教材组织</strong>：先看有哪些书，点进一本书看它的单元与任务。
-          「刷时长」走任务模式 WebSocket（每 5 秒报一次 start，按真实任务页 URL 归属）；
-          「提交未完成」与作业页的提交走同一条 API。两者都<strong>默认干跑</strong>。
-        </p>
-      </section>
-
       <section id="page-assignments" class="page" hidden aria-labelledby="h-assignments">
         <div class="page-head">
           <h1 id="h-assignments">作业</h1>
@@ -403,6 +334,48 @@
                 每组提交完回读 <span class="mono">progress/v2</span>。任务在后台运行，切页不会中断。
               </p>
             </div>
+
+            <!-- 教材目录视图 + 刷课（原独立页已合并到这里） -->
+        <div id="brush-detail" class="panel" hidden>
+          <div class="panel-head">
+            <h2 id="brush-detail-title">教材详情</h2>
+            <span id="brush-detail-hint" class="hint"></span>
+          </div>
+          <dl class="kv-grid" id="brush-detail-fields"></dl>
+          <div class="action-params">
+            <label class="field" for="brush-minutes">
+              <span class="field-label">刷多长时间（分钟）</span>
+              <input id="brush-minutes" class="mono" type="number" min="0.5" max="240" step="0.5" value="10">
+              <span class="field-hint">任务模式是 1× 封顶；记账未验证，建议先干跑</span>
+            </label>
+            <label class="field" for="brush-submit-pending">
+              <span class="field-label">提交未完成的任务</span>
+              <input id="brush-submit-pending" type="checkbox">
+              <span class="field-hint">只提交没做过的组；已做过的不重交（平台不改分）</span>
+            </label>
+            <label class="field" for="brush-only-required">
+              <span class="field-label">只处理必修</span>
+              <input id="brush-only-required" type="checkbox" checked>
+              <span class="field-hint">按班级策略里的必修任务（门户进度就是按它算的）</span>
+            </label>
+          </div>
+          <div class="action-submit">
+            <button id="brush-dry" class="btn btn-run" type="button">① 先干跑（只规划）</button>
+            <button id="brush-live" class="btn btn-warn" type="button" hidden>② 确认真跑</button>
+            <button id="brush-back" class="btn" type="button">返回教材列表</button>
+            <span id="brush-state" class="field-hint"></span>
+          </div>
+          <pre id="brush-log" class="text-block mono" style="max-height:320px;overflow:auto;white-space:pre-wrap"></pre>
+        </div>
+
+        <div id="brush-tree" class="panel" hidden>
+          <div class="panel-head">
+            <h2>单元与任务</h2>
+            <span id="brush-tree-hint" class="hint"></span>
+          </div>
+          <div id="brush-tree-body" class="action-result"></div>
+        </div>
+
 
             <div id="assignments-result" class="action-result" hidden></div>
 

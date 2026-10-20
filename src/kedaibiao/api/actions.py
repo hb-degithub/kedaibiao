@@ -2141,26 +2141,44 @@ async def _generic_courses(adapter: Any, params: dict[str, Any]) -> dict[str, An
         raise ActionInputError(f"{name} 不支持读取课程列表")
 
     courses = await adapter.list_courses()
-    rows = [
-        {
-            "id": c.remote_id,
-            "name": c.name,
-            "teacher": c.teacher or "—",
-            "term": c.term or "—",
-        }
-        for c in courses
+    rows = []
+    has_progress = False
+    for c in courses:
+        raw = c.raw if isinstance(c.raw, dict) else {}
+        finish = raw.get("finish_point_num")
+        total = raw.get("total_point_num")
+        progress = "—"
+        pct = None
+        if isinstance(finish, (int, float)) and isinstance(total, (int, float)) and total:
+            progress = f"{int(finish)}/{int(total)}"
+            pct = round(float(finish) / float(total), 3)
+            has_progress = True
+        elif isinstance(finish, (int, float)) and isinstance(total, (int, float)):
+            progress = f"{int(finish)}/{int(total)}"
+            has_progress = True
+        rows.append(
+            {
+                "id": c.remote_id,
+                "name": c.name,
+                "teacher": c.teacher or "—",
+                "term": c.term or "—",
+                "progress": progress,
+                "progress_pct": pct,
+            }
+        )
+    columns = [
+        column("id", "课程号", mono=True),
+        column("name", "名称"),
     ]
+    if has_progress:
+        columns.append(column("progress", "完成进度", mono=True))
+    columns.extend([column("teacher", "教师"), column("term", "学期")])
     return table(
         platform=name,
         action="courses",
         label="课程",
         title=f"课程列表（{len(rows)} 门）",
-        columns=[
-            column("id", "课程号", mono=True),
-            column("name", "名称"),
-            column("teacher", "教师"),
-            column("term", "学期"),
-        ],
+        columns=columns,
         rows=rows,
         empty_hint="该平台没有返回任何课程。",
     )

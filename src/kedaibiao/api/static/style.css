@@ -912,3 +912,20 @@ pre.cmd {
 }
 .grader-retry .grader-controls { margin-top: 8px; }
 .grader-retry-out { margin-top: 8px; font-size: 12.5px; min-height: 18px; }
+
+/* 作业页按教材分组：书目行与完成进度 */
+.book-group { border: 1px solid rgba(127, 127, 127, .28); border-radius: 8px; margin: 6px 0; }
+.book-group > summary.book-summary {
+  cursor: pointer; padding: 8px 12px; display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; list-style: revert;
+}
+.book-group > summary.book-summary .book-name { font-weight: 600; }
+.book-group > summary.book-summary button { margin-left: auto; }
+.book-group[open] > summary.book-summary { border-bottom: 1px solid rgba(127, 127, 127, .22); }
+.book-body { padding: 8px 12px 12px; }
+.book-progress { min-width: 56px; display: inline-block; }
+.progress-bar {
+  display: inline-block; width: 84px; height: 6px; border-radius: 3px;
+  background: rgba(127, 127, 127, .25); overflow: hidden; vertical-align: middle;
+}
+.progress-fill { display: block; height: 100%; background: #4c9a5f; }

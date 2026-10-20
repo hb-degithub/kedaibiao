@@ -51,10 +51,10 @@
   var TREND_DAYS = 14;       // 「最近趋势」最多展示多少天
 
   /* 功能页（顺序即左侧栏下段的顺序）；users 仅超管可见。 */
-  var PAGES = ['overview', 'courses', 'brush', 'assignments', 'bank', 'tools', 'logs',
+  var PAGES = ['overview', 'courses', 'assignments', 'bank', 'tools', 'logs',
                'stats', 'account', 'users'];
   var PAGE_LABEL = {
-    overview: '概览', courses: '课程', brush: '刷课', assignments: '作业', bank: '题库',
+    overview: '概览', courses: '课程', assignments: '作业', bank: '题库',
     tools: '工具', logs: '运行日志', stats: '统计', account: '账号', users: '用户'
   };
   /* 仅超管可见的功能页（入口隐藏，但后端 403 前端照样要处理）。 */
@@ -1649,7 +1649,11 @@
       envOpts.onRowDblClick = onAssignRowDblClick;
       envOpts.rowTitle = '双击查看详情（POST /api/assignments/detail，只读）';
     }
-    renderEnvelope($(key + '-result'), ps.result, envOpts);
+    if (key === 'assignments' && ps.result) {
+      renderAssignmentsByBook($(key + '-result'), ps.result, envOpts);
+    } else {
+      renderEnvelope($(key + '-result'), ps.result, envOpts);
+    }
     if (key === 'assignments') { renderAssignSubmitNote(); }
 
     var reload = $(key + '-reload');
@@ -5176,10 +5180,8 @@
     var jobs = [loadOverview()];
     if (state.page === 'courses') {
       jobs.push(loadActionPage('courses'));
-    } else if (state.page === 'brush') {
-      jobs.push(loadBrushBooks());
     } else if (state.page === 'assignments') {
-      jobs.push(loadActionPage('assignments'));
+      jobs.push(loadActionPage('assignments'), loadBrushBooks());
     } else if (state.page === 'bank') {
       jobs.push(loadBank());
     } else if (state.page === 'tools') {
@@ -6058,24 +6060,132 @@
      先只显示「书」；点进去才是单元与任务。
      ================================================================== */
 
+  /* ---------- 作业页：按教材（书）分组 ----------
+     用户要求：属于一本书的任务放在一个目录下，先只显示是哪本书，点进去才是详细；
+     独立的（个人教材等）单独一行。这里用原生 <details>，不需要额外状态。 */
+
+  function assignmentCourseColumn(columns) {
+    for (var i = 0; i < columns.length; i++) {
+      var col = columns[i];
+      if (!isObj(col)) { continue; }
+      if (String(col.label || '') === '课程') { return col; }
+    }
+    for (var j = 0; j < columns.length; j++) {
+      var c = columns[j];
+      if (isObj(c) && /course/i.test(String(c.key || ''))) { return c; }
+    }
+    return null;
+  }
+
+  function groupAssignmentsByCourse(body) {
+    var columns = Array.isArray(body.columns) ? body.columns.filter(isObj) : [];
+    var rows = Array.isArray(body.rows) ? body.rows.filter(isObj) : [];
+    var courseCol = assignmentCourseColumn(columns);
+    if (!courseCol) { return null; }
+    var key = String(courseCol.key || '');
+    var order = [];
+    var bucket = {};
+    rows.forEach(function (row) {
+      var name = String(row[key] === undefined || row[key] === null
+        ? '（未标注课程）' : row[key]);
+      if (!bucket[name]) { bucket[name] = []; order.push(name); }
+      bucket[name].push(row);
+    });
+    return { columns: columns, courseKey: key, order: order, bucket: bucket };
+  }
+
+  /* 书名 → 课程号（教材清单来自 actions/courses；没加载到就返回空） */
+  function courseIdByName(name) {
+    var books = state.brush.books || [];
+    for (var i = 0; i < books.length; i++) {
+      if (String(books[i].name || '') === String(name || '')) { return String(books[i].id || ''); }
+    }
+    return '';
+  }
+
+  /* 书名 → 完成进度（"0/33" 或 "—"） */
+  function courseProgressByName(name) {
+    var books = state.brush.books || [];
+    for (var i = 0; i < books.length; i++) {
+      if (String(books[i].name || '') === String(name || '')) {
+        return { text: String(books[i].progress || '—'), pct: books[i].progress_pct };
+      }
+    }
+    return { text: '—', pct: null };
+  }
+
+  function progressBar(pct) {
+    var wrap = el('span', 'progress-bar');
+    var inner = el('span', 'progress-fill');
+    inner.style.width = Math.max(0, Math.min(100, (pct || 0) * 100)) + '%';
+    wrap.appendChild(inner);
+    return wrap;
+  }
+
+  function renderAssignmentsByBook(box, body, opts) {
+    if (!box) { return; }
+    clear(box);
+    box.hidden = false;
+    var grouped = groupAssignmentsByCourse(body);
+    if (!grouped) {
+      /* 没有课程列就退回原来的平铺表格 */
+      renderEnvelope(box, body, opts);
+      return;
+    }
+    var o = opts || {};
+    var head = el('div', 'res-head');
+    head.appendChild(el('div', 'res-title', '按教材分组 · ' + grouped.order.length + ' 本'));
+    var finishedBooks = 0;
+    var totalBooks = grouped.order.length;
+    grouped.order.forEach(function (name) {
+      var prog = courseProgressByName(name);
+      if (prog.text !== '—' && prog.pct !== null && prog.pct >= 1) { finishedBooks += 1; }
+    });
+    head.appendChild(el('p', 'res-note',
+      '一本书一个目录：点书名展开该书的单元与任务；书名后面是门户的「完成进度」' +
+      (totalBooks ? '（已完成 ' + finishedBooks + '/' + totalBooks + ' 本）' : '') +
+      '。每行的「详情 / 提交」仍然可用；书名右侧的「刷课」打开该书的时长与未完成任务面板。'));
+    box.appendChild(head);
+
+    grouped.order.forEach(function (name) {
+      var rows = grouped.bucket[name] || [];
+      var det = el('details', 'book-group');
+      var summary = el('summary', 'book-summary');
+      var title = el('span', 'book-name', name);
+      summary.appendChild(title);
+      summary.appendChild(el('span', 'hint', ' · ' + rows.length + ' 个任务'));
+      var prog = courseProgressByName(name);
+      summary.appendChild(el('span', 'hint', ' · 完成 '));
+      summary.appendChild(el('span', 'mono book-progress', prog.text));
+      if (typeof prog.pct === 'number') {
+        summary.appendChild(progressBar(prog.pct));
+      }
+      var cid = courseIdByName(name);
+      if (cid) {
+        var brushBtn = el('button', 'btn btn-sm btn-warn', '刷课');
+        brushBtn.type = 'button';
+        brushBtn.title = '打开这本书的刷课面板（时长 / 提交未完成）';
+        brushBtn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openBrushBook(cid, name);
+        });
+        summary.appendChild(brushBtn);
+      }
+      det.appendChild(summary);
+      var inner = el('div', 'book-body');
+      inner.appendChild(tableBlock(grouped.columns, rows, '这本书没有任务。', o));
+      det.appendChild(inner);
+      box.appendChild(det);
+    });
+  }
+
   function brushSupported(plt) {
     return plt === 'unipus';
   }
 
   function brushGate() {
-    var gate = $('brush-gate');
-    if (!gate) { return; }
-    if (!state.platform) {
-      gate.hidden = false;
-      gate.textContent = '先在左侧选一个平台（刷课目前只支持 U校园）。';
-      return;
-    }
-    if (!brushSupported(state.platform)) {
-      gate.hidden = false;
-      gate.textContent = '「' + platformLabel(state.platform) + '」还没有刷课链路（目前只有 U校园）。';
-      return;
-    }
-    gate.hidden = true;
+    return;   /* 面板已并入作业页，无需 gate */
   }
 
   function brushRowsOf(body) {
@@ -6155,9 +6265,10 @@
     box.appendChild(wrap);
   }
 
-  function openBrushBook(courseId) {
+  function openBrushBook(courseId, courseName) {
     if (!courseId) { return; }
     state.brush.bookId = courseId;
+    state.brush.bookName = courseName || '';
     state.brush.tree = null;
     state.brush.treeError = '';
     setText('brush-state', '读取教材结构…');

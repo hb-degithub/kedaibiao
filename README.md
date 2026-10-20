@@ -263,7 +263,14 @@ PYTHONPATH=src python3 -m kedaibiao action unipus answers \
   [unipus-duration.md](docs/verification/unipus-duration.md)、
   [unipus-speech.md](docs/verification/unipus-speech.md)。
 
-#### U校园「刷课」（控制台）
+#### 作业页按教材分组（含完成进度）
+
+作业页不再是一张 2908 行的平表：**先按教材分组**，每本书一行，显示
+「书名 · 任务数 · 完成 18/18 + 进度条」，点书名才展开该书的单元与任务；
+个人教材这类没有班级进度的独立项单独成行。门户的 `finishPointNum/totalPointNum`
+就是这里的「完成进度」。
+
+#### U校园「刷课」（控制台，已并入作业页）
 
 导航 **刷课** → 教材列表（先只显示书）→「打开」一本书 → 单元与任务树 + 进度/必修数：
 
