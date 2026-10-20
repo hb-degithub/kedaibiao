@@ -632,7 +632,7 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
 | 动作 | 参数 | 说明 |
 | --- | --- | --- |
 | `courses` | 无 | `list_courses()` —— 该平台的课程 / 班级列表 |
-| `assignments` | `course`（可选） | 各课程下的作业 / 任务；留空 = 遍历全部课程 |
+| `assignments` | `course`（可选） | 各课程下的作业 / 任务；留空 = 遍历全部课程（单门课回课程级业务错误时跳过并点名，不整体失败） |
 
 > 这两个会**真的登录并访问平台**（只读 GET）。它们与其他动作一样返回展示信封。
 > 后端会落盘 cookie，所以同一次会话里后续调用会先探 `is_logged_in()`，
@@ -658,7 +658,7 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
 
 | 动作 | 参数 | 说明 |
 | --- | --- | --- |
-| `learning` | `course`（可选，留空=全部课程） | 学习任务 / 材料进度：课程、材料号、名称、大小、进度 |
+| `learning` | `course`（可选，留空=全部课程） | 学习任务 / 材料进度：课程、材料号、名称、大小、进度（单门课坏掉时跳过并点名） |
 | `material` | `course`（必填）、`material_id`（必填） | 材料详情：大小、进度、下载地址（带签名，只展示不落库）+ 原始字段摘要 |
 | `answers` | `assignment_id`（必填） | 作业题目与作答槽：逐题题型/题干/选项 + 已有 `score/review/submitted` |
 | `connection` | 无 | 连接自检：会话、`is_logged_in`、`health_check`、课程数量 |

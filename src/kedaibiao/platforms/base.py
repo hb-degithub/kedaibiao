@@ -86,6 +86,11 @@ class PlatformAdapter(ABC):
     display_name: ClassVar[str] = ""
     #: 能力声明
     capabilities: ClassVar[Capabilities] = Capabilities()
+    #: 单门课抓取失败时，哪些异常可以「跳过这门课、继续抓别的课」。
+    #: 默认空 = 一律上抛（未知平台保持严格）。平台只应声明**课程级业务错误**
+    #: （例如品课 ``6569 课程不存在``），不要把登录失效 / 网络错误放进来 ——
+    #: 那两类会让整次抓取失败，跳过去只会把「会话过期」伪装成「这门课没作业」。
+    skippable_course_errors: ClassVar[tuple[type[BaseException], ...]] = ()
 
     def __init__(self, ctx: AdapterContext | None = None) -> None:
         self.ctx = ctx or AdapterContext()

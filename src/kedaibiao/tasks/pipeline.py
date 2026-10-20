@@ -33,6 +33,17 @@ from kedaibiao.tasks.answerer import Answerer
 
 log = logging.getLogger(__name__)
 
+
+def _skippable_course_error(adapter: PlatformAdapter, error: Exception) -> bool:
+    """这门课坏了，是否允许「跳过它、继续抓别的课」。
+
+    平台通过 ``skippable_course_errors`` 声明课程级业务错误（品课：``6569
+    课程不存在``）。登录失效 / 网络错误不在声明里，仍然整次失败 —— 否则会把
+    「会话过期」误当成「这门课没有作业」。
+    """
+    types = tuple(getattr(adapter, "skippable_course_errors", ()) or ())
+    return bool(types) and isinstance(error, types)
+
 # 事件名常量，避免各处硬编码字符串
 EVENT_RUN_START = "run.start"
 EVENT_RUN_FINISH = "run.finish"
@@ -176,6 +187,16 @@ class Pipeline:
             try:
                 items = await adapter.list_assignments(course)
             except NotSupportedError:
+                continue
+            except Exception as error:  # noqa: BLE001 - 只跳平台声明的课程级错误
+                if not _skippable_course_error(adapter, error):
+                    raise
+                log.warning(
+                    "跳过课程 %s（%s）：%s",
+                    course.remote_id,
+                    course.name or "未命名",
+                    error,
+                )
                 continue
             for item in items:
                 if not item.course_name:

@@ -616,7 +616,11 @@ python3 res_id.py raw/apk_x/resources.arsc 0x7f130001  # 资源 ID 解析（辅�
 
 - 课程 **24 门**（`pageSize` 服务端封顶 20，需翻页取全），班级 21 个
 - 作业共 **13 份**，分布 3 门课；**未过期且未提交 = 0 份**（其余为已提交或已过期）
-- 学习任务（课程材料）：**只有「电子技术基础」有，10 个** PPT/PDF，`learningRatio` 全为 0
+- 学习任务（课程材料）：**只有「电子技术基础」有**（最初盘点 10 个、现 15 个）PPT/PDF，
+  `learningRatio` 起初全为 0（2026-10-20 已按页推进到 100%，见 L.3 补充）
+- **3 门课是「幽灵课」**：课程列表里有（`qtq`、两个「如何使用品课教学平台」），
+  但作业/材料接口回 `6569 课程不存在`。整课抓取时必须跳过并点名 —— 学生端
+  课程列表不保证每门课都还能打开。
 - 消息中心 `GetV1MsgcenterStudentMsgs {size,page}` 可用，能拿到「收到新作业」通知与 `extras.studentHomeworkId`
 
 > 样本原文（不入库）：`data/recon/pinco/samples/all_courses_scan.json`、`materials_scan.json`、`homework_samples.json`

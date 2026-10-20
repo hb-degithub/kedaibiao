@@ -41,7 +41,7 @@ from kedaibiao.platforms.base import (
 from kedaibiao.platforms.pinco import endpoints as ep
 from kedaibiao.platforms.pinco import guard, parsing, progress, solving, sso
 from kedaibiao.platforms.pinco.client import PincoClient
-from kedaibiao.platforms.pinco.errors import PincoError, PincoNotLoggedIn
+from kedaibiao.platforms.pinco.errors import PincoApiError, PincoError, PincoNotLoggedIn
 from kedaibiao.platforms.pinco.models import (
     PincoClass,
     PincoMaterialDetail,
@@ -139,6 +139,9 @@ class PincoAdapter(PlatformAdapter):
     name = "pinco"
     display_name = "希沃品课"
     capabilities = Capabilities()
+    #: 单门课「课程不存在」（实测 6569）只影响这门课：整课抓取时跳过它、
+    #: 在结果里点名，而不是让 24 门课一起失败。
+    skippable_course_errors = (PincoApiError,)
 
     #: 提交请求体的结构是否已由真实样本确认。
     #: TODO(endpoint): Lead 用真实会话验证完提交报文后改成 True（或按需覆盖）。

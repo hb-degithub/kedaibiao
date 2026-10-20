@@ -361,5 +361,56 @@ class TestPipelineEvents(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0]["status"], "succeeded")
 
 
+class _CourseScopedError(RuntimeError):
+    """模拟品课 ``6569 课程不存在``：只影响某一门课的业务错误。"""
+
+
+class TwoCourseAdapter(FakeAdapter):
+    """第一门课正常、第二门课抛课程级错误；声明了它可跳过。"""
+
+    skippable_course_errors = (_CourseScopedError,)
+
+    async def list_courses(self) -> list[Course]:
+        return [
+            Course(remote_id="c1", name="软件工程"),
+            Course(remote_id="c2", name="已删除的课"),
+        ]
+
+    async def list_assignments(self, course: Course) -> list[Assignment]:
+        if course.remote_id == "c2":
+            raise _CourseScopedError("6569 课程不存在")
+        return await super().list_assignments(course)
+
+
+class TestCourseScopedCollection(unittest.IsolatedAsyncioTestCase):
+    """一门课坏了不许让整次抓取失败；但没声明可跳过的异常必须上抛。"""
+
+    async def test_bad_course_does_not_abort_other_courses(self) -> None:
+        bank = QuestionBank(":memory:")
+        self.addCleanup(bank.close)
+        questions = _known_questions()
+        _seed_bank(bank, questions)
+        adapter = TwoCourseAdapter(AdapterContext(), questions=questions)
+        pipe, _, _ = _pipeline(adapter, bank=bank)
+
+        report = await pipe.run(adapter, CREDS)
+
+        self.assertEqual([r.assignment_id for r in report.records], ["a1"])
+        self.assertIs(report.records[0].status, RunStatus.SKIPPED)
+
+    async def test_error_the_platform_did_not_declare_still_aborts(self) -> None:
+        bank = QuestionBank(":memory:")
+        self.addCleanup(bank.close)
+        questions = _known_questions()
+        _seed_bank(bank, questions)
+        adapter = TwoCourseAdapter(AdapterContext(), questions=questions)
+        # 平台没声明 = 不跳：登录失效/网络错误绝不能被当成「这门课没作业」。
+        adapter.skippable_course_errors = ()  # type: ignore[attr-defined]
+        pipe, _, _ = _pipeline(adapter, bank=bank)
+
+        with self.assertRaises(_CourseScopedError):
+            await pipe.run(adapter, CREDS)
+
+
 if __name__ == "__main__":
     unittest.main()

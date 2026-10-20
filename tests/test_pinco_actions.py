@@ -30,7 +30,7 @@ from kedaibiao.api.actions import ActionInputError, load_builtin_actions
 from kedaibiao.api.service import ConsoleService
 from kedaibiao.platforms.base import NotSupportedError
 from kedaibiao.platforms.pinco import parsing
-from kedaibiao.platforms.pinco.errors import PincoError, PincoNotLoggedIn
+from kedaibiao.platforms.pinco.errors import PincoApiError, PincoError, PincoNotLoggedIn
 from kedaibiao.platforms.pinco.progress import ProgressReport
 
 FIXTURES = Path(__file__).parent / "fixtures" / "pinco"
@@ -59,6 +59,7 @@ _DEFAULT_SESSION = SimpleNamespace(username="示例同学")
 
 def setUpModule() -> None:
     load_builtin_actions()
+    actions.ensure_generic_actions("pinco")
 
 
 class FakePincoAdapter:
@@ -70,6 +71,8 @@ class FakePincoAdapter:
 
     name = "pinco"
     display_name = "希沃品课"
+    #: 和真实适配器一致：品课的业务错误（如 6569 课程不存在）只跳过该课。
+    skippable_course_errors = (PincoApiError,)
 
     def __init__(
         self,
@@ -104,6 +107,8 @@ class FakePincoAdapter:
         self.submitted: list[Any] = []
         #: 记录 progress 动作对适配器的调用：(material_id, dry_run, target)。
         self.advance_calls: list[tuple[str, bool, float]] = []
+        #: 某门课要抛的课程级异常（模拟品课 6569 课程不存在）。
+        self.course_errors: dict[str, Exception] = {}
 
     # -- 只读方法 --------------------------------------------------------
 
@@ -125,6 +130,9 @@ class FakePincoAdapter:
 
     async def list_learning_tasks(self, course: Any) -> list[Any]:
         self.calls.append(("list_learning_tasks", course.remote_id))
+        error = self.course_errors.get(course.remote_id)
+        if error is not None:
+            raise error
         return list(self.materials.get(course.remote_id, []))
 
     async def fetch_material_detail(self, course: Any, material_id: str) -> Any:
@@ -135,6 +143,9 @@ class FakePincoAdapter:
 
     async def list_assignments(self, course: Any) -> list[Any]:
         self.calls.append(("list_assignments", course.remote_id))
+        error = self.course_errors.get(course.remote_id)
+        if error is not None:
+            raise error
         return list(self.assignments.get(course.remote_id, []))
 
     async def fetch_questions(self, assignment: Any) -> list[Any]:
@@ -615,6 +626,42 @@ class TestProgressAction(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(params=params), self.assertRaises(ActionInputError):
                 await _run("progress", adapter, params)
+
+
+class TestAllCoursesTolerance(unittest.IsolatedAsyncioTestCase):
+    """整课抓取：一门课回「课程不存在」不能拖垮其余 20 多门课。"""
+
+    async def test_learning_skips_course_scoped_error(self) -> None:
+        adapter = FakePincoAdapter()
+        adapter.course_errors[COURSE_B.remote_id] = PincoApiError(
+            "GetV1CourseByCourseIdStudentMaterialList 返回 statusCode=6569：课程不存在",
+            code=6569,
+        )
+        out = await _run("learning", adapter, {})
+        self.assertEqual(len(out["rows"]), len(MATERIALS))
+        self.assertIn("已跳过", out["note"])
+        self.assertIn(COURSE_B.name, out["note"])
+
+    async def test_assignments_skips_course_scoped_error(self) -> None:
+        adapter = FakePincoAdapter()
+        adapter.course_errors[COURSE_B.remote_id] = PincoApiError(
+            "GetV1StudenthomeworkList 返回 statusCode=6569：课程不存在", code=6569
+        )
+        out = await _run("assignments", adapter, {})
+        self.assertEqual(len(out["rows"]), len(ASSIGNMENTS))
+        self.assertIn("已跳过", out["note"])
+
+    async def test_specific_course_error_is_not_swallowed(self) -> None:
+        adapter = FakePincoAdapter()
+        adapter.course_errors[COURSE_B.remote_id] = PincoApiError("课程不存在", code=6569)
+        with self.assertRaises(PincoApiError):
+            await _run("assignments", adapter, {"course": COURSE_B.remote_id})
+
+    async def test_unlisted_error_is_not_swallowed(self) -> None:
+        adapter = FakePincoAdapter()
+        adapter.course_errors[COURSE_B.remote_id] = ValueError("不是课程级错误")
+        with self.assertRaises(ValueError):
+            await _run("assignments", adapter, {})
 
 
 if __name__ == "__main__":

@@ -1222,8 +1222,16 @@ async def _pinco_learning(adapter: Any, params: dict[str, Any]) -> dict[str, Any
             raise ActionInputError(f"没有找到课程号 {only!r}")
 
     rows: list[dict[str, Any]] = []
+    failures: list[str] = []
     for course in courses:
-        for item in await adapter.list_learning_tasks(course):
+        try:
+            items = list(await adapter.list_learning_tasks(course))
+        except Exception as error:  # noqa: BLE001 - 只跳平台声明的课程级错误
+            if only or not _course_scoped_failure(adapter, error):
+                raise
+            failures.append(f"{course.name or course.remote_id}（{error}）")
+            continue
+        for item in items:
             rows.append(
                 {
                     "course": course.name or course.remote_id,
@@ -1245,6 +1253,7 @@ async def _pinco_learning(adapter: Any, params: dict[str, Any]) -> dict[str, Any
             "只读。品课的「学习任务」就是课程材料（PPT/PDF/视频）：没有题目，"
             "也不会提交任何内容。「来源」列是平台原始 materialSource/media.type 码，"
             "语义未确认，只如实展示。"
+            + _skipped_note(failures, len(courses))
         ),
         columns=[
             column("course", "课程"),
@@ -1670,6 +1679,30 @@ def load_builtin_actions() -> int:
 # --------------------------------------------------------------------------
 
 
+def _course_scoped_failure(adapter: Any, error: Exception) -> bool:
+    """这门课坏了，是否允许「跳过它、继续抓别的课」。
+
+    平台通过 ``skippable_course_errors`` 声明哪些异常是课程级业务错误
+    （品课：``6569 课程不存在``）。没声明的平台保持严格 —— 一门课出错就上抛。
+    登录失效 / 网络错误**永远不跳过**，否则会被误读成「这门课没有作业」。
+    """
+    types = tuple(getattr(adapter, "skippable_course_errors", ()) or ())
+    return bool(types) and isinstance(error, types)
+
+
+def _skipped_note(failures: list[str], total: int) -> str:
+    if not failures:
+        return ""
+
+    def trim(text: str) -> str:
+        return text if len(text) <= 40 else text[:37] + "…"
+
+    shown = "、".join(trim(item) for item in failures[:3])
+    more = f" 等 {len(failures)} 门" if len(failures) > 3 else ""
+    return f"另有 {len(failures)}/{total} 门课读取失败已跳过（课程级错误）：{shown}{more}。"
+
+
+
 def _caps(adapter: Any) -> Any:
     return getattr(adapter, "capabilities", None)
 
@@ -1721,8 +1754,16 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
             raise ActionInputError(f"没有找到课程号 {only!r}")
 
     rows: list[dict[str, Any]] = []
+    failures: list[str] = []
     for course in courses:
-        for item in await adapter.list_assignments(course):
+        try:
+            items = list(await adapter.list_assignments(course))
+        except Exception as error:  # noqa: BLE001 - 只跳平台声明的课程级错误
+            if only or not _course_scoped_failure(adapter, error):
+                raise
+            failures.append(f"{course.name or course.remote_id}（{error}）")
+            continue
+        for item in items:
             rows.append(
                 {
                     "course": course.name or course.remote_id,
@@ -1743,7 +1784,10 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
         action="assignments",
         label="作业",
         title=f"作业 / 任务{scope} —— {len(rows)} 项",
-        note="只读数据，不会提交任何内容。",
+        note=(
+            "只读数据，不会提交任何内容。"
+            + _skipped_note(failures, len(courses))
+        ),
         columns=[
             column("course", "课程"),
             column("id", "任务号", mono=True),
