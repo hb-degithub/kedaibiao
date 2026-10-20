@@ -52,8 +52,13 @@ class FakeAdapter(PlatformAdapter):
     async def list_courses(self) -> list[Course]:
         return [Course(remote_id="c1", name="课程")]
 
-    async def list_assignments(self, course: Course) -> list[Assignment]:
-        return [Assignment(remote_id="a1", title="作业", kind=TaskKind.HOMEWORK)]
+    async def list_assignments(
+        self, course: Course, *, with_state: bool = False
+    ) -> list[Assignment]:
+        item = Assignment(remote_id="a1", title="作业", kind=TaskKind.HOMEWORK)
+        # 目录本身没有完成度；只有显式回读时才填 —— 和 U校园 的语义一致
+        item.finished = bool(with_state)
+        return [item]
 
     async def fetch_questions(self, assignment: Assignment) -> list[Question]:
         return [Question(stem="已知题", type=QuestionType.SINGLE,
@@ -633,7 +638,13 @@ class TestActions(ServiceTestBase):
             out = self.service.run_action(GOOD, "assignments", {})
         self.assertEqual(out["kind"], "table")
         self.assertEqual(out["rows"][0]["id"], "a1")
-        self.assertEqual(out["rows"][0]["state"], "未完成")
+        # 默认不回读完成度：显示「—」，不能把「没核对」写成「未完成」
+        self.assertEqual(out["rows"][0]["state"], "—")
+
+    def test_assignments_with_state_reads_completion(self) -> None:
+        with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
+            out = self.service.run_action(GOOD, "assignments", {"with_state": 1})
+        self.assertEqual(out["rows"][0]["state"], "已完成")
 
     def test_assignments_unknown_course_is_bad_request(self) -> None:
         with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
@@ -838,6 +849,305 @@ class TestParamValidation(unittest.TestCase):
     def test_non_dict_rejected(self) -> None:
         with self.assertRaises(ConsoleError):
             ConsoleService._validate_params(self._spec(), ["nope"])  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------
+# 品课：计划 → 人工复核 → 提交
+# --------------------------------------------------------------------------
+
+PINCO = "pinco"
+
+
+class FakePincoAdapter(PlatformAdapter):
+    """假的品课适配器：只实现这条链路要用的 plan / confirm_plan / submit。
+
+    刻意**照抄真适配器的守卫流程**（没有复核计划就拒、内容哈希对不上就拒、
+    报文结构未确认就拒）。这样「服务层还原出来的答案对不对」不是靠测试自己
+    说了算 —— 哈希一致才可能走到下一步。
+
+    ``plan_calls`` 让每次 plan 的 ``created_at`` 都不同，用来证明服务层比对的
+    是**内容哈希**而不是计划自身的盖章哈希（后者含时间戳）。
+    """
+
+    name = PINCO
+    display_name = "假品课"
+    capabilities = Capabilities(submit=True)
+    #: 提交报文结构是否已确认 —— 真适配器默认 False，这里也一样
+    submit_payload_confirmed = False
+    #: 每次 plan 递增：既驱动 created_at，也用来模拟「复核之后内容变了」
+    plan_calls = 0
+    drift = False
+    needs_human_item = False
+
+    def __init__(self, ctx=None, **kw) -> None:
+        super().__init__(ctx, **kw)
+        self.reviewed = None
+        self.submitted: list[tuple[str, list[Any]]] = []
+
+    async def login(self, credentials: Credentials) -> bool:
+        return True
+
+    async def is_logged_in(self) -> bool:
+        return True
+
+    async def plan(self, *, max_assignments: int = 0, kinds: Any = frozenset()):
+        from kedaibiao.platforms.pinco.models import PlanState
+        from kedaibiao.platforms.pinco.plan import (
+            PincoAssignmentPlan,
+            PincoPlan,
+            PincoQuestionPlan,
+        )
+
+        type(self).plan_calls += 1
+        choices = [1] if (type(self).drift and type(self).plan_calls > 1) else [0]
+        state = PlanState.NEEDS_HUMAN if type(self).needs_human_item else PlanState.PLANNED
+        question = PincoQuestionPlan(
+            index=0,
+            stem="已知题",
+            type=QuestionType.SINGLE,
+            options=["甲", "乙"],
+            remote_id="q1",
+            choices=[] if state is PlanState.NEEDS_HUMAN else choices,
+            source=AnswerSource.BANK_HIT if state is PlanState.PLANNED else AnswerSource.UNKNOWN,
+            confidence=1.0 if state is PlanState.PLANNED else 0.0,
+            needs_human=state is PlanState.NEEDS_HUMAN,
+            reason="题库与规则都没答出来" if state is PlanState.NEEDS_HUMAN else "",
+        )
+        item = PincoAssignmentPlan(
+            platform=PINCO,
+            assignment_id="a1",
+            title="作业",
+            course_name="课程",
+            kind=TaskKind.HOMEWORK,
+            state=state,
+            questions=[question],
+        )
+        plan = PincoPlan(
+            platform=PINCO,
+            display_name=self.display_name,
+            # 每次 plan 都晚一秒：盖章哈希会变，内容哈希不该变
+            created_at=datetime(2026, 1, 1, 0, 0, type(self).plan_calls % 60),
+            assignments=[item],
+        )
+        return plan.seal()
+
+    def confirm_plan(self, plan):
+        from kedaibiao.platforms.pinco import guard
+
+        self.reviewed = guard.review(plan)
+        return self.reviewed
+
+    async def submit(self, assignment, answers):
+        """照真适配器的顺序走守卫；任何一条不过就抛，绝不记「已提交」。"""
+        from kedaibiao.platforms.pinco import guard
+        from kedaibiao.platforms.pinco.errors import PincoError
+        from kedaibiao.platforms.pinco.plan import submission_digest
+
+        if self.reviewed is None:
+            raise guard.SubmissionRefused(
+                guard.REFUSAL_NO_REVIEWED_PLAN, "没有人工复核过的计划"
+            )
+        planned = guard.check_reviewed(
+            self.reviewed,
+            platform=self.name,
+            assignment_id=assignment.remote_id,
+            actual_digest=submission_digest(assignment, answers),
+        )
+        guard.check_questions(planned, answers, min_confidence=0.75)
+        if not self.submit_payload_confirmed:
+            raise PincoError(
+                "提交请求体的结构尚未由真实样本确认（TODO(endpoint)），拒绝发出写请求。"
+            )
+        self.submitted.append((assignment.remote_id, list(answers)))
+        return SubmissionResult(
+            assignment_id=assignment.remote_id, ok=True, score=95.0, message="交卷成功"
+        )
+
+
+class _FakePincoRuntime:
+    """替代 ``build_runtime``：每次 ``make_adapter`` 都给一个新的假品课适配器。
+
+    「新实例」很重要 —— 生产里 plan 与 submit-reviewed 是两次独立请求，
+    复核凭证只活在各自那个适配器里，复用同一个会把「重新 plan」这件事藏起来。
+    """
+
+    def __init__(self) -> None:
+        self.adapters: list[FakePincoAdapter] = []
+        self.store = None
+
+    def make_adapter(self, platform: str) -> FakePincoAdapter:
+        adapter = FakePincoAdapter()
+        self.adapters.append(adapter)
+        return adapter
+
+    def close(self) -> None:
+        pass
+
+
+class TestPincoReviewChain(ServiceTestBase):
+    """品课「计划 → 人工复核 → 提交」：全部用假适配器，不碰网络。"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # 覆盖注册表里的真品课适配器（ConsoleService 建好之后再覆盖，否则会被
+        # load_builtin_adapters() 又换回真的）
+        adapters.register(FakePincoAdapter.name, FakePincoAdapter, override=True)
+        self.addCleanup(adapters.unregister, FakePincoAdapter.name)
+        self.bind_account(PINCO)
+        FakePincoAdapter.plan_calls = 0
+        FakePincoAdapter.drift = False
+        FakePincoAdapter.needs_human_item = False
+        FakePincoAdapter.submit_payload_confirmed = False
+        self.runtime = _FakePincoRuntime()
+
+    def _with_runtime(self, fn, *args, **kwargs):
+        """把 build_runtime 换成假运行时，再调服务方法。"""
+        from kedaibiao.api import service as service_mod
+
+        with mock.patch.object(service_mod, "build_runtime", return_value=self.runtime):
+            return fn(*args, **kwargs)
+
+    def plan(self, **kwargs) -> dict[str, Any]:
+        return self._with_runtime(self.service.pinco_plan, **kwargs)
+
+    def submit(self, assignment_id: str, plan_digest: str, **kwargs) -> dict[str, Any]:
+        # 签名是 (viewer, assignment_id, plan_digest, *, ...)：viewer 放第一位，
+        # 测试里不登录（None），凭据靠账号库 owner_id=0 那条兜底。
+        return self._with_runtime(
+            self.service.pinco_submit_reviewed, None, assignment_id, plan_digest, **kwargs
+        )
+
+    # -- 计划信封 ---------------------------------------------------------
+
+    def test_plan_envelope_has_rows_and_full_digest(self) -> None:
+        out = self.plan()
+        self.assertEqual(out["kind"], "table")
+        self.assertEqual(out["platform"], PINCO)
+        self.assertEqual(out["action"], "pinco-plan")
+        self.assertEqual(len(out["digest"]), 32, "顶层必须是完整的内容哈希")
+        self.assertIn("sealed_digest", out, "盖章哈希单独留一份供排查")
+        self.assertTrue(out["rows"], "计划表格不能是空的")
+        row = out["rows"][0]
+        self.assertEqual(row["assignment_id"], "a1")
+        self.assertEqual(row["state"], "planned")
+        self.assertEqual(row["state_label"], "可提交")
+        self.assertEqual(row["question_count"], 1)
+        self.assertEqual(len(row["digest"]), 8, "行里放内容哈希短码")
+        self.assertEqual(out["counts"]["planned"], 1)
+        # 只读：一次 plan 不该有任何写动作
+        self.assertEqual(self.runtime.adapters[0].submitted, [])
+
+    def test_content_digest_ignores_generation_time(self) -> None:
+        """同一份内容、不同生成时间 → 内容哈希相同，盖章哈希不同。
+
+        这条是整条链路成立的前提：复核要花几十秒，若拿含时间戳的
+        ``plan.digest`` 去比对，每次提交都会被误判成「计划已变化」。
+        """
+        first = self.plan()
+        second = self.plan()
+        self.assertEqual(first["digest"], second["digest"])
+        self.assertNotEqual(first["sealed_digest"], second["sealed_digest"])
+
+    def test_sealed_digest_is_not_accepted_for_submit(self) -> None:
+        """拿盖章哈希（含时间戳）来提交必须被拒 —— 前端要带的是内容哈希。"""
+        out = self.plan()
+        with self.assertRaises(ConsoleError) as cm:
+            self.submit("a1", out["sealed_digest"])
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertIn("计划已变化", str(cm.exception))
+
+    # -- digest 校验 ------------------------------------------------------
+
+    def test_stale_digest_is_rejected(self) -> None:
+        self.plan()
+        with self.assertRaises(ConsoleError) as cm:
+            self.submit("a1", "0" * 32)
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("计划已变化，请重新生成并复核", str(cm.exception))
+        # 被拒的这次绝不能发出写请求
+        self.assertEqual(self.runtime.adapters[-1].submitted, [])
+
+    def test_plan_changed_between_review_and_submit_is_rejected(self) -> None:
+        """复核之后平台上答案变了 → 重新 plan 内容对不上 → 整份拒绝。"""
+        out = self.plan()
+        FakePincoAdapter.drift = True
+        with self.assertRaises(ConsoleError) as cm:
+            self.submit("a1", out["digest"])
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertIn("计划已变化", str(cm.exception))
+        self.assertEqual(self.runtime.adapters[-1].submitted, [])
+
+    def test_missing_digest_or_assignment_is_400(self) -> None:
+        with self.assertRaises(ConsoleError) as cm:
+            self.submit("a1", "")
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertIn("缺少计划 digest", str(cm.exception))
+        with self.assertRaises(ConsoleError) as cm:
+            self.submit("", "0" * 32)
+        self.assertIn("缺少任务号", str(cm.exception))
+
+    def test_assignment_not_in_plan_is_400(self) -> None:
+        out = self.plan()
+        with self.assertRaises(ConsoleError) as cm:
+            self.submit("a2", out["digest"])
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertIn("不在复核过的计划里", str(cm.exception))
+
+    def test_needs_human_assignment_is_400(self) -> None:
+        FakePincoAdapter.needs_human_item = True
+        out = self.plan()
+        self.assertEqual(out["counts"]["needs_human"], 1)
+        with self.assertRaises(ConsoleError) as cm:
+            self.submit("a1", out["digest"])
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertIn("需要人工", str(cm.exception))
+
+    # -- 提交闸门 ---------------------------------------------------------
+
+    def test_unconfirmed_payload_becomes_not_supported(self) -> None:
+        """报文结构未由真实样本确认时，必须是清楚的中文 not_supported。"""
+        out = self.plan()
+        with self.assertRaises(ConsoleError) as cm:
+            self.submit("a1", out["digest"])
+        exc = cm.exception
+        self.assertEqual(exc.kind, "not_supported")
+        self.assertEqual(exc.status, 501)
+        self.assertIn("未确认", str(exc))
+        self.assertIn("尚未由真实样本确认", str(exc))
+        self.assertEqual(self.runtime.adapters[-1].submitted, [], "闸门必须挡住写请求")
+
+    def test_submits_when_payload_is_confirmed(self) -> None:
+        """把闸门打开 → 真的走完 confirm_plan → submit。
+
+        这条同时证明服务层还原出的「作业 + 答案」与复核过的计划内容哈希一致：
+        哈希对不上会先在守卫那里被拒，根本走不到 submit。
+        """
+        FakePincoAdapter.submit_payload_confirmed = True
+        out = self.plan()
+        result = self.submit("a1", out["digest"])
+        self.assertTrue(result["submitted"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["score"], 95.0)
+        self.assertEqual(result["digest"], out["digest"])
+        self.assertEqual(result["question_count"], 1)
+        self.assertEqual(result["answered"], 1)
+        self.assertEqual(result["assignment_id"], "a1")
+        submitted = self.runtime.adapters[-1].submitted
+        self.assertEqual(len(submitted), 1, "只交一次")
+        self.assertEqual(submitted[0][0], "a1")
+        self.assertEqual(submitted[0][1][0].choices, [0])
+
+    def test_course_filter_keeps_digest_comparable(self) -> None:
+        """带课程过滤时计划重新盖章，且同一过滤条件下 digest 仍然稳定。"""
+        first = self.plan(course="课程")
+        second = self.plan(course="课程")
+        self.assertEqual(len(first["rows"]), 1)
+        self.assertEqual(first["digest"], second["digest"])
+        with self.assertRaises(ConsoleError) as cm:
+            self.plan(course="不存在的课")
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertIn("没有匹配的课程", str(cm.exception))
 
 
 if __name__ == "__main__":

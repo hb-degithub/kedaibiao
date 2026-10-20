@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import re
@@ -27,11 +28,13 @@ from kedaibiao import __version__, adapters
 from kedaibiao.api.actions import (
     PLATFORM_ERROR,
     ActionInputError,
+    column,
     ensure_generic_actions,
     get_handler,
     has_action,
     load_builtin_actions,
     register_platform,
+    table,
 )
 from kedaibiao.bank.store import ProgressStore, QuestionBank, record_to_dict
 from kedaibiao.config.overrides import OverrideStore
@@ -70,6 +73,10 @@ EVENT_HISTORY = 500
 #: 每个平台保留多少行「详细日志」
 PLATFORM_LOG_HISTORY = 400
 OPTIONAL_DEPS = ("playwright", "fastapi", "uvicorn", "faster_whisper")
+
+#: 品课的适配器名。这条链路是平台专属的（计划里带逐题哈希与人工标记），
+#: 通用动作层装不下，所以单独放在服务层。
+PINCO = "pinco"
 
 
 class ConsoleError(Exception):
@@ -174,6 +181,92 @@ def _clean_essay(text: str) -> str:
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+# -- 品课计划：内容哈希与展示用的常量 --------------------------------------
+
+#: 计划状态 → 给人看的中文。机器用的值（planned / needs_human / ...）另外留一份，
+#: 前端要按状态分支，所以两列都得有。
+_PINCO_STATE_LABELS = {
+    "planned": "可提交",
+    "needs_human": "需要人工",
+    "skipped": "跳过",
+    "failed": "抓取失败",
+}
+
+
+def _pinco_short(digest: str) -> str:
+    """内容哈希的短码 —— 表格里只放前 8 位，完整值在信封顶层。"""
+    return (digest or "")[:8] or "—"
+
+
+def _pinco_content_digest(plan: Any) -> str:
+    """整份计划的**内容**哈希（不含生成时间）。
+
+    为什么不用 ``plan.digest``：``PincoPlan.compute_digest()`` 把 ``created_at``
+    一起哈希了，而「复核 → 提交」中间必然隔了一段时间，重新 plan 出来的时间戳
+    一定不同 —— 拿它比对会让每一次提交都报「计划已变化」。复核要锁定的东西是
+    **内容**（作业、题目、答案），不是这份计划是哪一秒生成的。所以这里只哈希
+    内容部分，算法与仓库其它哈希一致（sha256 + 排序键 + 紧凑分隔符，取前 32 位）。
+
+    计划里的内容字段（作业/题目/答案）都是确定的，不含时间戳 —— 同一份内容
+    无论生成几次，这个值都稳定。
+    """
+    blob = json.dumps(
+        {
+            "platform": plan.platform,
+            "assignments": [item.to_dict() for item in plan.assignments],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
+
+
+def _pinco_submission_payload(item: Any) -> tuple[Any, list[Any]]:
+    """从复核过的计划项还原「要提交的作业 + 逐题答案」。
+
+    **为什么不重新跑一遍答题链**：品课的提交守卫比对的是「本次要提交的内容」
+    与「复核过的计划」的规范化哈希（``plan.submission_digest()`` 对
+    ``PincoAssignmentPlan.content_digest()``）。重新作答会引入题库之外的
+    模型/规则差异，哈希必然对不上，守卫会以 ``plan_hash_mismatch`` 拒绝 ——
+    用户看到的就是「复核过的计划提交不了」。
+
+    计划项本身就带着逐题的 ``choices`` / ``text`` / ``source`` / ``confidence``
+    与平台原始载荷（``question_raw`` / ``answer_raw``），那正是用户刚刚复核过的
+    答案。提交前那一步「重新 plan」已经保证了它是最新的，所以答案只能从这里
+    还原，不能另起一套。
+    """
+    from kedaibiao.core.models import Answer, Assignment, Question
+
+    assignment = Assignment(
+        remote_id=item.assignment_id,
+        title=item.title,
+        kind=item.kind,
+        course_name=item.course_name,
+        progress=item.progress,
+    )
+    answers: list[Any] = []
+    for planned in item.questions:
+        question = Question(
+            stem=planned.stem,
+            type=planned.type,
+            options=list(planned.options),
+            remote_id=planned.remote_id,
+            raw=dict(planned.question_raw),
+        )
+        answers.append(
+            Answer(
+                question=question,
+                choices=list(planned.choices),
+                text=planned.text,
+                source=planned.source,
+                confidence=planned.confidence,
+                raw=dict(planned.answer_raw),
+            )
+        )
+    return assignment, answers
 
 
 class ConsoleService:
@@ -486,6 +579,9 @@ class ConsoleService:
                 "name": name,
                 "display_name": getattr(cls, "display_name", "") or name,
                 "capabilities": _jsonable(caps) if caps is not None else {},
+                # 有没有原生批量提交链路（batch-submit 只对有它的平台开放）。
+                # 前端据此隐藏「一键全部提交」，避免点了必然 501。
+                "native_submit_flow": bool(getattr(cls, "native_submit_flow", False)),
                 "has_credentials": name in bound,
             })
         return {"platforms": items}
@@ -2054,6 +2150,424 @@ class ConsoleService:
                     log.debug("保存会话失败", exc_info=True)
                 await adapter.close()
             runtime.close()
+
+    # -- 品课：计划 → 人工复核 → 提交 -------------------------------------
+
+    def pinco_plan(
+        self, viewer: Viewer | None = None, *, course: str = "", limit: int = 0
+    ) -> dict[str, Any]:
+        """把品课「要交什么」整理成一份可复核的计划（**全程只读**）。
+
+        返回 ``kind=table`` 的信封，一行一个作业/学习任务（状态、阻断原因、
+        题目数、该作业的内容哈希短码）；信封顶层的 ``digest`` 是整份计划的
+        **内容哈希**，人工复核无误后必须原样带回 :meth:`pinco_submit_reviewed`。
+
+        为什么分成「计划」与「提交」两步：品课的 ``submit()`` 里钉着一条守卫 ——
+        没有登记过人工复核的计划一律拒绝执行。这条链路就是那条守卫要求的
+        正确用法：先看计划，再确认，最后才发写请求。
+        """
+        try:
+            return asyncio.run(
+                self._pinco_plan_async(viewer=viewer, course=course, limit=limit)
+            )
+        except ConsoleError as exc:
+            self._plog(PINCO, "error", f"✗ 生成品课提交计划：{exc}")
+            raise
+
+    async def _pinco_plan_async(
+        self, *, viewer: Viewer | None, course: str, limit: int
+    ) -> dict[str, Any]:
+        self._plog(
+            PINCO, "info", f"$ 生成品课提交计划（course={course!r}，limit={limit}）"
+        )
+        adapter, runtime, cookie_file, _owner_id, settings = await self._pinco_open(
+            viewer, "生成计划"
+        )
+        try:
+            plan = await self._pinco_replan(adapter, course=course, limit=limit)
+        finally:
+            await self._pinco_close(adapter, runtime, cookie_file, settings)
+        out = self._pinco_envelope(plan, course=course, limit=limit)
+        self._plog(PINCO, "ok", f"→ {plan.summary()}（digest={out['digest']}）")
+        return out
+
+    def pinco_submit_reviewed(
+        self,
+        viewer: Viewer | None = None,
+        assignment_id: str = "",
+        plan_digest: str = "",
+        *,
+        course: str = "",
+        limit: int = 0,
+    ) -> dict[str, Any]:
+        """提交**人工复核过**的那个作业。
+
+        ``plan_digest`` 必须是 :meth:`pinco_plan` 信封里那个完整 ``digest``。
+        这里会重新抓一遍计划、比对内容哈希：
+
+        - 一致 → ``confirm_plan(plan)`` 登记复核凭证，再从计划里还原答案并提交；
+        - 不一致 → 400「计划已变化，请重新生成并复核」，**不会**按新内容偷偷交。
+
+        存在的意义：品课提交报文的结构还没有真实样本确认（``submit_payload_confirmed
+        = False``），所以现在这条路走到最后会被那道闸门挡住 —— 但挡住的方式是
+        一条清楚的中文错误（``not_supported``），而不是把原始异常糊到用户脸上。
+        """
+        assignment_id = str(assignment_id or "").strip()
+        plan_digest = str(plan_digest or "").strip()
+        if not assignment_id:
+            raise ConsoleError("缺少任务号", kind="bad_request", status=400)
+        if not plan_digest:
+            raise ConsoleError(
+                "缺少计划 digest：先调 /api/platforms/pinco/plan 生成计划并复核，"
+                "再把它信封里的 digest 原样带回。",
+                kind="bad_request",
+                status=400,
+            )
+        self._plog(
+            PINCO,
+            "info",
+            f"$ 提交 {assignment_id}（已复核计划 digest={plan_digest}）",
+        )
+        try:
+            out = asyncio.run(
+                self._pinco_submit_reviewed_async(
+                    viewer=viewer,
+                    assignment_id=assignment_id,
+                    plan_digest=plan_digest,
+                    course=course,
+                    limit=limit,
+                )
+            )
+        except ConsoleError as exc:
+            self._plog(PINCO, "error", f"✗ 提交 {assignment_id}：{exc}")
+            raise
+        if out.get("ok"):
+            self._plog(PINCO, "ok", f"→ 提交 {assignment_id} 完成 score={out.get('score')}")
+        else:
+            self._plog(
+                PINCO, "error", f"✗ 提交 {assignment_id} 结果不明：{out.get('message')}"
+            )
+        return out
+
+    async def _pinco_submit_reviewed_async(
+        self,
+        *,
+        viewer: Viewer | None,
+        assignment_id: str,
+        plan_digest: str,
+        course: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        """复核 → 提交的异步主体（同步入口用 ``asyncio.run`` 包一层）。"""
+        from kedaibiao.platforms.pinco.guard import SubmissionRefused
+        from kedaibiao.platforms.pinco.models import PlanState
+
+        adapter, runtime, cookie_file, owner_id, settings = await self._pinco_open(
+            viewer, "提交前重新生成计划"
+        )
+        try:
+            # 1) 重新 plan：这一遍既是「取最新内容」，也是 digest 的比对基准。
+            plan = await self._pinco_replan(adapter, course=course, limit=limit)
+            current = _pinco_content_digest(plan)
+            if current != plan_digest:
+                raise ConsoleError(
+                    "计划已变化，请重新生成并复核"
+                    f"（复核时 digest={plan_digest}，现在 digest={current}）。"
+                    "复核之后题目或答案变过，旧的那份不能再用来提交。",
+                    kind="bad_request",
+                    status=400,
+                )
+
+            # 2) 登记复核凭证 —— 不登记的话 adapter.submit() 里第一道守卫就会拒绝。
+            try:
+                adapter.confirm_plan(plan)
+            except SubmissionRefused as exc:
+                raise self._pinco_error(exc, "登记复核计划") from exc
+
+            item = plan.find(assignment_id)
+            if item is None:
+                raise ConsoleError(
+                    f"作业 {assignment_id!r} 不在复核过的计划里，请重新生成计划并复核",
+                    kind="bad_request",
+                    status=400,
+                )
+            if item.state is PlanState.NEEDS_HUMAN:
+                detail = "；".join(
+                    f"{(q.stem.strip() or q.remote_id or '<无题干>')[:30]}（{q.reason}）"
+                    for q in item.human_questions[:5]
+                )
+                raise ConsoleError(
+                    f"作业 {assignment_id!r} 里有需要人工处理的题，整份作业不能自动提交："
+                    f"{detail or item.reason or '有题目需要人工'}",
+                    kind="bad_request",
+                    status=400,
+                )
+            if item.state is not PlanState.PLANNED:
+                raise ConsoleError(
+                    f"作业 {assignment_id!r} 在计划里的状态是 {item.state.value}"
+                    f"（{item.reason or '没有说明'}），只有 planned 的作业才允许提交",
+                    kind="bad_request",
+                    status=400,
+                )
+
+            # 3) 从复核过的计划项还原「作业 + 答案」，再交给平台适配器。
+            assignment, answers = _pinco_submission_payload(item)
+            try:
+                result = await adapter.submit(assignment, answers)
+            except SubmissionRefused as exc:
+                raise self._pinco_error(exc, "提交") from exc
+            except ConsoleError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 全部翻成受控错误再上抛
+                raise self._pinco_submit_error(adapter, exc) from exc
+
+            store = getattr(runtime, "store", None)
+            if store is not None:
+                try:
+                    store.record_submission(PINCO, result, owner_id=owner_id)
+                except Exception:  # noqa: BLE001 - 留痕失败不该把「已提交」变成 500
+                    log.warning("品课提交留痕失败：%s", assignment_id, exc_info=True)
+            answered = sum(1 for answer in answers if not answer.is_empty())
+            return {
+                "platform": PINCO,
+                "action": "pinco-submit-reviewed",
+                "assignment_id": assignment_id,
+                "title": item.title,
+                "course": item.course_name,
+                "digest": plan_digest,
+                "state": item.state.value,
+                "submitted": True,
+                "ok": bool(result.ok),
+                "score": result.score,
+                "message": result.message,
+                "question_count": len(answers),
+                "answered": answered,
+            }
+        finally:
+            await self._pinco_close(adapter, runtime, cookie_file, settings)
+
+    # -- 品课：内部辅助 ---------------------------------------------------
+
+    async def _pinco_open(
+        self, viewer: Viewer | None, what: str
+    ) -> tuple[Any, Any, str, int, Any]:
+        """建一个**已登录**的品课适配器，返回 (adapter, runtime, cookie_file,
+        owner_id, settings)。
+
+        每次都新建：品课的复核凭证 ``ReviewedPlan`` 只活在适配器实例里 ——
+        「计划」和「提交」必须是两次独立调用、各自重新 plan，这样「复核之后
+        计划变了」才可能被 digest 比对发现。共用一个长生命周期适配器反而
+        会把两次请求之间的变化藏起来。
+        """
+        if PINCO not in adapters:
+            raise ConsoleError(
+                "品课（pinco）适配器没有加载：无法生成提交计划。",
+                kind="not_supported",
+                status=501,
+            )
+        cls: Any = adapters.get(PINCO)
+        if not hasattr(cls, "plan") or not hasattr(cls, "confirm_plan"):
+            raise ConsoleError(
+                "当前品课适配器没有实现 plan()/confirm_plan()，这条链路不可用。",
+                kind="not_supported",
+                status=501,
+            )
+        creds, cookie_file = self._resolve_login(PINCO, viewer)
+        settings = load_settings(root=self.root, environ=self.environ)
+        owner_id = viewer.user_id if (viewer and viewer.authenticated) else 0
+        runtime = build_runtime(
+            root=self.root,
+            environ=self._llm_environ(),
+            cookie_file=cookie_file,
+            owner_id=owner_id,
+        )
+        adapter: Any = None
+        try:
+            adapter = runtime.make_adapter(PINCO)
+            restore_adapter_session(adapter, cookie_file)
+            if not await adapter.refresh_session(creds):
+                raise ConsoleError(
+                    f"品课登录失败：{what}前需要先到「账号」页重新登录一次"
+                    "（会话可能已失效，密码登录只解决身份层，业务接口还要求浏览器会话）。",
+                    kind=PLATFORM_ERROR,
+                    status=502,
+                )
+            return adapter, runtime, cookie_file, owner_id, settings
+        except BaseException:
+            if adapter is not None:
+                with contextlib.suppress(Exception):
+                    await adapter.close()
+            with contextlib.suppress(Exception):
+                runtime.close()
+            raise
+
+    async def _pinco_close(
+        self, adapter: Any, runtime: Any, cookie_file: str, settings: Any
+    ) -> None:
+        """收尾：先落盘会话，再关适配器与运行时。落盘失败不影响本次结果。"""
+        if adapter is not None:
+            try:
+                persist_http_cookies(adapter, settings)
+                save_adapter_session(adapter, cookie_file)
+            except Exception:  # noqa: BLE001
+                log.debug("保存品课会话失败", exc_info=True)
+            with contextlib.suppress(Exception):
+                await adapter.close()
+        if runtime is not None:
+            with contextlib.suppress(Exception):
+                runtime.close()
+
+    async def _pinco_replan(self, adapter: Any, *, course: str, limit: int) -> Any:
+        """抓一遍并产出计划（只读），再按课程过滤。两次入口共用这一段。
+
+        ``limit`` 是**任务数上限**（0 = 不限制），直接交给平台的 ``plan()`` ——
+        过滤必须发生在抓取阶段，否则「只看前 5 个」在复核时看到的和在提交时
+        抓到的会是两份不同的东西。
+        """
+        try:
+            plan = await adapter.plan(max_assignments=max(0, int(limit or 0)))
+        except ConsoleError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 平台异常统一翻成受控错误
+            raise self._pinco_error(exc, "生成计划") from exc
+        return self._pinco_filter_plan(plan, course)
+
+    @staticmethod
+    def _pinco_filter_plan(plan: Any, course: str) -> Any:
+        """按课程过滤计划，并**重新盖章**。
+
+        为什么要重新 ``seal()``：计划的 digest 描述的是「用户复核过的那部分
+        内容」。过滤掉别的课程之后还带着旧哈希，提交端的 digest 比对就会
+        对不上 —— 那不是安全，只是把用户卡死。
+        """
+        needle = (course or "").strip().lower()
+        if not needle:
+            return plan
+        from kedaibiao.platforms.pinco.models import PlanState
+
+        def matches(item: Any) -> bool:
+            fields = [item.course_name or "", item.assignment_id or ""]
+            if item.state is PlanState.FAILED:
+                # 整门课都没抓下来时 course_name 就是课名，title 也是课名
+                fields.append(item.title or "")
+            return any(needle in str(value).lower() for value in fields)
+
+        plan.assignments = [item for item in plan.assignments if matches(item)]
+        if not plan.assignments:
+            raise ConsoleError(
+                f"没有匹配的课程（course={course!r}）", kind="bad_request", status=400
+            )
+        return plan.seal()
+
+    @staticmethod
+    def _pinco_error(exc: BaseException, action: str) -> ConsoleError:
+        """把品课异常翻成控制台错误（守住守卫的原因码）。"""
+        from kedaibiao.platforms.pinco.guard import SubmissionRefused
+
+        if isinstance(exc, SubmissionRefused):
+            return ConsoleError(
+                f"{action}被提交守卫拦下：[{exc.reason}] {exc.message}",
+                kind="submission_refused",
+                status=409,
+            )
+        if isinstance(exc, ConsoleError):
+            return exc
+        return ConsoleError(
+            f"{action}失败：{_friendly_platform_error(PINCO, exc)}",
+            kind=PLATFORM_ERROR,
+            status=502,
+        )
+
+    @staticmethod
+    def _pinco_submit_error(adapter: Any, exc: BaseException) -> ConsoleError:
+        """提交阶段的异常 → 控制台错误。
+
+        「提交报文结构还没被真实样本确认」是**已知且故意的**闸门，不是故障：
+        它必须变 ``not_supported`` 的清楚中文，而不是一个 ``pinco error``。
+        """
+        if not getattr(adapter, "submit_payload_confirmed", True):
+            return ConsoleError(
+                "品课提交未执行：提交报文结构尚未由真实样本确认"
+                "（submit_payload_confirmed=False），程序拒绝发出写请求。"
+                "计划已复核、守卫已放行，但「交出去的东西对不对」还没验证过 —— "
+                "未确认的报文不发。请先用真实抓包核对提交字段，再打开这道闸门。"
+                f"（原始信息：{exc}）",
+                kind="not_supported",
+                status=501,
+            )
+        return ConsoleService._pinco_error(exc, "提交")
+
+    @staticmethod
+    def _pinco_envelope(plan: Any, *, course: str, limit: int) -> dict[str, Any]:
+        """把计划渲染成控制台表格信封。
+
+        行里放「能扫一眼做判断」的东西：状态、阻断原因、题目数、该作业的
+        内容哈希短码；完整 digest 放顶层（提交时要原样带回）。
+        """
+        rows: list[dict[str, Any]] = []
+        for item in plan.assignments:
+            digest = item.content_digest() if item.state.value == "planned" else ""
+            rows.append(
+                {
+                    "state": item.state.value,
+                    "state_label": _PINCO_STATE_LABELS.get(
+                        item.state.value, item.state.value
+                    ),
+                    "title": item.title,
+                    "assignment_id": item.assignment_id,
+                    "course": item.course_name or "—",
+                    "kind": item.kind.value,
+                    "question_count": len(item.questions),
+                    "human_count": len(item.human_questions),
+                    "digest": _pinco_short(digest),
+                    "reason": item.reason or "—",
+                }
+            )
+        digest = _pinco_content_digest(plan)
+        out = table(
+            platform=PINCO,
+            action="pinco-plan",
+            label="品课提交计划",
+            title=f"品课提交计划（{len(rows)} 项，可提交 {len(plan.planned)}）",
+            columns=[
+                column("state_label", "状态"),
+                column("title", "作业名"),
+                column("assignment_id", "任务号", mono=True),
+                column("course", "课程"),
+                column("question_count", "题目数"),
+                column("human_count", "待人工"),
+                column("digest", "内容哈希", mono=True),
+                column("reason", "说明"),
+            ],
+            rows=rows,
+            note=(
+                "本接口只读，没有向平台发出任何写请求。复核这张表无误后，"
+                "带下面这个 digest 调 POST /api/platforms/pinco/submit-reviewed "
+                "才会提交；提交前会重新抓一遍计划，内容对不上就整份拒绝。"
+            ),
+            empty_hint="没有抓到需要处理的作业或学习任务。",
+        )
+        out.update(
+            {
+                # 前端要原样带回的那个值（内容哈希，不含生成时间）
+                "digest": digest,
+                # 计划自身的盖章哈希：含 created_at，只用于排查，别拿来做比对
+                "sealed_digest": plan.digest,
+                "summary": plan.summary(),
+                "counts": {
+                    "total": len(plan.assignments),
+                    "planned": len(plan.planned),
+                    "needs_human": len(plan.needs_human),
+                    "skipped": len(plan.skipped),
+                    "failed": len(plan.failed),
+                },
+                "human_reasons": plan.human_reason_counts(),
+                "created_at": plan.created_at.isoformat(timespec="seconds"),
+                "course": course,
+                "limit": limit,
+            }
+        )
+        return out
 
     # -- 触发跑批 ---------------------------------------------------------
 
