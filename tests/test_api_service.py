@@ -927,3 +927,29 @@ class TestBatchSubmit(ServiceTestBase):
         with self.assertRaises(ConsoleError) as ctx:
             self.service.start_batch_submit("ghost")
         self.assertEqual(ctx.exception.status, 404)
+
+
+class TestBrush(ServiceTestBase):
+    """刷课（按教材组织）：只对原生链路平台开放，默认干跑。"""
+
+    def test_unsupported_platform_is_501(self) -> None:
+        with self.assertRaises(ConsoleError) as ctx:
+            self.service.start_brush(GOOD, course="c1")
+        self.assertEqual(ctx.exception.status, 501)
+
+    def test_missing_course_is_400(self) -> None:
+        with self.assertRaises(ConsoleError) as ctx:
+            self.service.start_brush(NATIVE, course="")
+        self.assertEqual(ctx.exception.status, 400)
+
+    def test_bad_minutes_is_400(self) -> None:
+        with self.assertRaises(ConsoleError) as ctx:
+            self.service.start_brush(NATIVE, course="c1", minutes=9999)
+        self.assertEqual(ctx.exception.status, 400)
+
+    def test_course_tree_without_capability_is_501(self) -> None:
+        """假适配器没有 native_course_tree → 501（而不是假装返回空树）。"""
+        with self.assertRaises(ConsoleError) as ctx:
+            self.service.course_tree(NATIVE, "no-such-course")
+        self.assertEqual(ctx.exception.status, 501)
+        self.assertEqual(ctx.exception.kind, "not_supported")

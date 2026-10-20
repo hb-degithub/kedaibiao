@@ -2136,6 +2136,272 @@ class ConsoleService:
         thread.start()
         return _jsonable(job)
 
+    # -- 刷课（按教材组织 + 任务模式时长 + 未完成任务提交）------------------
+
+    def course_tree(
+        self, platform: str, course_remote_id: str, *, viewer: Viewer | None = None,
+        with_state: bool = True, state_scope: str = "required",
+    ) -> dict[str, Any]:
+        """一本书的单元/任务树（只读）。控制台「刷课」页点进教材时调用。"""
+        scope = self._check_platform(platform)
+        assert scope is not None
+        course_remote_id = str(course_remote_id or "").strip()
+        if not course_remote_id:
+            raise ConsoleError("缺少课程号（course）", kind="bad_request", status=400)
+        creds, cookie_file = self._resolve_login(scope, viewer)
+        runtime = build_runtime(
+            root=self.root, environ=self._llm_environ(), cookie_file=cookie_file,
+            owner_id=viewer.user_id if (viewer and viewer.authenticated) else 0,
+        )
+        adapter: Any = None
+        try:
+            adapter = runtime.make_adapter(scope)
+            restore_adapter_session(adapter, cookie_file)
+            if not asyncio.run(adapter.refresh_session(creds)):
+                raise ConsoleError(
+                    f"{scope} 登录失败（会话可能已失效，请到「账号」页重新登录）",
+                    kind=PLATFORM_ERROR, status=502,
+                )
+            if not hasattr(adapter, "native_course_tree"):
+                raise ConsoleError(
+                    f"{scope} 没有教材树能力（native_course_tree）",
+                    kind="not_supported", status=501,
+                )
+            target = None
+            for course in asyncio.run(adapter.list_courses()):
+                if str(course.remote_id) == course_remote_id:
+                    target = course
+                    break
+            if target is None:
+                raise ConsoleError(
+                    f"在 {scope} 里找不到课程 {course_remote_id!r}",
+                    kind="not_found", status=404,
+                )
+            tree = asyncio.run(
+                adapter.native_course_tree(
+                    target, with_state=bool(with_state), state_scope=state_scope
+                )
+            )
+            return _jsonable(tree)
+        finally:
+            if adapter is not None:
+                with contextlib.suppress(Exception):
+                    asyncio.run(adapter.close())
+            runtime.close()
+
+    def start_brush(
+        self,
+        platform: str,
+        *,
+        course: str,
+        minutes: float = 10.0,
+        confirm: bool = False,
+        submit_pending: bool = False,
+        only_required: bool = True,
+        interval: float = 8.0,
+        viewer: Viewer | None = None,
+    ) -> dict[str, Any]:
+        """刷课：一本书 →（可选）提交未完成任务 + 任务模式挂时长。
+
+        安全默认：``confirm=False`` 只出计划（不提交、不建连接）。
+        ``submit_pending=True`` 才会尝试提交「没做过」的任务组；
+        已做过的组**不会重交**（平台留存首条记录，实测重交不改分）。
+        """
+        scope = self._check_platform(platform)
+        assert scope is not None
+        course = str(course or "").strip()
+        if not course:
+            raise ConsoleError("缺少课程号（course）", kind="bad_request", status=400)
+        cls: Any = adapters.get(scope)
+        if not getattr(cls, "native_submit_flow", False):
+            raise ConsoleError(
+                f"{getattr(cls, 'display_name', scope)} 没有原生刷课链路",
+                kind="not_supported", status=501,
+            )
+        try:
+            minutes = float(minutes)
+        except (TypeError, ValueError) as exc:
+            raise ConsoleError("minutes 必须是数字", kind="bad_request", status=400) from exc
+        if not (0.5 <= minutes <= 240):
+            raise ConsoleError("minutes 要在 0.5~240 之间", kind="bad_request", status=400)
+        interval = max(0.5, min(float(interval or 8.0), 120.0))
+
+        creds, cookie_file = self._resolve_login(scope, viewer)
+        owner_id = viewer.user_id if (viewer and viewer.authenticated) else 0
+
+        with self._lock:
+            if self._active_job_id is not None:
+                raise ConsoleError(
+                    f"已有任务在跑（{self._active_job_id}），同一时刻只允许一个。",
+                    kind="busy", status=409,
+                )
+            self._seq += 1
+            job_id = f"r-{self._seq}"
+            job: dict[str, Any] = {
+                "job_id": job_id, "kind": "brush", "platform": scope,
+                "course": course, "minutes": minutes, "confirm": bool(confirm),
+                "submit_pending": bool(submit_pending), "only_required": bool(only_required),
+                "status": "running", "started_at": _now(), "finished_at": None,
+                "summary": "", "error": "", "logs": [],
+                "counts": {"submitted": 0, "skipped": 0, "failed": 0,
+                           "targets": 0, "credited_seconds": 0},
+                "owner_id": owner_id,
+            }
+            self._jobs.append(job)
+            self._jobs_by_id[job_id] = job
+            del self._jobs[:-JOB_HISTORY]
+            for stale in list(self._jobs_by_id):
+                if stale not in {j["job_id"] for j in self._jobs}:
+                    del self._jobs_by_id[stale]
+            self._active_job_id = job_id
+
+        self._plog(
+            scope, "info",
+            f"$ 刷课 {job_id}（{'真跑' if confirm else '干跑'}；{minutes:g} 分钟；"
+            f"course={course}；提交未完成={submit_pending}）",
+        )
+        threading.Thread(
+            target=self._run_brush,
+            args=(job_id, scope, course, minutes, bool(confirm), bool(submit_pending),
+                  bool(only_required), interval, owner_id, cookie_file, creds),
+            name=f"kedaibiao-brush-{job_id}", daemon=True,
+        ).start()
+        return _jsonable(job)
+
+    def _run_brush(
+        self, job_id: str, platform: str, course_id: str, minutes: float,
+        confirm: bool, submit_pending: bool, only_required: bool, interval: float,
+        owner_id: int, cookie_file: str | None, credentials: Any,
+    ) -> None:
+        from kedaibiao.platforms.unipus import duration as duration_mod
+
+        runtime = None
+        adapter: Any = None
+        counts = {"submitted": 0, "skipped": 0, "failed": 0, "targets": 0,
+                  "credited_seconds": 0}
+        try:
+            runtime = build_runtime(
+                root=self.root, environ=self._llm_environ(),
+                cookie_file=cookie_file, owner_id=owner_id,
+            )
+            adapter = runtime.make_adapter(platform)
+            restore_adapter_session(adapter, cookie_file)
+            self._job_log(job_id, "info", "$ 恢复登录会话…")
+            if not asyncio.run(adapter.refresh_session(credentials)):
+                raise RuntimeError("登录失败：请到「账号」页重新登录一次")
+            self._job_log(job_id, "ok", "✓ 会话就绪")
+
+            course = None
+            for item in asyncio.run(adapter.list_courses()):
+                if str(item.remote_id) == course_id:
+                    course = item
+                    break
+            if course is None:
+                raise RuntimeError(f"找不到课程 {course_id}")
+            self._job_log(job_id, "info", f"→ {course.name}")
+            tree = asyncio.run(adapter.native_course_tree(course, with_state=True))
+            groups = [g for unit in tree["units"] for g in unit["groups"]]
+            required = [g for g in groups if g["required"]]
+            pending = [
+                g for g in groups
+                if not g.get("finished") and (g["required"] or not only_required)
+            ]
+            self._job_log(
+                job_id, "info",
+                f"  {tree['group_count']} 个任务组，必修 {tree['required_count']}；"
+                f"未完成 {len(pending)}（范围：{'仅必修' if only_required else '全部'}）",
+            )
+
+            if submit_pending:
+                for group in pending:
+                    if not confirm:
+                        counts["skipped"] += 1
+                        self._job_log(
+                            job_id, "info",
+                            f"· 干跑：将提交 {group['name']}（{group['unit_name']}）",
+                        )
+                        continue
+                    try:
+                        result = asyncio.run(adapter.native_submit(group["assignment_id"]))
+                        counts["submitted"] += 1
+                        self._job_log(
+                            job_id, "ok",
+                            f"✓ 已提交 {group['name']}：code={result.get('code')!r}",
+                        )
+                        time.sleep(interval)
+                    except Exception as exc:  # noqa: BLE001
+                        counts["failed"] += 1
+                        self._job_log(
+                            job_id, "error",
+                            f"✗ {group['name']} 提交失败：{type(exc).__name__}: {exc}",
+                        )
+            else:
+                self._job_log(job_id, "info", "· 未勾选「提交未完成后任务」，只刷时长")
+
+            # 任务模式时长：目标 = 必修组（没有必修就用全部）
+            targets_pool = required or groups
+            targets = [
+                duration_mod.TaskTarget(
+                    instance=tree["instance_id"],
+                    unit=g["unit_id"],
+                    group=g["id"],
+                    name=g["name"],
+                )
+                for g in targets_pool
+            ][:40]
+            counts["targets"] = len(targets)
+            report = duration_mod.run_task_duration(
+                adapter.client().session.open_id,
+                adapter.client().auth_headers(
+                    __import__("kedaibiao.platforms.unipus.endpoints", fromlist=["UnipusApp"]).UnipusApp.UCONTENT
+                )["x-annotator-auth-token"],
+                targets,
+                seconds=minutes * 60,
+                page_base=tree["page_base"],
+                confirm=confirm,
+            )
+            counts["credited_seconds"] = int(report.credited_seconds)
+            for line in report.plan.warnings:
+                self._job_log(job_id, "warn", f"⚠️ {line}")
+            if not confirm:
+                self._job_log(job_id, "info", f"· 干跑计划：{report.plan.summary()}")
+                self._job_log(job_id, "info", f"· 将连：{duration_mod.redact_duration_url(report.plan.url)}")
+            else:
+                self._job_log(
+                    job_id, "info",
+                    f"· 任务模式：start {report.starts_sent} 次 / stop {report.stops_sent} 次 / "
+                    f"轮换 {report.rotations}；记账 {report.credited_seconds:.0f} 秒；"
+                    f"错误：{report.error or '无'}",
+                )
+            summary = (
+                f"完成：提交 {counts['submitted']}，跳过 {counts['skipped']}，"
+                f"失败 {counts['failed']}，时长目标 {counts['targets']} 个，"
+                f"记账 {counts['credited_seconds']} 秒"
+            )
+            with self._lock:
+                job = self._jobs_by_id.get(job_id)
+                if job is not None:
+                    job["counts"] = counts
+            self._finish_batch_job(job_id, "done", summary=summary)
+            self._job_log(job_id, "ok", f"■ {summary}")
+            self._plog(platform, "ok", f"■ 刷课 {job_id} {summary}")
+        except Exception as exc:  # noqa: BLE001
+            message = f"{type(exc).__name__}: {exc}"
+            self._finish_batch_job(job_id, "failed", error=message)
+            self._job_log(job_id, "error", f"✗ {message}")
+            self._plog(platform, "error", f"✗ 刷课 {job_id}：{message}")
+            log.exception("刷课失败: %s", job_id)
+        finally:
+            if adapter is not None:
+                with contextlib.suppress(Exception):
+                    asyncio.run(adapter.close())
+            if runtime is not None:
+                with contextlib.suppress(Exception):
+                    runtime.close()
+            with self._lock:
+                if self._active_job_id == job_id:
+                    self._active_job_id = None
+
     # -- 批量提交（原生提交链路平台，例如 U校园）---------------------------
 
     def start_batch_submit(

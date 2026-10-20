@@ -51,10 +51,10 @@
   var TREND_DAYS = 14;       // 「最近趋势」最多展示多少天
 
   /* 功能页（顺序即左侧栏下段的顺序）；users 仅超管可见。 */
-  var PAGES = ['overview', 'courses', 'assignments', 'bank', 'tools', 'logs',
+  var PAGES = ['overview', 'courses', 'brush', 'assignments', 'bank', 'tools', 'logs',
                'stats', 'account', 'users'];
   var PAGE_LABEL = {
-    overview: '概览', courses: '课程', assignments: '作业', bank: '题库',
+    overview: '概览', courses: '课程', brush: '刷课', assignments: '作业', bank: '题库',
     tools: '工具', logs: '运行日志', stats: '统计', account: '账号', users: '用户'
   };
   /* 仅超管可见的功能页（入口隐藏，但后端 403 前端照样要处理）。 */
@@ -141,6 +141,9 @@
     eventsOff: false,
     submitting: false,
     actions: { platform: null, list: null, active: null, result: null, busy: false, prefill: null },
+    /* 刷课：教材列表 → 一本书的树 → 后台任务 */
+    brush: { books: null, error: '', bookId: '', tree: null, treeError: '',
+             jobId: '', timer: null, busy: false, logLen: 0 },
     /* 一键自动化：job 轮询、最后一份快照、人工答案 */
     auto: { jobId: null, timer: null, job: null, platform: '', examId: '', title: '',
             manual: {}, saving: false, submitting: false, logCount: 0 },
@@ -1056,6 +1059,10 @@
     state.platform = r.platform;
 
     if (changedPlat) {
+      state.brush.books = null;
+      state.brush.tree = null;
+      state.brush.bookId = '';
+      closeBrushBook();
       resetTools();
       resetActionPage('courses');
       resetActionPage('assignments');
@@ -5169,6 +5176,8 @@
     var jobs = [loadOverview()];
     if (state.page === 'courses') {
       jobs.push(loadActionPage('courses'));
+    } else if (state.page === 'brush') {
+      jobs.push(loadBrushBooks());
     } else if (state.page === 'assignments') {
       jobs.push(loadActionPage('assignments'));
     } else if (state.page === 'bank') {
@@ -5773,6 +5782,10 @@
     if ($('plog-open')) { $('plog-open').addEventListener('click', openPlatLogs); }
     /* 一键全部提交（批量） */
     if ($('batch-toggle')) { $('batch-toggle').addEventListener('click', batchToggle); }
+    /* 刷课页 */
+    if ($('brush-dry')) { $('brush-dry').addEventListener('click', function () { startBrush(false); }); }
+    if ($('brush-live')) { $('brush-live').addEventListener('click', function () { startBrush(true); }); }
+    if ($('brush-back')) { $('brush-back').addEventListener('click', closeBrushBook); }
     if ($('batch-dry')) { $('batch-dry').addEventListener('click', function () { batchStart(false); }); }
     if ($('batch-live')) { $('batch-live').addEventListener('click', function () { batchStart(true); }); }
     if ($('batch-close')) {
@@ -6035,6 +6048,307 @@
     if (willShow) {
       batchSetState(batch.running ? '任务 ' + batch.jobId + ' 运行中…' : '待开始');
     }
+  }
+
+  /* ==================================================================
+     刷课（按教材组织）
+       GET  /api/platforms/<p>/actions/courses        → 教材列表
+       GET  /api/platforms/<p>/course-tree?course=…   → 单元/任务树（只读）
+       POST /api/platforms/<p>/brush                  → 后台任务（默认干跑）
+     先只显示「书」；点进去才是单元与任务。
+     ================================================================== */
+
+  function brushSupported(plt) {
+    return plt === 'unipus';
+  }
+
+  function brushGate() {
+    var gate = $('brush-gate');
+    if (!gate) { return; }
+    if (!state.platform) {
+      gate.hidden = false;
+      gate.textContent = '先在左侧选一个平台（刷课目前只支持 U校园）。';
+      return;
+    }
+    if (!brushSupported(state.platform)) {
+      gate.hidden = false;
+      gate.textContent = '「' + platformLabel(state.platform) + '」还没有刷课链路（目前只有 U校园）。';
+      return;
+    }
+    gate.hidden = true;
+  }
+
+  function brushRowsOf(body) {
+    if (!isObj(body)) { return []; }
+    if (Array.isArray(body.rows)) { return body.rows.filter(isObj); }
+    var sections = Array.isArray(body.sections) ? body.sections : [];
+    for (var i = 0; i < sections.length; i++) {
+      if (isObj(sections[i]) && Array.isArray(sections[i].rows)) {
+        return sections[i].rows.filter(isObj);
+      }
+    }
+    return [];
+  }
+
+  function loadBrushBooks() {
+    brushGate();
+    if (!state.platform || !brushSupported(state.platform)) { return Promise.resolve(); }
+    var box = $('brush-books');
+    if (box) { box.hidden = false; setText('brush-books-hint', '加载中…'); }
+    return postJson('/api/platforms/' + encodeURIComponent(state.platform) +
+                    '/actions/courses', {})
+      .then(function (body) {
+        state.brush.books = brushRowsOf(body);
+        state.brush.error = '';
+        renderBrushBooks();
+      })
+      .catch(function (e) {
+        state.brush.books = [];
+        state.brush.error = describeError(e, { platform: state.platform });
+        renderBrushBooks();
+      });
+  }
+
+  function renderBrushBooks() {
+    var box = $('brush-books');
+    if (!box) { return; }
+    clear(box);
+    box.hidden = false;
+    var rows = state.brush.books || [];
+    if (state.brush.error) {
+      box.appendChild(el('p', 'empty', '教材列表加载失败：' + state.brush.error));
+      setText('brush-books-hint', '失败');
+      return;
+    }
+    if (!rows.length) {
+      box.appendChild(el('p', 'empty', '这个平台没有返回教材。'));
+      setText('brush-books-hint', '0 本');
+      return;
+    }
+    setText('brush-books-hint', rows.length + ' 本教材');
+    var wrap = el('div', 'table-wrap');
+    var table = el('table', 'table');
+    var thead = el('thead');
+    var hr = el('tr');
+    ['教材', '课程号', '教师', '学期', '操作'].forEach(function (label) {
+      hr.appendChild(el('th', '', label));
+    });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    var tbody = el('tbody');
+    rows.forEach(function (row) {
+      var tr = el('tr');
+      tr.appendChild(el('td', '', String(row.name || '—')));
+      tr.appendChild(el('td', 'mono', String(row.id || '—')));
+      tr.appendChild(el('td', '', String(row.teacher || '—')));
+      tr.appendChild(el('td', '', String(row.term || '—')));
+      var td = el('td');
+      var btn = el('button', 'btn btn-sm btn-run', '打开');
+      btn.type = 'button';
+      btn.addEventListener('click', function () { openBrushBook(String(row.id || '')); });
+      td.appendChild(btn);
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    box.appendChild(wrap);
+  }
+
+  function openBrushBook(courseId) {
+    if (!courseId) { return; }
+    state.brush.bookId = courseId;
+    state.brush.tree = null;
+    state.brush.treeError = '';
+    setText('brush-state', '读取教材结构…');
+    show($('brush-detail'), true);
+    show($('brush-tree'), true);
+    var treeBox = $('brush-tree-body');
+    if (treeBox) { clear(treeBox); treeBox.appendChild(el('p', 'empty', '加载中…')); }
+    api('/api/platforms/' + encodeURIComponent(state.platform) +
+        '/course-tree?course=' + encodeURIComponent(courseId) + '&state=required')
+      .then(function (tree) {
+        state.brush.tree = tree;
+        renderBrushTree();
+        setText('brush-state', '');
+      })
+      .catch(function (e) {
+        state.brush.treeError = describeError(e, { platform: state.platform });
+        setText('brush-state', '读取失败');
+        if (treeBox) {
+          clear(treeBox);
+          treeBox.appendChild(el('p', 'empty', '读取教材结构失败：' + state.brush.treeError));
+        }
+      });
+  }
+
+  function renderBrushTree() {
+    var tree = state.brush.tree;
+    if (!tree) { return; }
+    setText('brush-detail-title', tree.course || '教材详情');
+    var fields = $('brush-detail-fields');
+    if (fields) {
+      clear(fields);
+      var pairs = [
+        ['课程号', tree.course_remote_id],
+        ['班级', tree.class_name || '—'],
+        ['进度', (tree.finish_points === null || tree.finish_points === undefined
+                 ? '—' : tree.finish_points + '/' + (tree.total_points || '—'))],
+        ['任务组', tree.group_count],
+        ['必修', tree.required_count],
+      ];
+      pairs.forEach(function (pair) {
+        var d = el('div');
+        d.appendChild(el('dt', '', pair[0]));
+        d.appendChild(el('dd', 'mono', String(pair[1])));
+        fields.appendChild(d);
+      });
+    }
+    setText('brush-detail-hint', (tree.unit_count || (tree.units || []).length) + ' 个单元');
+
+    var box = $('brush-tree-body');
+    if (!box) { return; }
+    clear(box);
+    box.hidden = false;
+    (tree.units || []).forEach(function (unit) {
+      var head = el('h3', 'brush-unit', unit.name + '（' + unit.id + '）');
+      box.appendChild(head);
+      var wrap = el('div', 'table-wrap');
+      var table = el('table', 'table');
+      var thead = el('thead');
+      var hr = el('tr');
+      ['任务', '必修', '状态', '得分', '分组号', '操作'].forEach(function (label) {
+        hr.appendChild(el('th', '', label));
+      });
+      thead.appendChild(hr);
+      table.appendChild(thead);
+      var tbody = el('tbody');
+      (unit.groups || []).forEach(function (group) {
+        var tr = el('tr');
+        tr.appendChild(el('td', '', String(group.name || '—')));
+        tr.appendChild(el('td', '', group.required ? '是' : '—'));
+        var status = (group.finished === undefined) ? '—' : '未做';
+        if (group.finished) {
+          status = group.full_marks ? '已完成（全对）'
+            : (group.total_items ? '已完成（' + group.correct_items + '/' + group.total_items + '）'
+                                 : '已完成（无计分点）');
+        }
+        tr.appendChild(el('td', '', status));
+        tr.appendChild(el('td', 'mono', (group.score && group.score.length)
+          ? group.score.join(',') : '—'));
+        tr.appendChild(el('td', 'mono', String(group.id || '')));
+        var td = el('td');
+        var btn = el('button', 'btn btn-sm', '提交');
+        btn.type = 'button';
+        btn.title = '与其它平台一样走 /api/assignments/submit（两步：干跑 → 确认）';
+        btn.addEventListener('click', function () {
+          openAssignmentSubmit(state.platform, group.assignment_id, { title: group.name });
+        });
+        td.appendChild(btn);
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      box.appendChild(wrap);
+    });
+  }
+
+  function brushLog(text) {
+    var log = $('brush-log');
+    if (!log) { return; }
+    log.textContent += (log.textContent ? '\n' : '') + text;
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function brushStopPolling() {
+    if (state.brush.timer) { clearTimeout(state.brush.timer); state.brush.timer = null; }
+  }
+
+  function brushPoll() {
+    state.brush.timer = null;
+    var jobId = state.brush.jobId;
+    if (!jobId) { return; }
+    api('/api/jobs/' + encodeURIComponent(jobId)).then(function (job) {
+      var logs = job.logs || [];
+      for (var i = state.brush.logLen; i < logs.length; i++) {
+        brushLog('[' + String(logs[i].at || '').slice(11) + '] ' + (logs[i].text || ''));
+      }
+      state.brush.logLen = logs.length;
+      var counts = job.counts || {};
+      setText('brush-counts', '提交 ' + (counts.submitted || 0) +
+        ' · 跳过 ' + (counts.skipped || 0) +
+        ' · 失败 ' + (counts.failed || 0) +
+        ' · 时长目标 ' + (counts.targets || 0) +
+        ' · 记账 ' + (counts.credited_seconds || 0) + ' 秒');
+      if (job.status === 'running') {
+        setText('brush-state', '任务 ' + jobId + ' 运行中…');
+        state.brush.timer = setTimeout(brushPoll, 1200);
+        return;
+      }
+      state.brush.busy = false;
+      show($('brush-live'), false);
+      if (job.status === 'done') {
+        setText('brush-state', job.summary || '完成');
+        if (!job.confirm) {
+          brushLog('→ 干跑完成。确认无误后点「② 确认真跑」。');
+          show($('brush-live'), true);
+        }
+      } else {
+        setText('brush-state', '失败：' + (job.error || '未知错误'));
+      }
+    }).catch(function (e) {
+      state.brush.timer = setTimeout(brushPoll, 2500);
+      setText('brush-state', '轮询失败：' + describeError(e));
+    });
+  }
+
+  function startBrush(confirm) {
+    var plt = state.platform;
+    if (!brushSupported(plt) || !state.brush.bookId) { return; }
+    if (state.brush.busy) { showToast('刷课任务还在跑，等它结束。'); return; }
+    var minutes = parseFloat(($('brush-minutes') && $('brush-minutes').value) || '10');
+    if (!isFinite(minutes) || minutes <= 0) { minutes = 10; }
+    var params = {
+      course: state.brush.bookId,
+      minutes: minutes,
+      confirm: !!confirm,
+      submit_pending: !!($('brush-submit-pending') && $('brush-submit-pending').checked),
+      only_required: !!($('brush-only-required') && $('brush-only-required').checked),
+      interval: 8
+    };
+    var msg = (confirm ? '⚠️ 真跑：会提交未完成任务并建立真实时长连接（不可撤销）。'
+                       : '干跑：只读教材结构、算出计划，不提交、不建连接。') +
+      '\n\n教材：' + (state.brush.tree && state.brush.tree.course || state.brush.bookId) +
+      '\n时长：' + minutes + ' 分钟' +
+      '\n提交未完成任务：' + (params.submit_pending ? '是' : '否') +
+      '\n只处理必修：' + (params.only_required ? '是' : '否') +
+      '\n\n' + (confirm ? '确定真跑？' : '开始干跑？');
+    if (!window.confirm(msg)) { return; }
+    state.brush.busy = true;
+    state.brush.logLen = 0;
+    var log = $('brush-log');
+    if (log) { log.textContent = ''; }
+    show($('brush-live'), false);
+    setText('brush-state', confirm ? '真跑中…' : '干跑中…');
+    brushLog('$ POST /api/platforms/' + plt + '/brush ' + JSON.stringify(params));
+    postJson('/api/platforms/' + encodeURIComponent(plt) + '/brush', params)
+      .then(function (job) {
+        state.brush.jobId = job.job_id;
+        brushPoll();
+      })
+      .catch(function (e) {
+        state.brush.busy = false;
+        setText('brush-state', '启动失败：' + describeError(e));
+        brushLog('✗ ' + describeError(e));
+      });
+  }
+
+  function closeBrushBook() {
+    show($('brush-detail'), false);
+    show($('brush-tree'), false);
+    state.brush.bookId = '';
+    state.brush.tree = null;
   }
 
   function boot() {

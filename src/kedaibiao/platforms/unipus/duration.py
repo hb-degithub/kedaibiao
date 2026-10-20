@@ -1337,4 +1337,415 @@ __all__ = [
     "read_frame",
     "redact_duration_url",
     "report_duration",
+    "TASK_DURATION_PATH",
+    "TaskDurationPlan",
+    "TaskDurationReport",
+    "TaskTarget",
+    "build_task_page_base",
+    "build_task_duration_url",
+    "build_task_join_frame",
+    "build_task_start_frame",
+    "build_task_stop_frame",
+    "plan_task_duration",
+    "run_task_duration",
 ]
+
+
+# ==========================================================================
+# 真实任务模式（刷课）—— 与上面的「房间池」是两条不同的账
+# ==========================================================================
+#
+# 依据：参考实现 `src/api/duration.rs` 的 `start_task_boost`（只读源码事实）。
+# 两条链路不要混：
+#
+# | | 房间池（report_duration） | 真实任务（run_task_duration） |
+# | --- | --- | --- |
+# | 端点 | `/unipusiopoint/` | `/unipusio/` |
+# | 事件 | `kick-v2`（每条连接一次） | `start` 每 5 秒重发 + 轮换前补 `stop` |
+# | client | `U校园mobile` | `U校园pc` |
+# | 归属 | 假名 (module, group) → 账号级 | **(真实分组, 真实课程)** |
+#
+# 归属靠 `start` 里的 `url`：必须是**真实任务页** URL
+# （`…/pc.html?cid=…&cloudCurriculaId=…&source=cloud&courseResourceId=…#/<实例>/courseware/<单元>/<micro>/<分组>`），
+# 编造的 URL 只会落进通用桶（`module:"menu"`）。
+#
+# ⚠️ 记账未验证：2026-10-20 用真实账号跑「房间池 180s」与「单目标任务模式 150s」
+# 两次，`credited_seconds` 都是 0（连接、入房、事件都正常，但没收到 `r_set`）。
+# 参考实现声称「当场落账 1×」，差异原因未查明（怀疑 page URL 里的
+# `cloudCurriculaId` 与实际班级不符，或账号当次不满足记账条件）。
+# 因此本模式**默认干跑**，且真跑只在前端二次确认后发生。
+
+#: 任务模式专用端点（与房间池的 `/unipusiopoint/` 不同）
+TASK_DURATION_PATH: Final[str] = "/unipusio/"
+#: 官方页面 `start` 的重发间隔（秒）
+TASK_START_INTERVAL: Final[float] = 5.0
+#: 每多久轮换一个任务（秒）。真页面 30 分钟停表一次，这里取 4 分钟避开固定节奏
+TASK_ROTATE_SECONDS: Final[float] = 240.0
+#: 任务模式固定用 PC 客户端名（参考实现实测：mobile 名字在 start 事件下不认）
+TASK_CLIENT: Final[str] = "U校园pc"
+#: 任务页基础路径（真实页面就是这个）
+TASK_PAGE_PATH: Final[str] = "/_explorationpc_default/pc.html"
+
+
+def build_task_duration_url(open_id: str, token: str) -> str:
+    """任务模式的 WSS URL（``/unipusio/``）。"""
+    if not isinstance(open_id, str) or not open_id:
+        raise DurationConfigError("open_id 不能为空")
+    if not isinstance(token, str) or not token:
+        raise DurationConfigError("token 不能为空")
+    query = urllib.parse.urlencode(
+        {"EIO": "3", "transport": "websocket", "uuid": open_id, "token": token},
+        quote_via=urllib.parse.quote,
+        safe="-_.~",
+    )
+    url = f"{_ws_base()}{TASK_DURATION_PATH}?{query}"
+    assert_task_duration_url(url)
+    return url
+
+
+def assert_task_duration_url(url: str) -> None:
+    """任务模式的域名/路径断言（只允许 ucontent 的 ``/unipusio/``）。"""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "wss":
+        raise DurationProtocolError(f"任务模式必须走 wss：{url}")
+    if parts.hostname != EXPECTED_WS_HOST:
+        raise DurationProtocolError(
+            f"任务模式只允许 {EXPECTED_WS_HOST}，实际 {parts.hostname}"
+        )
+    if not parts.path.startswith(TASK_DURATION_PATH):
+        raise DurationProtocolError(f"任务模式路径不符：{parts.path}")
+
+
+@dataclass(slots=True, frozen=True)
+class TaskTarget:
+    """一个真实必修任务：``(课程实例, 单元, micro, 分组)``。
+
+    ``micro`` 只是页面 URL 里的过场段；参考实现实测「填单元 ID 照样落进该分组」，
+    所以默认与 ``unit`` 相同。
+    """
+
+    instance: str
+    unit: str
+    group: str
+    micro: str = ""
+    name: str = ""
+
+    def __post_init__(self) -> None:
+        for field_name in ("instance", "unit", "group"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise DurationConfigError(f"TaskTarget.{field_name} 不能为空")
+        if not self.micro:
+            object.__setattr__(self, "micro", self.unit)
+
+    def tag3(self) -> str:
+        return json.dumps(
+            {"microBlock": f"{self.unit}/{self.micro}", "version": "1", "source": "ucontent"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    def page_url(self, page_base: str) -> str:
+        return (
+            f"{page_base}#/{self.instance}/courseware/"
+            f"{self.unit}/{self.micro}/{self.group}"
+        )
+
+    def describe(self) -> str:
+        return f"{self.name or self.group}（{self.unit}）"
+
+
+def build_task_page_base(
+    *,
+    class_id: str,
+    curricula_id: str,
+    course_resource_id: str = "",
+    host_base: str = "",
+) -> str:
+    """拼真实任务页前缀（照抄浏览器地址栏的形状）。
+
+    ``host_base`` 默认取 ucontent 的 https 基址；``course_resource_id`` 是门户
+    「班级教材 ID」（教材节点自己的 ``id``），缺省时省掉该参数。
+    """
+    for name, value in (("class_id", class_id), ("curricula_id", curricula_id)):
+        if not isinstance(value, str) or not value.strip():
+            raise DurationConfigError(f"{name} 不能为空")
+    base = host_base or endpoints.BASE_URLS[UnipusApp.UCONTENT]
+    query = [
+        ("cid", class_id),
+        ("cloudCurriculaId", curricula_id),
+        ("source", "cloud"),
+    ]
+    if course_resource_id:
+        query.append(("courseResourceId", course_resource_id))
+    tail = "&".join(
+        f"{name}={urllib.parse.quote(str(value), safe='')}" for name, value in query
+    )
+    return f"{base}{TASK_PAGE_PATH}?{tail}"
+
+
+def build_task_join_frame(
+    open_id: str, token: str, *, namespace: str = NAMESPACE
+) -> str:
+    """任务模式的入房帧：``40/userActivities?uuid=…&token=…,``（末尾带逗号）。"""
+    if not open_id or not token:
+        raise DurationConfigError("入房帧需要 open_id 与 token")
+    query = urllib.parse.urlencode(
+        {"uuid": open_id, "token": token}, quote_via=urllib.parse.quote, safe="-_.~"
+    )
+    return f"40{namespace}?{query},"
+
+
+def build_task_start_payload(
+    target: TaskTarget, *, page_base: str, client: str = TASK_CLIENT
+) -> dict[str, Any]:
+    return {
+        "module": target.group,
+        "moduleGroup": target.instance,
+        "client": client,
+        "url": target.page_url(page_base),
+        "tag1": target.unit,
+        "tag2": target.micro,
+        "tag3": target.tag3(),
+    }
+
+
+def build_task_start_frame(
+    target: TaskTarget, *, page_base: str, namespace: str = NAMESPACE,
+    client: str = TASK_CLIENT, message_id: int = 0,
+) -> str:
+    payload = build_task_start_payload(target, page_base=page_base, client=client)
+    body = json.dumps(["start", payload], ensure_ascii=False, separators=(",", ":"))
+    return f"42{namespace},{message_id}{body}"
+
+
+def build_task_stop_frame(
+    target: TaskTarget, *, page_base: str, timer_ms: int, namespace: str = NAMESPACE,
+    client: str = TASK_CLIENT, message_id: int = 2,
+) -> str:
+    payload = build_task_start_payload(target, page_base=page_base, client=client)
+    payload["timer"] = int(timer_ms)
+    body = json.dumps(["stop", payload], ensure_ascii=False, separators=(",", ":"))
+    return f"42{namespace},{message_id}{body}"
+
+
+@dataclass(slots=True)
+class TaskDurationPlan:
+    """任务模式的干跑计划（不发任何连接）。"""
+
+    url: str
+    page_base: str
+    targets: tuple[TaskTarget, ...]
+    requested_seconds: float
+    start_interval: float = TASK_START_INTERVAL
+    rotate_seconds: float = TASK_ROTATE_SECONDS
+    namespace: str = NAMESPACE
+    join_frame: str = ""
+    start_frames: tuple[str, ...] = ()
+    stop_frame: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        names = "、".join(target.describe() for target in self.targets[:3])
+        more = f" 等 {len(self.targets)} 个" if len(self.targets) > 3 else ""
+        return (
+            f"任务模式：{self.requested_seconds:g} 秒，{self.start_interval:g}s 报一次 start，"
+            f"{self.rotate_seconds:g}s 轮换；目标 {names}{more}"
+        )
+
+
+@dataclass(slots=True)
+class TaskDurationReport:
+    plan: TaskDurationPlan
+    dry_run: bool
+    connected: bool = False
+    joined: bool = False
+    starts_sent: int = 0
+    stops_sent: int = 0
+    rotations: int = 0
+    pings_sent: int = 0
+    pongs_received: int = 0
+    credited_seconds: float = 0.0
+    r_set_updates: int = 0
+    received_frames: list[str] = field(default_factory=list)
+    elapsed_seconds: float = 0.0
+    error: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+
+def plan_task_duration(
+    open_id: str,
+    token: str,
+    targets: Sequence[TaskTarget],
+    *,
+    seconds: float,
+    page_base: str,
+    start_interval: float = TASK_START_INTERVAL,
+    rotate_seconds: float = TASK_ROTATE_SECONDS,
+    namespace: str = NAMESPACE,
+) -> TaskDurationPlan:
+    """算出「将要发什么」，不建立任何连接。"""
+    if not targets:
+        raise DurationConfigError("任务模式至少要有一个目标（必修分组）")
+    if not page_base:
+        raise DurationConfigError("任务模式需要真实任务页前缀（page_base）")
+    requested = _validate_seconds(seconds, MAX_DURATION_SECONDS)
+    if start_interval <= 0:
+        raise DurationConfigError("start_interval 必须为正数")
+    if rotate_seconds <= 0:
+        raise DurationConfigError("rotate_seconds 必须为正数")
+    url = build_task_duration_url(open_id, token)
+    first = targets[0]
+    warnings: list[str] = []
+    if requested < 60:
+        warnings.append("r_set 记账约每 60 秒一批：短于 60 秒的会话大概率记 0")
+    if len(targets) == 1:
+        warnings.append("只有 1 个目标：任务模式是 1× 封顶（不像房间池会放大）")
+    warnings.append(
+        "任务模式的记账**尚未验证**（本机两次实测 credited=0）；真跑前请先看这个计划"
+    )
+    return TaskDurationPlan(
+        url=url,
+        page_base=page_base,
+        targets=tuple(targets),
+        requested_seconds=requested,
+        start_interval=start_interval,
+        rotate_seconds=rotate_seconds,
+        namespace=namespace,
+        join_frame=build_task_join_frame(open_id, token, namespace=namespace),
+        start_frames=(
+            build_task_start_frame(first, page_base=page_base, namespace=namespace),
+        ),
+        stop_frame=build_task_stop_frame(
+            first, page_base=page_base, timer_ms=0, namespace=namespace
+        ),
+        warnings=warnings,
+    )
+
+
+def run_task_duration(
+    open_id: str,
+    token: str,
+    targets: Sequence[TaskTarget],
+    *,
+    seconds: float,
+    page_base: str,
+    confirm: bool = False,
+    start_interval: float = TASK_START_INTERVAL,
+    rotate_seconds: float = TASK_ROTATE_SECONDS,
+    namespace: str = NAMESPACE,
+    transport_factory: Callable[[], Any] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], None] = time.sleep,
+    wall_clock_ms: Callable[[], int] | None = None,
+    raise_on_error: bool = False,
+) -> TaskDurationReport:
+    """真实任务模式：一条连接、轮换目标、按周期重发 ``start``。默认干跑。"""
+    plan = plan_task_duration(
+        open_id, token, targets,
+        seconds=seconds, page_base=page_base,
+        start_interval=start_interval, rotate_seconds=rotate_seconds, namespace=namespace,
+    )
+    report = TaskDurationReport(plan=plan, dry_run=not confirm, warnings=list(plan.warnings))
+    if not confirm:
+        return report
+
+    now_ms = wall_clock_ms or (lambda: int(time.time() * 1000))
+    factory = transport_factory or (lambda: SocketDurationTransport())
+    transport = factory()
+    started = clock()
+    seen_updates: set[int] = set()
+    index = 0
+    next_start = 0.0
+    next_rotate = clock() + rotate_seconds
+    next_ping = clock() + DEFAULT_PING_INTERVAL
+    try:
+        transport.connect(plan.url)
+        report.connected = True
+        while True:
+            elapsed = clock() - started
+            report.elapsed_seconds = elapsed
+            if elapsed >= plan.requested_seconds:
+                break
+            # 到期/轮换前补 stop，再换目标
+            if index < len(plan.targets) - 1 and clock() >= next_rotate:
+                transport.send(
+                    build_task_stop_frame(
+                        plan.targets[index], page_base=page_base,
+                        timer_ms=now_ms(), namespace=namespace,
+                    )
+                )
+                report.stops_sent += 1
+                index += 1
+                report.rotations += 1
+                next_start = 0.0
+                next_rotate = clock() + rotate_seconds
+            if report.joined and clock() >= next_start:
+                transport.send(
+                    build_task_start_frame(
+                        plan.targets[index], page_base=page_base, namespace=namespace
+                    )
+                )
+                report.starts_sent += 1
+                next_start = clock() + start_interval
+            if clock() >= next_ping:
+                transport.send("2")
+                report.pings_sent += 1
+                next_ping = clock() + DEFAULT_PING_INTERVAL
+
+            if hasattr(transport, "settimeout"):
+                transport.settimeout(0.5)
+            try:
+                message = transport.recv()
+            except TimeoutError:
+                # 没有新帧是常态（心跳/start 由时钟驱动），继续下一轮
+                continue
+            if not message:
+                continue
+            if len(report.received_frames) < MAX_RECORDED_FRAMES:
+                report.received_frames.append(_preview(message))
+            if message == "2":
+                transport.send("3")
+                report.pongs_received += 1
+                continue
+            if message == "3":
+                continue
+            if message.startswith("0") and not message.startswith("40"):
+                transport.send(plan.join_frame)
+                continue
+            if message.startswith(f"40{namespace}"):
+                report.joined = True
+                continue
+            update = parse_r_set(message)
+            if update is not None:
+                key = int(update.ms_update)
+                if key not in seen_updates:
+                    seen_updates.add(key)
+                    report.credited_seconds += float(update.delta)
+                    report.r_set_updates += 1
+    except DurationError as exc:
+        report.error = str(exc)
+        if raise_on_error:
+            raise
+    except Exception as exc:  # noqa: BLE001 - 连接/协议异常一律软着陆
+        report.error = f"{type(exc).__name__}: {exc}"
+        if raise_on_error:
+            raise
+    finally:
+        with contextlib.suppress(Exception):
+            if plan.targets and report.starts_sent:
+                transport.send(
+                    build_task_stop_frame(
+                        plan.targets[min(index, len(plan.targets) - 1)],
+                        page_base=page_base, timer_ms=now_ms(), namespace=namespace,
+                    )
+                )
+                report.stops_sent += 1
+        with contextlib.suppress(Exception):
+            transport.close()
+    report.elapsed_seconds = clock() - started
+    return report

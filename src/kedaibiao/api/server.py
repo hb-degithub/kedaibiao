@@ -263,6 +263,41 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             })
 
         # 注意顺序：/api/platforms/<name>/actions 必须先于 /api/platforms 判断
+        if path.startswith("/api/platforms/") and path.endswith("/course-tree"):
+            name = path[len("/api/platforms/") : -len("/course-tree")].strip("/")
+            if not name or "/" in name:
+                return self._error(404, f"没有这个路由: {path}", "not_found")
+            query = self._query()
+            course = (query.get("course") or [""])[0]
+            with_state = (query.get("with_state") or ["1"])[0] not in ("0", "false", "no")
+            state_scope = (query.get("state") or ["required"])[0]
+            if state_scope not in ("required", "all", "none"):
+                state_scope = "required"
+            return self._json(200, self.service.course_tree(
+                name, course, viewer=viewer, with_state=with_state,
+                state_scope=state_scope,
+            ))
+
+        if path.startswith("/api/platforms/") and path.endswith("/brush"):
+            name = path[len("/api/platforms/") : -len("/brush")].strip("/")
+            if not name or "/" in name:
+                return self._error(404, f"没有这个路由: {path}", "not_found")
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError(
+                    "请求体必须是 JSON 对象", kind="bad_request", status=400
+                )
+            return self._json(202, self.service.start_brush(
+                name,
+                course=str(payload.get("course") or ""),
+                minutes=payload.get("minutes") or 10,
+                confirm=bool(payload.get("confirm", False)),
+                submit_pending=bool(payload.get("submit_pending", False)),
+                only_required=bool(payload.get("only_required", True)),
+                interval=payload.get("interval") or 8,
+                viewer=viewer,
+            ))
+
         if path.startswith("/api/platforms/") and path.endswith("/batch-submit"):
             name = path[len("/api/platforms/") : -len("/batch-submit")].strip("/")
             if not name or "/" in name:
@@ -442,6 +477,41 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return self._json(200, self.service.save_itest_manual(
                 str(payload.get("exam_id") or ""),
                 {str(k): str(v) for k, v in answers.items()},
+                viewer=viewer,
+            ))
+
+        if path.startswith("/api/platforms/") and path.endswith("/course-tree"):
+            name = path[len("/api/platforms/") : -len("/course-tree")].strip("/")
+            if not name or "/" in name:
+                return self._error(404, f"没有这个路由: {path}", "not_found")
+            query = self._query()
+            course = (query.get("course") or [""])[0]
+            with_state = (query.get("with_state") or ["1"])[0] not in ("0", "false", "no")
+            state_scope = (query.get("state") or ["required"])[0]
+            if state_scope not in ("required", "all", "none"):
+                state_scope = "required"
+            return self._json(200, self.service.course_tree(
+                name, course, viewer=viewer, with_state=with_state,
+                state_scope=state_scope,
+            ))
+
+        if path.startswith("/api/platforms/") and path.endswith("/brush"):
+            name = path[len("/api/platforms/") : -len("/brush")].strip("/")
+            if not name or "/" in name:
+                return self._error(404, f"没有这个路由: {path}", "not_found")
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError(
+                    "请求体必须是 JSON 对象", kind="bad_request", status=400
+                )
+            return self._json(202, self.service.start_brush(
+                name,
+                course=str(payload.get("course") or ""),
+                minutes=payload.get("minutes") or 10,
+                confirm=bool(payload.get("confirm", False)),
+                submit_pending=bool(payload.get("submit_pending", False)),
+                only_required=bool(payload.get("only_required", True)),
+                interval=payload.get("interval") or 8,
                 viewer=viewer,
             ))
 

@@ -909,3 +909,148 @@ class TestCreditedObservation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# 真实任务模式（刷课）：unipusio + start/stop
+# --------------------------------------------------------------------------
+
+
+class TestTaskModeFrames(unittest.TestCase):
+    def _target(self) -> Any:
+        return duration.TaskTarget(
+            instance="course-v2:abc+book+2024", unit="u1", group="u1g2", name="Exercise 1"
+        )
+
+    def test_task_url_uses_unipusio_path(self) -> None:
+        url = duration.build_task_duration_url("open-1", "tok")
+        self.assertIn("/unipusio/", url)
+        self.assertIn("EIO=3", url)
+        self.assertIn("uuid=open-1", url)
+        self.assertNotIn("/unipusiopoint/", url)
+
+    def test_task_url_rejects_other_host(self) -> None:
+        with self.assertRaises(duration.DurationProtocolError):
+            duration.assert_task_duration_url("wss://evil.example.com/unipusio/")
+
+    def test_page_base_shape(self) -> None:
+        base = duration.build_task_page_base(
+            class_id="123", curricula_id="456", course_resource_id="789"
+        )
+        self.assertIn("/_explorationpc_default/pc.html?", base)
+        self.assertIn("cid=123", base)
+        self.assertIn("cloudCurriculaId=456", base)
+        self.assertIn("courseResourceId=789", base)
+
+    def test_page_base_without_resource_id(self) -> None:
+        base = duration.build_task_page_base(class_id="1", curricula_id="2")
+        self.assertNotIn("courseResourceId", base)
+
+    def test_task_page_url_and_tag3(self) -> None:
+        target = self._target()
+        url = target.page_url("https://ucontent.unipus.cn/pc.html?x=1")
+        self.assertTrue(url.endswith("#/course-v2:abc+book+2024/courseware/u1/u1/u1g2"))
+        self.assertEqual(
+            json.loads(target.tag3()),
+            {"microBlock": "u1/u1", "version": "1", "source": "ucontent"},
+        )
+
+    def test_join_frame_has_query_and_trailing_comma(self) -> None:
+        frame = duration.build_task_join_frame("open-1", "tok")
+        self.assertTrue(frame.startswith("40/userActivities?uuid=open-1"))
+        self.assertIn("token=tok", frame)
+        self.assertTrue(frame.endswith(","))
+
+    def test_start_frame_shape(self) -> None:
+        frame = duration.build_task_start_frame(self._target(), page_base="PB")
+        self.assertTrue(frame.startswith('42/userActivities,0["start",'))
+        payload = json.loads(frame.split('42/userActivities,0', 1)[1])
+        event, body = payload
+        self.assertEqual(event, "start")
+        self.assertEqual(body["module"], "u1g2")
+        self.assertEqual(body["moduleGroup"], "course-v2:abc+book+2024")
+        self.assertEqual(body["client"], "U校园pc")
+        self.assertEqual(body["tag1"], "u1")
+        self.assertTrue(body["url"].startswith("PB#/"))
+        self.assertNotIn("timer", body)
+
+    def test_stop_frame_carries_timer(self) -> None:
+        frame = duration.build_task_stop_frame(
+            self._target(), page_base="PB", timer_ms=1700000000000
+        )
+        self.assertTrue(frame.startswith("42/userActivities,2"))
+        body = json.loads(frame.split('42/userActivities,2', 1)[1])[1]
+        self.assertEqual(body["timer"], 1700000000000)
+
+
+class TestTaskModeRun(unittest.TestCase):
+    def _target(self) -> Any:
+        return duration.TaskTarget(instance="inst", unit="u1", group="u1g1")
+
+    def test_dry_run_never_connects(self) -> None:
+        report = duration.run_task_duration(
+            "open-1", "tok", [self._target()], seconds=300, page_base="PB",
+            transport_factory=ExplodingTransport,
+        )
+        self.assertTrue(report.dry_run)
+        self.assertFalse(report.connected)
+        self.assertEqual(report.starts_sent, 0)
+        self.assertTrue(report.plan.start_frames)
+        self.assertTrue(report.plan.join_frame)
+
+    def test_empty_targets_rejected(self) -> None:
+        with self.assertRaises(duration.DurationConfigError):
+            duration.run_task_duration("open-1", "tok", [], seconds=60, page_base="PB")
+
+    def test_short_session_warns_about_ramp(self) -> None:
+        plan = duration.plan_task_duration(
+            "open-1", "tok", [self._target()], seconds=30, page_base="PB"
+        )
+        self.assertTrue(any("60" in w for w in plan.warnings))
+
+    def test_run_sends_join_start_and_stop(self) -> None:
+        r_set = '42/userActivities,["r_set",{"delta":20,"msUpdate":1000}]'
+        transport = ScriptedTransport(["0{\"sid\":\"x\"}", "40/userActivities,", r_set])
+        ticks = {"n": 0}
+
+        def clock() -> float:
+            ticks["n"] += 1
+            return float(ticks["n"])   # 每次调用推进 1 秒，留够处理帧的轮次
+
+        report = duration.run_task_duration(
+            "open-1", "tok", [self._target()], seconds=20, page_base="PB",
+            confirm=True, transport_factory=lambda: transport,
+            clock=clock, sleeper=lambda _s: None,
+        )
+        self.assertTrue(report.connected)
+        self.assertTrue(report.joined)
+        self.assertGreaterEqual(report.starts_sent, 1)
+        self.assertEqual(report.credited_seconds, 20)
+        self.assertTrue(any("40/userActivities?" in f for f in transport.sent))
+        self.assertTrue(any(f.startswith('42/userActivities,0["start"') for f in transport.sent))
+        self.assertTrue(any(f.startswith('42/userActivities,2["stop"') for f in transport.sent))
+        self.assertTrue(transport.closed)
+
+    def test_duplicate_r_set_not_double_counted(self) -> None:
+        r_set = '42/userActivities,["r_set",{"delta":20,"msUpdate":1000}]'
+        transport = ScriptedTransport(["0{}", "40/userActivities,", r_set, r_set])
+        ticks = {"n": 0}
+
+        def clock() -> float:
+            ticks["n"] += 1
+            return float(ticks["n"])
+
+        report = duration.run_task_duration(
+            "open-1", "tok", [self._target()], seconds=10, page_base="PB",
+            confirm=True, transport_factory=lambda: transport,
+            clock=clock, sleeper=lambda _s: None,
+        )
+        self.assertEqual(report.credited_seconds, 20, "同一 msUpdate 只能记一次")
+
+    def test_connection_error_lands_softly(self) -> None:
+        report = duration.run_task_duration(
+            "open-1", "tok", [self._target()], seconds=60, page_base="PB",
+            confirm=True, transport_factory=ExplodingTransport,
+        )
+        self.assertFalse(report.ok)
+        self.assertTrue(report.error)

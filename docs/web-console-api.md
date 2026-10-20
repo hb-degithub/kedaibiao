@@ -341,6 +341,31 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 
 同一时刻只允许一个跑批任务；已有任务在跑时返回 **409** + `kind: "busy"`。
 
+### `GET /api/platforms/<name>/course-tree` —— 教材树（只读）
+
+查询参数：`course`（课程号，必填）、`state`（`required` 默认 / `all` / `none`）、
+`with_state`（`0` 关闭）。
+
+返回：`course` / `course_remote_id` / `instance_id` / `class_id` / `class_name` /
+`course_resource_id` / `page_base` / `finish_points` / `total_points` /
+`group_count` / `required_count` / `units[]`（每单元含 `id`、`name`、`groups[]`；
+每个分组含 `id` / `name` / `unit_id` / `unit_name` / `required` / `assignment_id` /
+可选 `finished` / `score` / `total_items` / `correct_items` / `full_marks`）。
+
+`state=required`（默认）只查**必修组**的状态，一本书约 5 秒；`all` 要查全部组（几十秒）。
+
+### `POST /api/platforms/<name>/brush` —— 刷课（后台任务）
+
+只对有原生链路且提供 `native_course_tree` 的平台开放（当前是 U校园）。返回 **202** + job。
+
+```json
+{ "course": "20001188271", "minutes": 10, "confirm": false,
+  "submit_pending": false, "only_required": true, "interval": 8 }
+```
+
+`confirm=false` 只出计划（不提交、不建连接）。`job.counts` 含
+`submitted / skipped / failed / targets / credited_seconds`；日志在 `job.logs`。
+
 ### `POST /api/platforms/<name>/batch-submit` —— 一键全部提交（后台任务）
 
 只对**有原生提交链路**（`native_submit_flow = true`）且 `capabilities.submit = true`

@@ -263,6 +263,19 @@ PYTHONPATH=src python3 -m kedaibiao action unipus answers \
   [unipus-duration.md](docs/verification/unipus-duration.md)、
   [unipus-speech.md](docs/verification/unipus-speech.md)。
 
+#### U校园「刷课」（控制台）
+
+导航 **刷课** → 教材列表（先只显示书）→「打开」一本书 → 单元与任务树 + 进度/必修数：
+
+- **刷时长**：任务模式 WebSocket（`/unipusio/`，每 5 秒报一次 `start`，按真实任务页
+  URL 归属到分组），默认干跑；
+- **提交未完成**：只提交**没做过**的任务组（已做过的不重交 —— 平台留存首条记录，
+  实测重交不改分）；每行的「提交」与作业页共用同一条 API；
+- **只处理必修**：按班级策略里的必修任务（门户进度就是按它算的），默认勾选。
+
+> ⚠️ 刷时长的**记账仍未验证**（本机多次实测 credited=0），详见
+> [docs/verification/unipus-brush.md](docs/verification/unipus-brush.md)。
+
 #### U校园「一键全部提交」（控制台）
 
 作业页顶部按钮 → 面板里填「最多处理任务数 / 组间间隔 / 跳过已满分」：

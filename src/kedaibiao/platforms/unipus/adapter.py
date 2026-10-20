@@ -524,6 +524,146 @@ class UnipusAdapter(PlatformAdapter):
         data.update(_plan_envelope(data, assignment_id))
         return data
 
+    async def native_course_tree(
+        self, course: Course, *, with_state: bool = True, state_scope: str = "required"
+    ) -> dict[str, Any]:
+        """教材树：单元 → 分组（+ 必修标记与完成状态）。控制台「刷课」页用。
+
+        数据来源（都是真实接口，不是猜的）：
+
+        - 层级与分组 ID：ucontent 目录（``role=unit`` / ``role=group``）；
+        - 「哪些是必修」：门户 ``/api/tla/courseStudyStrategy/detail``（按班策略），
+          取每个单元的 ``requiredTask``（就是分组 ID 列表）；
+        - 完成状态：``progress/v2``（逐项得分），见 :meth:`native_assignment_state`；
+        - 任务页 URL 前缀：``cid`` + ``cloudCurriculaId`` + ``courseResourceId``。
+
+        ``with_state=False`` 只读目录与必修集（少 N 次请求，用于快速展开）。
+        ``state_scope`` 控制查多少组的完成状态：``"required"``（默认，只查必修组，
+        一本书通常 30 来个，几秒内返回）、``"all"``（全部组，261 组要几十秒）、
+        ``"none"``（不查，行为同 ``with_state=False``）。
+        """
+        instance_id = _course_instance_id(course)
+        catalog = await self.client().fetch_catalog(instance_id)
+        raw = course.raw if isinstance(course.raw, dict) else {}
+        required_ids: dict[str, bool] = {}
+        try:
+            required_ids = await self._fetch_required_ids(course, catalog)
+        except UnipusError as exc:
+            self.log.info("读取必修集失败（按「未标记必修」处理）：%s", exc)
+
+        from kedaibiao.platforms.unipus import duration as duration_mod
+
+        page_base = ""
+        try:
+            page_base = duration_mod.build_task_page_base(
+                # 参考实现实测：cid 用真实班级 ID，cloudCurriculaId 用班级课程 ID
+                class_id=str(raw.get("class_id") or ""),
+                curricula_id=str(raw.get("class_numeric_id") or ""),
+                course_resource_id=str(raw.get("course_resource_id") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 - 缺字段就不拼前缀，前端会提示
+            self.log.info("拼任务页前缀失败：%s", exc)
+
+        units: list[dict[str, Any]] = []
+        waiting: list[tuple[dict[str, Any], Any]] = []
+        for unit in catalog.units:
+            groups: list[dict[str, Any]] = []
+            for group in unit.groups:
+                entry: dict[str, Any] = {
+                    "id": group.group_id,
+                    "name": group.name or group.group_id,
+                    "unit_id": unit.unit_id,
+                    "unit_name": unit.name or unit.unit_id,
+                    "required": bool(required_ids.get(group.group_id)),
+                    "assignment_id": pack_assignment_id(instance_id, group.group_id),
+                }
+                want_state = with_state and (
+                    state_scope == "all" or (state_scope == "required" and entry["required"])
+                )
+                if want_state:
+                    waiting.append((entry, self.native_assignment_state(entry["assignment_id"])))
+                groups.append(entry)
+            units.append(
+                {
+                    "id": unit.unit_id,
+                    "name": unit.name or unit.unit_id,
+                    "groups": groups,
+                }
+            )
+
+        # 并发读状态：逐组串行会把 33 个必修拖成十几秒（实测 10.4s），
+        # 并发 6 路后 1~2 秒。失败单组只记 state_error，不影响整棵树。
+        if waiting:
+            import asyncio
+
+            semaphore = asyncio.Semaphore(6)
+
+            async def _load(entry: dict[str, Any], coro: Any) -> None:
+                async with semaphore:
+                    try:
+                        state = await coro
+                        entry.update(
+                            {
+                                "finished": state["finished"],
+                                "score": state["score"],
+                                "total_items": state["total_items"],
+                                "correct_items": state["correct_items"],
+                                "full_marks": state["full_marks"],
+                            }
+                        )
+                    except UnipusError as exc:
+                        entry["state_error"] = f"{type(exc).__name__}: {exc}"
+
+            await asyncio.gather(*(_load(entry, coro) for entry, coro in waiting))
+        return {
+            "course": course.name,
+            "course_remote_id": course.remote_id,
+            "instance_id": instance_id,
+            "class_id": raw.get("class_numeric_id") or raw.get("class_id"),
+            "class_name": raw.get("class_name", ""),
+            "course_resource_id": raw.get("course_resource_id", ""),
+            "strategy_id": raw.get("strategy_id", ""),
+            "page_base": page_base,
+            "finish_points": raw.get("finish_point_num"),
+            "total_points": raw.get("total_point_num"),
+            "units": units,
+            "group_count": sum(len(unit["groups"]) for unit in units),
+            "required_count": sum(
+                1 for unit in units for group in unit["groups"] if group["required"]
+            ),
+        }
+
+    async def _fetch_required_ids(self, course: Course, catalog: Any) -> dict[str, bool]:
+        """按班必修集：门户策略接口里的 ``requiredTask``（纯分组 ID 字符串）。"""
+        raw = course.raw if isinstance(course.raw, dict) else {}
+        body = await self.client().request(
+            endpoints.UnipusApp.PORTAL,
+            "POST",
+            endpoints.PORTAL_STUDY_STRATEGY,
+            family=endpoints.UnipusApp.PORTAL.value,
+            host_headers=True,
+            payload={
+                "id": raw.get("strategy_id"),
+                "strategyId": raw.get("strategy_id"),
+                "courseResourceId": raw.get("course_resource_id"),
+                "courseId": raw.get("course_resource_id"),
+                "resourceId": raw.get("resource_id"),
+                "courseInstanceId": raw.get("course_instance_id"),
+            },
+        )
+        units = parsing.dig(body, "value", "courseUnitStrategyList")
+        out: dict[str, bool] = {}
+        if isinstance(units, list):
+            for unit in units:
+                for task in (unit.get("requiredTask") or []) if isinstance(unit, dict) else []:
+                    if isinstance(task, str) and task:
+                        out[task] = True
+                    elif isinstance(task, dict):
+                        gid = task.get("taskId") or task.get("groupId") or task.get("id")
+                        if gid:
+                            out[str(gid)] = True
+        return out
+
     async def native_assignment_state(self, assignment_id: str) -> dict[str, Any]:
         """该任务组的完成状态（``progress/v2``，单任务真源）。
 

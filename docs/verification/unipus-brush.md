@@ -62,3 +62,65 @@
 2. 「刷课」若要做成真能涨进度的功能，还缺一次**更长的时长实验**（≥6 分钟，看是否出现
    `r_set` 记账帧）以及**必修口径对齐**（按班 33 个必修组，而不是全 261 组）。
 3. 在上面的证据补齐之前，不要对外宣称「能刷课」。
+
+
+---
+
+## 4. 落地：控制台「刷课」页（2026-10-20）
+
+### 4.1 界面
+
+导航新增 **刷课**（仅 U校园；其它平台给提示）：
+
+1. **先只显示「书」**：教材列表（10 本，教材名 / 课程号 / 教师 / 学期 + 「打开」）；
+2. **点进一本书**才是详情：进度（0/33）、任务组数（261）、必修数（33）、
+   刷课时长 / 是否提交未完成 / 是否只处理必修；
+3. 下面是**单元 → 任务**树（任务名 / 必修 / 状态 / 得分 / 分组号 / 提交）；
+   每一行的「提交」与该平台作业页的提交走**同一条 API**
+   （`POST /api/assignments/submit`，两步：干跑 → 确认）；
+4. 「① 先干跑」出计划与日志，「② 确认真跑」才提交/建连接。
+
+`PERSONAL`（非班级教材）这类独立项：教材列表里它们**单独成行**（不挂在班级下），
+因为它们没有班级进度，点进去同样能看到单元与任务。
+
+### 4.2 后端接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/platforms/unipus/course-tree?course=<课程号>&state=required` | 教材树（只读）。`state` 可选 `required`（默认，只查必修组状态，约 5 秒）/ `all`（261 组，几十秒）/ `none` |
+| POST | `/api/platforms/unipus/brush` | 刷课后台任务（默认干跑） |
+
+`brush` 请求体：
+
+```json
+{ "course": "20001188271", "minutes": 10, "confirm": false,
+  "submit_pending": false, "only_required": true, "interval": 8 }
+```
+
+### 4.3 刷时长的机制（照参考实现的真实任务模式）
+
+- 端点 `wss://ucontent.unipus.cn/unipusio/`（与房间池的 `unipusiopoint` 不同）；
+- 入房 `40/userActivities?uuid=<open_id>&token=<annotator>,`；
+- 每 5 秒发 `42/userActivities,0["start",{module:<分组ID>, moduleGroup:<实例ID>,
+  client:"U校园pc", url:<真实任务页URL>, tag1:<单元>, tag2:<micro>,
+  tag3:'{"microBlock":"<单元>/<micro>","version":"1","source":"ucontent"}'}]`；
+- 轮换前补 `42/userActivities,2["stop",{…,"timer":<ms>}]`；
+- 任务页 URL = `https://ucontent.unipus.cn/_explorationpc_default/pc.html?cid=<班级ID>&cloudCurriculaId=<班级课程ID>&source=cloud&courseResourceId=<班级教材ID>#/<实例>/courseware/<单元>/<micro>/<分组>`
+  —— 服务端**靠这个 URL 认任务归属**，编造的 URL 只会落进通用桶。
+
+### 4.4 仍未验证 / 已知限制
+
+- **记账仍未验证**：本机三次尝试（房间池 180s、单目标任务模式 150s、页面前端抓帧失败）
+  都是 `credited_seconds=0`。参考实现声称任务模式「当场落账 1×」，差异原因未查明
+  （怀疑 page URL 的 `cloudCurriculaId` 与班级实际不符，或账号当次不满足记账条件）。
+- 需要一次**真实浏览器抓包**（任务页的 WS 帧）来对齐：抓法见 §5。
+- 本书 33 个必修组**全部已做过**，且平台留存首条记录 → 「提交未完成」当前为 0 个；
+  刷课对这本书只能挂时长（未验证）。
+
+## 5. 下一次该怎么取证（留给后来人）
+
+1. 用 Chrome 登录 U校园 → 进入任意一门课的教程学习页（`pc.html?...`）；
+2. F12 → Network → WS → 找到 `unipusio`/`unipusiopoint` 连接 → Messages；
+3. 复制 20 秒内的 `start`/`kick` 帧与服务端 `r_set` 帧（脱敏 token）；
+4. 拿这些帧对着 `duration.py` 的 `build_task_start_frame` 逐字段比对，
+   差异处就是记账失败的原因。
