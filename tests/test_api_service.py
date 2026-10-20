@@ -102,9 +102,15 @@ class NativeBatchAdapter(FakeAdapter):
         ]
 
     async def native_assignment_state(self, assignment_id: str) -> dict[str, Any]:
+        # a1：逐项全对 → 跳过；a2：做过但没全对 → 重交；a3：被拦
+        if assignment_id == "a1":
+            return {
+                "finished": True, "score_pct": 1.0,
+                "total_items": 2, "correct_items": 2, "full_marks": True,
+            }
         return {
-            "finished": True,
-            "score_pct": 1.0 if assignment_id == "a1" else 0.0,
+            "finished": True, "score_pct": 1.0,   # 注意：平台的 score_pct 不可信
+            "total_items": 2, "correct_items": 1, "full_marks": False,
         }
 
     async def native_plan(self, assignment_id: str) -> dict[str, Any]:
@@ -882,6 +888,15 @@ class TestBatchSubmit(ServiceTestBase):
         self.assertEqual(done["counts"]["skipped"], 1)
         self.assertEqual(done["counts"]["planned"], 0)
         self.assertEqual(NativeBatchAdapter.submitted, [])
+
+    def test_score_pct_one_but_not_all_correct_is_resubmitted(self) -> None:
+        """平台 score_pct=1 不代表全对（实测语义不可靠），必须按逐项得分重交。"""
+        NativeBatchAdapter.submitted = []
+        job = self.service.start_batch_submit(NATIVE, confirm=True, interval=0.5)
+        done = self._wait(job)
+        self.assertEqual(done["status"], "done")
+        self.assertEqual(NativeBatchAdapter.submitted, ["a2"],
+                         "a2 的 score_pct=1 但只对了一半，应当重交")
 
     def test_platform_without_native_flow_is_501(self) -> None:
         with self.assertRaises(ConsoleError) as ctx:

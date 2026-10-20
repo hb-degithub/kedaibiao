@@ -5940,7 +5940,12 @@
         if (!job.confirm && (counts.planned || 0) > 0) {
           batch.dryDone = true;
           batchShowLive(true);
-          batchLog('→ 干跑完成。确认无误后点「② 确认全部真交」（不可逆）。');
+          /* 干跑已完成：① 只剩「参数改过才需要重跑」，② 直接按同样参数真交。
+             不需要再点一次 ① —— ② 内部会重新读内容/答案再提交。 */
+          var dryBtn = $('batch-dry');
+          if (dryBtn) { dryBtn.textContent = '① 重新干跑（参数改过才需要）'; }
+          batchLog('→ 干跑完成。直接点「② 确认全部真交」即可（无需再干跑一次；' +
+                   '真交会用同样的参数重新读一遍内容与标准答案再提交）。');
         } else if (!job.confirm) {
           batchLog('→ 干跑完成：没有可提交的任务组。');
         }
@@ -6005,6 +6010,8 @@
 
     batch.running = true;
     batch.jobId = '';
+    var dryBtn2 = $('batch-dry');
+    if (dryBtn2) { dryBtn2.textContent = '① 先干跑（只规划）'; }
     batchSetState(confirm ? '真交中…' : '干跑中…');
     batchLog('$ POST /api/platforms/' + plt + '/batch-submit ' + JSON.stringify(params));
     postJson('/api/platforms/' + encodeURIComponent(plt) + '/batch-submit', params)

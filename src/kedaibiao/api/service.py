@@ -2345,6 +2345,9 @@ class ConsoleService:
         """处理一个任务组：读状态 → 干跑计划 →（确认后）真交。"""
         assignment_id = str(getattr(assignment, "remote_id", "") or "")
         title = str(getattr(assignment, "title", "") or assignment_id)
+        if assignment_id:
+            # 同名的任务很多（每单元都有 Exercise 1），日志里带上分组号便于对照
+            title = f"{title}·{assignment_id.rsplit('/', 1)[-1][:8]}"
         if not assignment_id:
             self._bump(job_id, "failed")
             self._job_log(job_id, "warn", "· 跳过：任务号为空")
@@ -2357,15 +2360,28 @@ class ConsoleService:
             except Exception as exc:  # noqa: BLE001 - 状态读不到就当作未知，不拦
                 self._job_log(job_id, "warn", f"· {title}：状态读取失败（{type(exc).__name__}），按未完成处理")
 
-        score_pct = state.get("score_pct")
-        if (
-            skip_full
-            and isinstance(score_pct, (int, float))
-            and float(score_pct) >= 0.999
-        ):
+        # 「要不要跳过」只看**逐项得分**：平台的 score_pct 不是正确率
+        # （实测：score=[1,1,1,1,1,0,0,0,0,0] 也回 score_pct=1）。
+        skip_reason = ""
+        if skip_full and state.get("finished"):
+            total_items = int(state.get("total_items") or 0)
+            correct_items = int(state.get("correct_items") or 0)
+            if total_items and correct_items == total_items:
+                skip_reason = f"已满分（{correct_items}/{total_items} 项全对）"
+            elif not total_items:
+                skip_reason = "已完成（无计分点：纯学习/内容组，平台已记过账）"
+        if skip_reason:
             self._bump(job_id, "skipped")
-            self._job_log(job_id, "info", f"· 跳过 {title}（已满分 {float(score_pct):.0%}）")
+            self._job_log(job_id, "info", f"· 跳过 {title}（{skip_reason}）")
             return
+        if state.get("finished"):
+            total_items = int(state.get("total_items") or 0)
+            correct_items = int(state.get("correct_items") or 0)
+            if total_items:
+                self._job_log(
+                    job_id, "info",
+                    f"· {title} 做过但未全对（{correct_items}/{total_items} 项），重交",
+                )
 
         try:
             plan = asyncio.run(adapter.native_plan(assignment_id))

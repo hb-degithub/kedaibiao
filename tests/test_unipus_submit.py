@@ -955,3 +955,58 @@ class TestNativeAssignmentState(unittest.IsolatedAsyncioTestCase):
         adapter, _ = make_adapter(progress_response(first_pass=None))
         state = await adapter.native_assignment_state("course-v2:x/u1g1")
         self.assertFalse(state["finished"])
+
+
+class TestNativeAssignmentStateFullMarks(unittest.IsolatedAsyncioTestCase):
+    """「满分」只能按逐项得分判：平台 score_pct 不可信（实测语义不稳定）。"""
+
+    async def test_all_correct_is_full_marks(self) -> None:
+        adapter, _ = make_adapter(progress_response(first_pass="2026-10-20 10:00:00"))
+        state = await adapter.native_assignment_state("course-v2:x/u1g1")
+        self.assertEqual(state["total_items"], 2)
+        self.assertEqual(state["correct_items"], 2)
+        self.assertTrue(state["full_marks"])
+
+    async def test_partially_correct_is_not_full_marks(self) -> None:
+        # 真实线上形状：score=[1,1,1,1,1,0,0,0,0,0] 但 score_pct=1
+        body = json_response(
+            {
+                "code": 0,
+                "data": {
+                    "first_pass": {"datetime": 1779082004},
+                    "state": {
+                        "state": 1,
+                        "lastSubmit": 1779082004,
+                        "score": "[1,1,1,1,1,0,0,0,0,0]",
+                        "score_avg": 100,
+                        "score_pct": 1,
+                    },
+                    "flowStrategy": {"required": False},
+                    "strategy": {"task_mini_score_pct": 0},
+                },
+            }
+        )
+        adapter, _ = make_adapter(body)
+        state = await adapter.native_assignment_state("course-v2:x/u1g1")
+        self.assertEqual(state["score_pct"], 1)       # 平台原值（不可信）
+        self.assertEqual(state["total_items"], 10)
+        self.assertEqual(state["correct_items"], 5)
+        self.assertFalse(state["full_marks"], "没全对就不能算满分")
+
+    async def test_no_score_items_is_not_full_marks(self) -> None:
+        body = json_response(
+            {
+                "code": 0,
+                "data": {
+                    "first_pass": {"datetime": 1779081972},
+                    "state": {"state": 1, "score": "[]", "score_pct": 0},
+                    "flowStrategy": {"required": False},
+                    "strategy": {"task_mini_score_pct": 0},
+                },
+            }
+        )
+        adapter, _ = make_adapter(body)
+        state = await adapter.native_assignment_state("course-v2:x/u1g1")
+        self.assertEqual(state["total_items"], 0)
+        self.assertFalse(state["full_marks"])
+        self.assertTrue(state["finished"])

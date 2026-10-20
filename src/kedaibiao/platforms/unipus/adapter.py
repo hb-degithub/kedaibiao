@@ -527,17 +527,33 @@ class UnipusAdapter(PlatformAdapter):
     async def native_assignment_state(self, assignment_id: str) -> dict[str, Any]:
         """该任务组的完成状态（``progress/v2``，单任务真源）。
 
-        批量提交用它决定「跳过谁」：``finished`` 只表示平台记录过 ``first_pass``
-        （做过，不代表满分），``score_pct`` 才是得分率。默认只跳过**已满分**的组，
-        做过但 0 分的组仍会被重交（标准答案重交只会更好）。
+        ⚠️ **``score_pct`` 不是正确率，别拿它判「满分」**（2026-10-20 实测，
+        261 组统计）：平台对 ``score=[1,1,1,1,1,0,0,0,0,0]`` 也回
+        ``score_pct=1``、``score_avg=100``；共有 15 个「没全对但 score_pct=1」的组，
+        真实得分率低到 0.22。它更像「是否达到某个平台内部门槛 / 是否完成」。
+
+        所以这里另外算两个**可信**字段：
+
+        - ``total_items`` / ``correct_items``：逐项得分（``state.score`` 里的 0/1）
+          的个数与其中得 1 的个数；
+        - ``full_marks``：有计分点且**逐项全 1** 才算满分。没有计分点（纯学习/内容组）
+          不看分数，用 ``finished`` 表示「平台已记过账」。
         """
         instance_id, group_id = split_assignment_id(assignment_id)
         state = await self.client().fetch_group_state(instance_id, group_id)
+        score = list(state.score)
+        total = len(score)
+        correct = sum(1 for value in score if value == 1)
+        finished = bool(state.first_pass_datetime)
         return {
-            "finished": bool(state.first_pass_datetime),
+            "finished": finished,
             "first_pass": state.first_pass_datetime,
+            # 平台原值，只作参考（语义不可靠，见 docstring）
             "score_pct": state.score_pct,
-            "score": list(state.score),
+            "score": score,
+            "total_items": total,
+            "correct_items": correct,
+            "full_marks": bool(total) and correct == total,
             "server_state": state.server_state,
         }
 
