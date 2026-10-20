@@ -577,7 +577,12 @@ def build_duration_url(open_id: str, token: str) -> str:
 
 
 def assert_duration_url(url: str) -> None:
-    """发请求前的域名/路径断言（规格 §1 的历史事故就是发错主机）。"""
+    """发请求前的域名/路径断言（规格 §1 的历史事故就是发错主机）。
+
+    ⚠️ 允许**两条**路径：房间池的 ``/unipusiopoint/`` 与任务模式的 ``/unipusio/``
+    （后者由 :func:`assert_task_duration_url` 单独再收紧）。早期这里只认前者，
+    结果任务模式真跑时被自己拦成「学习时长路径不符」，一次 start 都没发出去。
+    """
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "wss":
         raise DurationProtocolError(f"学习时长必须走 wss：{url}")
@@ -585,8 +590,11 @@ def assert_duration_url(url: str) -> None:
         raise DurationProtocolError(
             f"学习时长只允许 {EXPECTED_WS_HOST}，实际 {parts.hostname}"
         )
-    if not parts.path.startswith(DURATION_PATH):
-        raise DurationProtocolError(f"学习时长路径不符：{parts.path}")
+    allowed = (DURATION_PATH, TASK_DURATION_PATH)
+    if not any(parts.path.startswith(path) for path in allowed):
+        raise DurationProtocolError(
+            f"学习时长路径不符：{parts.path}（只允许 {' / '.join(allowed)}）"
+        )
 
 
 def redact_duration_url(url: str) -> str:

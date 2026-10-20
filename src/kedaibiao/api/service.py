@@ -2199,9 +2199,13 @@ class ConsoleService:
         submit_pending: bool = False,
         only_required: bool = True,
         interval: float = 8.0,
+        mode: str = "",
         viewer: Viewer | None = None,
     ) -> dict[str, Any]:
         """刷课：一本书 →（可选）提交未完成任务 + 任务模式挂时长。
+
+        ``mode`` 明确只做哪一半：``"submit"``（只提交未完成）、``"duration"``
+        （只挂时长）、``"both"``；留空时按 ``submit_pending`` 推断。
 
         安全默认：``confirm=False`` 只出计划（不提交、不建连接）。
         ``submit_pending=True`` 才会尝试提交「没做过」的任务组；
@@ -2225,6 +2229,13 @@ class ConsoleService:
         if not (0.5 <= minutes <= 240):
             raise ConsoleError("minutes 要在 0.5~240 之间", kind="bad_request", status=400)
         interval = max(0.5, min(float(interval or 8.0), 120.0))
+        mode = str(mode or "").strip().lower()
+        if mode and mode not in ("submit", "duration", "both"):
+            raise ConsoleError("mode 只能是 submit / duration / both", kind="bad_request", status=400)
+        if not mode:
+            mode = "both" if submit_pending else "duration"
+        submit_pending = mode in ("submit", "both")
+        do_duration = mode in ("duration", "both")
 
         creds, cookie_file = self._resolve_login(scope, viewer)
         owner_id = viewer.user_id if (viewer and viewer.authenticated) else 0
@@ -2241,6 +2252,7 @@ class ConsoleService:
                 "job_id": job_id, "kind": "brush", "platform": scope,
                 "course": course, "minutes": minutes, "confirm": bool(confirm),
                 "submit_pending": bool(submit_pending), "only_required": bool(only_required),
+                "mode": mode,
                 "status": "running", "started_at": _now(), "finished_at": None,
                 "summary": "", "error": "", "logs": [],
                 "counts": {"submitted": 0, "skipped": 0, "failed": 0,
@@ -2263,7 +2275,8 @@ class ConsoleService:
         threading.Thread(
             target=self._run_brush,
             args=(job_id, scope, course, minutes, bool(confirm), bool(submit_pending),
-                  bool(only_required), interval, owner_id, cookie_file, creds),
+                  bool(only_required), interval, owner_id, cookie_file, creds,
+                  do_duration, mode),
             name=f"kedaibiao-brush-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
@@ -2272,6 +2285,7 @@ class ConsoleService:
         self, job_id: str, platform: str, course_id: str, minutes: float,
         confirm: bool, submit_pending: bool, only_required: bool, interval: float,
         owner_id: int, cookie_file: str | None, credentials: Any,
+        do_duration: bool = True, mode: str = "both",
     ) -> None:
         from kedaibiao.platforms.unipus import duration as duration_mod
 
@@ -2337,6 +2351,21 @@ class ConsoleService:
                         )
             else:
                 self._job_log(job_id, "info", "· 未勾选「提交未完成后任务」，只刷时长")
+
+            if not do_duration:
+                counts["targets"] = 0
+                summary = (
+                    f"完成：提交 {counts['submitted']}，跳过 {counts['skipped']}，"
+                    f"失败 {counts['failed']}（未刷时长）"
+                )
+                with self._lock:
+                    job = self._jobs_by_id.get(job_id)
+                    if job is not None:
+                        job["counts"] = counts
+                self._finish_batch_job(job_id, "done", summary=summary)
+                self._job_log(job_id, "ok", f"■ {summary}")
+                self._plog(platform, "ok", f"■ 刷课 {job_id} {summary}")
+                return
 
             # 任务模式时长：目标 = 必修组（没有必修就用全部）
             targets_pool = required or groups

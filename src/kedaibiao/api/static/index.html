@@ -349,8 +349,8 @@
               <span class="field-hint">任务模式是 1× 封顶；记账未验证，建议先干跑</span>
             </label>
             <label class="field" for="brush-submit-pending">
-              <span class="field-label">提交未完成的任务</span>
-              <input id="brush-submit-pending" type="checkbox">
+              <span class="field-label">提交未完成任务</span>
+              <input id="brush-submit-pending" type="checkbox" checked>
               <span class="field-hint">只提交没做过的组；已做过的不重交（平台不改分）</span>
             </label>
             <label class="field" for="brush-only-required">
@@ -360,9 +360,11 @@
             </label>
           </div>
           <div class="action-submit">
-            <button id="brush-dry" class="btn btn-run" type="button">① 先干跑（只规划）</button>
-            <button id="brush-live" class="btn btn-warn" type="button" hidden>② 确认真跑</button>
-            <button id="brush-back" class="btn" type="button">返回教材列表</button>
+            <button id="brush-submit-dry" class="btn btn-run" type="button">提交未完成（干跑）</button>
+            <button id="brush-submit-live" class="btn btn-warn" type="button">提交未完成（真交）</button>
+            <button id="brush-duration-dry" class="btn btn-run" type="button">刷时长（干跑）</button>
+            <button id="brush-duration-live" class="btn btn-warn" type="button">刷时长（真跑）</button>
+            <button id="brush-back" class="btn" type="button">收起面板</button>
             <span id="brush-state" class="field-hint"></span>
           </div>
           <pre id="brush-log" class="text-block mono" style="max-height:320px;overflow:auto;white-space:pre-wrap"></pre>

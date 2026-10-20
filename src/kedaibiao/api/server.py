@@ -278,57 +278,6 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 state_scope=state_scope,
             ))
 
-        if path.startswith("/api/platforms/") and path.endswith("/brush"):
-            name = path[len("/api/platforms/") : -len("/brush")].strip("/")
-            if not name or "/" in name:
-                return self._error(404, f"没有这个路由: {path}", "not_found")
-            payload = self._body_json()
-            if not isinstance(payload, dict):
-                raise ConsoleError(
-                    "请求体必须是 JSON 对象", kind="bad_request", status=400
-                )
-            return self._json(202, self.service.start_brush(
-                name,
-                course=str(payload.get("course") or ""),
-                minutes=payload.get("minutes") or 10,
-                confirm=bool(payload.get("confirm", False)),
-                submit_pending=bool(payload.get("submit_pending", False)),
-                only_required=bool(payload.get("only_required", True)),
-                interval=payload.get("interval") or 8,
-                viewer=viewer,
-            ))
-
-        if path.startswith("/api/platforms/") and path.endswith("/batch-submit"):
-            name = path[len("/api/platforms/") : -len("/batch-submit")].strip("/")
-            if not name or "/" in name:
-                return self._error(404, f"没有这个路由: {path}", "not_found")
-            payload = self._body_json()
-            if not isinstance(payload, dict):
-                raise ConsoleError(
-                    "请求体必须是 JSON 对象", kind="bad_request", status=400
-                )
-            try:
-                limit = int(payload.get("limit") or 0)
-            except (TypeError, ValueError) as exc:
-                raise ConsoleError(
-                    "limit 必须是整数", kind="bad_request", status=400
-                ) from exc
-            try:
-                interval = float(payload.get("interval") or 8.0)
-            except (TypeError, ValueError) as exc:
-                raise ConsoleError(
-                    "interval 必须是数字（秒）", kind="bad_request", status=400
-                ) from exc
-            return self._json(202, self.service.start_batch_submit(
-                name,
-                course=str(payload.get("course") or ""),
-                confirm=bool(payload.get("confirm", False)),
-                limit=limit,
-                interval=interval,
-                skip_done=bool(payload.get("skip_done", True)),
-                viewer=viewer,
-            ))
-
         if path.startswith("/api/platforms/"):
             parts = path[len("/api/platforms/") :].split("/")
             if len(parts) == 2 and parts[1] == "logs" and parts[0]:
@@ -480,21 +429,6 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 viewer=viewer,
             ))
 
-        if path.startswith("/api/platforms/") and path.endswith("/course-tree"):
-            name = path[len("/api/platforms/") : -len("/course-tree")].strip("/")
-            if not name or "/" in name:
-                return self._error(404, f"没有这个路由: {path}", "not_found")
-            query = self._query()
-            course = (query.get("course") or [""])[0]
-            with_state = (query.get("with_state") or ["1"])[0] not in ("0", "false", "no")
-            state_scope = (query.get("state") or ["required"])[0]
-            if state_scope not in ("required", "all", "none"):
-                state_scope = "required"
-            return self._json(200, self.service.course_tree(
-                name, course, viewer=viewer, with_state=with_state,
-                state_scope=state_scope,
-            ))
-
         if path.startswith("/api/platforms/") and path.endswith("/brush"):
             name = path[len("/api/platforms/") : -len("/brush")].strip("/")
             if not name or "/" in name:
@@ -512,6 +446,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 submit_pending=bool(payload.get("submit_pending", False)),
                 only_required=bool(payload.get("only_required", True)),
                 interval=payload.get("interval") or 8,
+                mode=str(payload.get("mode") or ""),
                 viewer=viewer,
             ))
 

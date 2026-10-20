@@ -110,6 +110,25 @@
 - 任务页 URL = `https://ucontent.unipus.cn/_explorationpc_default/pc.html?cid=<班级ID>&cloudCurriculaId=<班级课程ID>&source=cloud&courseResourceId=<班级教材ID>#/<实例>/courseware/<单元>/<micro>/<分组>`
   —— 服务端**靠这个 URL 认任务归属**，编造的 URL 只会落进通用桶。
 
+### 4.3.1 2026-10-20 真跑一次（75 秒）的新证据
+
+修掉一个自伤 bug（路径断言只认 `/unipusiopoint/`，任务模式的 `/unipusio/`
+被自己拦成「学习时长路径不符」，一次 start 都没发出去）之后真跑：
+
+```
+connected: True | joined: True | start: 8 | stop: 1 | 记账: 0.0 | error: 无
+收到帧:
+  0{"sid":"…","pingInterval":25000,"pingTimeout":20000}
+  40
+  40/userActivities,
+  43/userActivities,0[{"code":0,"msg":"ok","concurrent":1}]        ← 第一次 start 被接受
+  43/userActivities,0[{"code":0,"msg":"ok: task没有信息变更"}]      ← 重复 start 的回应
+```
+
+结论：**帧已经正确发到服务端并被接受**（`code:0`、`concurrent:1`），
+但 75 秒内仍**没有 `r_set` 记账广播**。下一步要确认的是「为什么服务端不记账」：
+`url` 里的 `cloudCurriculaId` 是否应该是别的东西、是否要求任务页真的被打开过。
+
 ### 4.4 仍未验证 / 已知限制
 
 - **记账仍未验证**：本机三次尝试（房间池 180s、单目标任务模式 150s、页面前端抓帧失败）

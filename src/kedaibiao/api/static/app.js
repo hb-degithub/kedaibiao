@@ -5785,8 +5785,18 @@
     /* 一键全部提交（批量） */
     if ($('batch-toggle')) { $('batch-toggle').addEventListener('click', batchToggle); }
     /* 刷课页 */
-    if ($('brush-dry')) { $('brush-dry').addEventListener('click', function () { startBrush(false); }); }
-    if ($('brush-live')) { $('brush-live').addEventListener('click', function () { startBrush(true); }); }
+    if ($('brush-submit-dry')) {
+      $('brush-submit-dry').addEventListener('click', function () { startBrush(false, 'submit'); });
+    }
+    if ($('brush-submit-live')) {
+      $('brush-submit-live').addEventListener('click', function () { startBrush(true, 'submit'); });
+    }
+    if ($('brush-duration-dry')) {
+      $('brush-duration-dry').addEventListener('click', function () { startBrush(false, 'duration'); });
+    }
+    if ($('brush-duration-live')) {
+      $('brush-duration-live').addEventListener('click', function () { startBrush(true, 'duration'); });
+    }
     if ($('brush-back')) { $('brush-back').addEventListener('click', closeBrushBook); }
     if ($('batch-dry')) { $('batch-dry').addEventListener('click', function () { batchStart(false); }); }
     if ($('batch-live')) { $('batch-live').addEventListener('click', function () { batchStart(true); }); }
@@ -6398,12 +6408,10 @@
         return;
       }
       state.brush.busy = false;
-      show($('brush-live'), false);
       if (job.status === 'done') {
         setText('brush-state', job.summary || '完成');
         if (!job.confirm) {
-          brushLog('→ 干跑完成。确认无误后点「② 确认真跑」。');
-          show($('brush-live'), true);
+          brushLog('→ 干跑完成。确认无误后点对应的「真交 / 真跑」按钮。');
         }
       } else {
         setText('brush-state', '失败：' + (job.error || '未知错误'));
@@ -6414,33 +6422,37 @@
     });
   }
 
-  function startBrush(confirm) {
+  function startBrush(confirm, mode) {
     var plt = state.platform;
     if (!brushSupported(plt) || !state.brush.bookId) { return; }
     if (state.brush.busy) { showToast('刷课任务还在跑，等它结束。'); return; }
     var minutes = parseFloat(($('brush-minutes') && $('brush-minutes').value) || '10');
     if (!isFinite(minutes) || minutes <= 0) { minutes = 10; }
+    mode = mode || 'both';
     var params = {
       course: state.brush.bookId,
       minutes: minutes,
       confirm: !!confirm,
-      submit_pending: !!($('brush-submit-pending') && $('brush-submit-pending').checked),
+      mode: mode,
+      submit_pending: mode !== 'duration' &&
+        !!($('brush-submit-pending') && $('brush-submit-pending').checked),
       only_required: !!($('brush-only-required') && $('brush-only-required').checked),
       interval: 8
     };
-    var msg = (confirm ? '⚠️ 真跑：会提交未完成任务并建立真实时长连接（不可撤销）。'
-                       : '干跑：只读教材结构、算出计划，不提交、不建连接。') +
+    var what = mode === 'submit' ? '提交未完成任务'
+      : (mode === 'duration' ? '刷时长' : '提交 + 刷时长');
+    var msg = (confirm ? '⚠️ 真跑「' + what + '」：写操作不可撤销。'
+                       : '干跑「' + what + '」：只读教材结构、算出计划，不提交、不建连接。') +
       '\n\n教材：' + (state.brush.tree && state.brush.tree.course || state.brush.bookId) +
-      '\n时长：' + minutes + ' 分钟' +
-      '\n提交未完成任务：' + (params.submit_pending ? '是' : '否') +
+      (mode === 'submit' ? '' : '\n时长：' + minutes + ' 分钟') +
+      '\n提交已完成？：' + (params.submit_pending ? '会提交未完成的组' : '不提交') +
       '\n只处理必修：' + (params.only_required ? '是' : '否') +
-      '\n\n' + (confirm ? '确定真跑？' : '开始干跑？');
+      '\n\n' + (confirm ? '确定执行？' : '开始干跑？');
     if (!window.confirm(msg)) { return; }
     state.brush.busy = true;
     state.brush.logLen = 0;
     var log = $('brush-log');
     if (log) { log.textContent = ''; }
-    show($('brush-live'), false);
     setText('brush-state', confirm ? '真跑中…' : '干跑中…');
     brushLog('$ POST /api/platforms/' + plt + '/brush ' + JSON.stringify(params));
     postJson('/api/platforms/' + encodeURIComponent(plt) + '/brush', params)
