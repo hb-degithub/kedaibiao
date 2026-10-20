@@ -130,7 +130,6 @@
                   title="超管：按归属用户过滤所有数据接口；留空 = 看全部（不传 owner_id）"></select>
         </label>
         <span id="top-env" class="badge badge-idle" title="尚未取到配置">—</span>
-        <span id="top-live" class="badge badge-live" hidden>本次：真提交</span>
         <span id="top-user" class="top-user">
           <span id="top-username" class="mono">—</span>
           <span id="top-role" class="badge badge-idle">—</span>
@@ -192,62 +191,13 @@
           </p>
         </div>
 
-        <!-- 触发跑批：平台必须在下拉里明确选 -->
-        <div class="panel">
-          <div class="panel-head">
-            <h2>触发跑批</h2>
-            <span class="hint">同一时刻只允许一个任务；默认干跑，只规划不提交</span>
-          </div>
-          <form id="run-form" class="run-form" autocomplete="off">
-            <div class="field">
-              <label for="run-platform">目标平台</label>
-              <select id="run-platform" class="mono"></select>
-              <span class="field-hint">必须明确指定平台；「全部平台」不能跑批</span>
-            </div>
-
-            <div class="field">
-              <label for="run-limit">limit</label>
-              <input id="run-limit" class="mono" type="number" min="0" step="1" value="0" inputmode="numeric">
-              <span class="field-hint">0 = 不限；首次试跑建议设小值</span>
-            </div>
-
-            <fieldset class="field field-wide">
-              <legend>kinds（不勾选 = 全部）</legend>
-              <div class="checks">
-                <label class="check"><input type="checkbox" name="kind" value="course"> 课程 course</label>
-                <label class="check"><input type="checkbox" name="kind" value="homework"> 作业 homework</label>
-                <label class="check"><input type="checkbox" name="kind" value="exam"> 考试 exam</label>
-                <label class="check"><input type="checkbox" name="kind" value="practice"> 练习 practice</label>
-              </div>
-            </fieldset>
-
-            <div class="field field-wide live-field">
-              <label class="switch" for="run-live">
-                <input id="run-live" type="checkbox">
-                <span class="switch-text">真提交（live）</span>
-              </label>
-              <span id="live-badge" class="badge badge-dry">当前：干跑</span>
-              <span id="run-live-hint" class="field-hint" hidden></span>
-            </div>
-
-            <div class="field field-wide field-actions">
-              <button id="run-submit" class="btn btn-run" type="submit">开始跑批（干跑）</button>
-              <span id="run-state" class="field-hint"></span>
-            </div>
-          </form>
-          <p class="note">
-            干跑（live=false）只读取与规划，不向平台提交任何内容。打开「真提交」需要二次确认，
-            <strong>这会真的提交作业，不可撤销</strong>。
-          </p>
-        </div>
-
         <!-- 当前任务 -->
         <div class="panel">
           <div class="panel-head">
             <h2>当前任务</h2>
             <span id="job-poll" class="hint"></span>
           </div>
-          <p id="job-empty" class="empty">暂无进行中的任务。用上面的触发区发起一次跑批。</p>
+          <p id="job-empty" class="empty">暂无进行中的任务。（本控制台不再提供「触发跑批」入口；作业页的「一键全部提交」与各平台动作会在这里显示进度。）</p>
           <div id="job-body" hidden>
             <dl class="kv-grid">
               <div><dt>job_id</dt><dd id="job-id" class="mono">—</dd></div>

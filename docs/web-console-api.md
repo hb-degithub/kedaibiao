@@ -313,7 +313,11 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 `submissions/submit_ok` 来自提交记录，`questions` 是该平台在题库里的题数。
 没有数据的平台也会出现（各项为 0），这样对比表不会缺行。
 
-### `POST /api/run` —— 触发一次跑批
+### `POST /api/run` —— 触发一次跑批（**控制台界面已不再提供入口**）
+
+> 2026-10-20 起，控制台 UI **移除**了「概览 · 触发跑批」面板（用户的明确要求）。
+> 该 HTTP 接口保留，供 CLI / 脚本 / 自动化调用；界面内请用作业页的
+> 「一键全部提交」（`batch-submit`）或平台动作。
 
 **请求**（必须 `Content-Type: application/json`）：
 

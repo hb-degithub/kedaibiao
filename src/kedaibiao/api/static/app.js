@@ -85,11 +85,6 @@
     '/api/statistics': 1, '/api/jobs': 1, '/api/events': 1, '/api/accounts': 1
   };
 
-  var LIVE_CONFIRM =
-    '这会真的提交作业，不可撤销。\n\n' +
-    '确定要把「真提交（live）」打开吗？\n' +
-    '建议先用干跑确认规划结果（哪些作业会被处理），再决定是否真提交。';
-
   /* 单作业真提交的二次确认（比 live 开关更重：只影响这一个作业，但同样不可撤销）。 */
   var SUBMIT_CONFIRM =
     '这会真的把这个作业提交到平台，不可撤销。\n\n' +
@@ -145,7 +140,6 @@
     pollFails: 0,
     eventsOff: false,
     submitting: false,
-    runOptionsSig: '',       // 跑批下拉的选项指纹（变了才重建，避免打断用户选择）
     actions: { platform: null, list: null, active: null, result: null, busy: false, prefill: null },
     /* 一键自动化：job 轮询、最后一份快照、人工答案 */
     auto: { jobId: null, timer: null, job: null, platform: '', examId: '', title: '',
@@ -622,8 +616,6 @@
         replaceHash(state.page, plt);
         renderChrome();
       }
-      syncRunPlatformOptions(true);
-      applyRunConstraints();
       return loadPageData(true);
     });
   }
@@ -1103,11 +1095,9 @@
     renderOwnerFilter();
     renderSideMeta();
     renderScopeHints();
-    syncRunPlatformOptions();
     syncAccountPlatformOptions();
     syncCapturePlatformOptions();
     syncBatchPanel();
-    applyRunConstraints();
   }
 
   /* 上段：平台 */
@@ -1207,9 +1197,6 @@
       env.title = '尚未取到配置';
     }
 
-    /* 本次跑批是否已武装真提交（live 开关打开且该平台支持提交） */
-    var live = $('run-live');
-    show($('top-live'), !!(live && live.checked && !live.disabled));
   }
 
   /* 顶栏右上：当前用户（用户名 + 角色徽标）+ 退出按钮。 */
@@ -1421,160 +1408,6 @@
       state.platformsLoaded = false;
       renderChrome();
       setProblem('platforms', '平台列表加载失败：' + describeError(e), 'error');
-    });
-  }
-
-  /* ------------------------------------------------------------------ 触发跑批 */
-
-  function showLiveHint(text) {
-    var hint = $('run-live-hint');
-    hint.hidden = false;
-    hint.textContent = text;
-  }
-
-  function hideLiveHint() {
-    var hint = $('run-live-hint');
-    hint.hidden = true;
-    hint.textContent = '';
-  }
-
-  /* 跑批下拉：选项按平台清单重建；只有在「平台清单或当前平台」变化时才重建，
-     免得用户手动选好的目标被无关的重绘改掉。 */
-  function runOptionsSignature() {
-    var names = [];
-    for (var i = 0; i < state.platforms.length; i++) { names.push(state.platforms[i].name); }
-    return (state.platform || '') + '|' + names.join(',');
-  }
-
-  function syncRunPlatformOptions(force) {
-    var sel = $('run-platform');
-    if (!sel) { return; }
-    var sig = runOptionsSignature();
-    if (!force && sig === state.runOptionsSig) { return; }
-    state.runOptionsSig = sig;
-
-    var kids = [el('option', '', '— 请选择平台 —')];
-    kids[0].value = '';
-    for (var i = 0; i < state.platforms.length; i++) {
-      var p = state.platforms[i];
-      var o = el('option', '', (p.display_name || p.name) + ' · ' + p.name);
-      o.value = p.name;
-      kids.push(o);
-    }
-    fill(sel, kids);
-    sel.value = state.platform || '';
-    applyRunConstraints();
-  }
-
-  function selectedRunPlatform() {
-    var sel = $('run-platform');
-    var name = sel ? String(sel.value || '') : '';
-    return name || null;
-  }
-
-  /* 契约：capabilities.submit === false 时禁用 live 开关并说明原因。 */
-  function applyRunConstraints() {
-    var live = $('run-live');
-    var name = selectedRunPlatform();
-    var p = name ? platformByName(name) : null;
-
-    var submitOk = canSubmit(p);
-    live.disabled = !p || !submitOk;
-    if (!submitOk && live.checked) { live.checked = false; }
-
-    if (!name) {
-      showLiveHint('跑批必须指定平台：在上面的「目标平台」下拉里选一个（或先在左侧选一个平台）。');
-    } else if (!p) {
-      showLiveHint('平台「' + name + '」不在平台列表里，无法跑批；点「刷新」重读平台列表。');
-    } else if (!submitOk) {
-      showLiveHint('该平台本阶段不支持提交（capabilities.submit = false），只能干跑：跑批不会向平台提交任何内容。');
-    } else if (p.has_credentials === false) {
-      showLiveHint('提示：该平台尚未配置凭据，跑批会返回 no_credentials，需要先在 .env 中补全。');
-    } else {
-      hideLiveHint();
-    }
-    updateRunButton();
-  }
-
-  function updateRunButton() {
-    var btn = $('run-submit');
-    var live = $('run-live').checked && !$('run-live').disabled;
-    btn.classList.toggle('is-live', live);
-    btn.textContent = state.submitting
-      ? '触发中…'
-      : (live ? '开始跑批（真提交 · 不可撤销）' : '开始跑批（干跑）');
-    btn.disabled = state.submitting || !selectedRunPlatform();
-
-    var liveBadgeEl = $('live-badge');
-    if (live) {
-      liveBadgeEl.className = 'badge badge-live';
-      liveBadgeEl.textContent = '当前：真提交';
-    } else {
-      liveBadgeEl.className = 'badge badge-dry';
-      liveBadgeEl.textContent = '当前：干跑';
-    }
-    $('run-state').textContent = state.submitting ? '正在请求 /api/run …' : '';
-    renderTopbar();
-  }
-
-  function checkedKinds() {
-    var nodes = document.querySelectorAll('#run-form input[name="kind"]:checked');
-    var out = [];
-    for (var i = 0; i < nodes.length; i++) { out.push(nodes[i].value); }
-    return out;
-  }
-
-  /* 契约字段固定为这四个，不额外发明字段。 */
-  function buildRunPayload(platform, live, limit, kinds) {
-    return { platform: platform, live: live, limit: limit, kinds: kinds };
-  }
-
-  function onRunSubmit(ev) {
-    ev.preventDefault();
-    if (state.submitting) { return; }
-
-    var platform = selectedRunPlatform();
-    if (!platform) {
-      setProblem('run', '跑批必须明确指定平台：请在上面的「目标平台」下拉里选一个。', 'error');
-      return;
-    }
-    var live = $('run-live').checked && !$('run-live').disabled;
-    if (live && !canSubmit(platformByName(platform))) {
-      setProblem('run', '平台「' + platform + '」不支持提交（capabilities.submit = false），无法真提交，只能干跑。', 'error');
-      return;
-    }
-    if (live && !window.confirm('这会真的提交作业，不可撤销。\n\n确认以「真提交」模式跑一遍 ' + platform + '？')) {
-      return;
-    }
-
-    var limit = parseInt($('run-limit').value, 10);
-    if (!isFinite(limit) || limit < 0) { limit = 0; }
-
-    state.submitting = true;
-    updateRunButton();
-    clearProblem('run');
-
-    postJson('/api/run', buildRunPayload(platform, live, limit, checkedKinds())).then(function (body) {
-      var jobId = body && body.job_id;
-      showToast('已触发' + (live ? '真提交' : '干跑') + '跑批：' + platform +
-                (jobId ? '（' + jobId + '）' : ''));
-      if (jobId) {
-        trackJob(jobId);
-      } else {
-        setProblem('run', '服务响应里没有 job_id，无法跟踪任务进度。', 'warn');
-      }
-      loadJobs();
-    }).catch(function (e) {
-      setProblem('run', describeError(e, { platform: platform }),
-                 e.kind === 'busy' ? 'warn' : 'error');
-      if (e.kind === 'busy') {
-        /* 忙的时候直接接管正在跑的那个任务，别让界面停在原地。 */
-        loadJobs().then(resumeRunningJob);
-      }
-      if (e.kind === 'unknown_platform') { handleUnknownScope(e); }
-    }).then(function () {
-      state.submitting = false;
-      updateRunButton();
     });
   }
 
@@ -3856,8 +3689,8 @@
     syncOwnerHeaders();
     fillTable('runs-table', 'runs-body', 'runs-empty', rows,
       state.platform
-        ? '平台「' + platformLabel(state.platform) + '」还没有跑批记录。用「概览 · 触发跑批」发起一次干跑试试。'
-        : '还没有跑批记录。用「概览 · 触发跑批」发起一次干跑试试。');
+        ? '平台「' + platformLabel(state.platform) + '」还没有跑批记录。'
+        : '还没有跑批记录。');
   }
 
   function loadSubmissions() {
@@ -5371,7 +5204,6 @@
         resetActionPage('assignments');
         clearProblemsWithPrefix('scope:');
       }
-      syncRunPlatformOptions(true);
       syncAccountPlatformOptions(true);
       renderChrome();
       return loadPageData(true);
@@ -5959,25 +5791,6 @@
     if ($('llm-test')) { $('llm-test').addEventListener('click', testLlmConnection); }
     if ($('llm-clear-key')) { $('llm-clear-key').addEventListener('click', clearLlmKey); }
 
-    $('run-form').addEventListener('submit', onRunSubmit);
-    $('run-platform').addEventListener('change', function () { applyRunConstraints(); });
-
-    /* live 打开必须二次确认；取消则回到关闭状态。 */
-    $('run-live').addEventListener('change', function () {
-      var live = $('run-live');
-      if (live.checked && !window.confirm(LIVE_CONFIRM)) {
-        live.checked = false;
-      }
-      updateRunButton();
-    });
-
-    $('run-limit').addEventListener('change', function () {
-      var node = $('run-limit');
-      var v = parseInt(node.value, 10);
-      if (!isFinite(v) || v < 0) { node.value = '0'; }
-      if (v > 500) { node.value = '500'; }   // 契约：limit 钳制到 1..500
-    });
-
     /* 课程 / 作业：进入页面自动加载一次（只读），也能手动重载。 */
     $('courses-reload').addEventListener('click', function () { loadActionPage('courses'); });
     $('assignments-reload').addEventListener('click', function () {
@@ -6220,7 +6033,6 @@
   function boot() {
     window.__kedaibiao = true;
     bindEvents();
-    $('run-live').checked = false;   // 契约：live 默认必须关闭
 
     var r = parseHash();
     state.page = r.page;
@@ -6236,7 +6048,6 @@
     renderDrawer();
     renderCaptureCmds();
     renderLlm();
-    applyRunConstraints();
 
     /* 默认停在登录页：有会话才由 enterConsole 打开控制台。 */
     $('app').hidden = true;
