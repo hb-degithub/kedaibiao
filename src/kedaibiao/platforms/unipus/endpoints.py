@@ -116,9 +116,18 @@ MODE_SEGMENT: Final[str] = "default"
 LOGIN_AES_KEY_HEX: Final[str] = "8AD70B641C024C7ADA2ECD082EC0334F"
 LOGIN_AES_IV_HEX: Final[str] = "0102030405060708090A0B0C0D0E0F10"
 
-#: annotator token：客户端自铸的 HS256 JWT
-ANNOTATOR_SIGNING_SECRET: Final[str] = "example-annotator-signing-secret-0001"
-ANNOTATOR_ISSUER: Final[str] = "example-annotator-issuer"
+#: annotator token：客户端自铸的 HS256 JWT。
+#:
+#: ⚠️ **常量必须取平台当前前端产物里的值，不能信参考实现。** 2026-10-20 联调实测：
+#: ``Yunlk/uai-core``（2026-09 快照）那组 ``example-annotator-*`` 常量已被平台轮换，
+#: 用它签出来的 token 打 ``progress/v2`` / ``answer`` 一律 **401**（HTML
+#: ``/unAuthenticated``）。当前值取自 U校园教程学习前端产物
+#: ``unicloud.cdn.unipus.cn/tutorial/pc/55-*.js``（2026-10-20 抓取）；同处可见
+#: payload 形状：``{open_id,name,email,administrator,exp,iss,aud}``、
+#: ``exp = Date.now() + 31536e6``（≈1 年）。换常量后先打一次 ``progress/v2``
+#: 验证 —— 目录/内容接口现在也校验鉴权，但**进度接口失败形态是 401，最不容易误判**。
+ANNOTATOR_SIGNING_SECRET: Final[str] = "a824b379f126b8b7aa5e33dee83fb0a05aa7462c"
+ANNOTATOR_ISSUER: Final[str] = "c4f772063dcfa98e9c50"
 ANNOTATOR_AUDIENCE: Final[str] = "edx.unipus.cn"
 #: exp = 当前毫秒 + 31536000000（≈1 年）
 ANNOTATOR_TTL_MS: Final[int] = 31_536_000_000

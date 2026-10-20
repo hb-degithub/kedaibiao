@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import http.cookiejar
 from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
@@ -41,7 +42,11 @@ from kedaibiao.platforms.base import (
 from kedaibiao.platforms.unipus import parsing, submit as submit_mod
 from kedaibiao.platforms.unipus import endpoints
 from kedaibiao.platforms.unipus.client import UnipusClient
-from kedaibiao.platforms.unipus.errors import UnipusError, UnipusProtocolError
+from kedaibiao.platforms.unipus.errors import (
+    UnipusCaptchaRequired,
+    UnipusError,
+    UnipusProtocolError,
+)
 from kedaibiao.platforms.unipus.parsing import (
     SCOPE_UCONTENT_LEAFS,
     BookshelfBook,
@@ -99,6 +104,9 @@ class UnipusAdapter(PlatformAdapter):
         self._client: UnipusClient | None = None
         self._timeout = timeout
         self._clock = clock
+        #: cookie 落盘位置（由 ``runtime.make_adapter`` 注入）——浏览器求解
+        #: 验证码后要把 cookie 写回同一个文件，下次才能免登录。
+        self._cookie_file: str | None = None
 
     # -- 客户端 -----------------------------------------------------------
 
@@ -121,13 +129,145 @@ class UnipusAdapter(PlatformAdapter):
     # -- 生命周期 ---------------------------------------------------------
 
     async def login(self, credentials: Credentials) -> bool:
+        """登录。SSO 要验证码时**自动退回浏览器求解**。
+
+        两条路径：
+
+        - 风控没触发 → 纯 HTTP 三步登录（快）；
+        - 风控要验证码（业务码 1506）→ 浏览器打开 SSO、解极验滑块、注入登录，
+          成功后把会话 cookie 灌进当前 HttpClient，再用 cookie 里的 ``jwt``
+          补齐门户会话。``login_via_browser`` 与 iTEST 共用，已实测可用。
+        """
         if not credentials.username:
             raise UnipusProtocolError("U校园登录需要非空用户名")
-        return await self.client().login(credentials.username, credentials.password)
+        try:
+            return await self.client().login(credentials.username, credentials.password)
+        except UnipusCaptchaRequired:
+            self.log.info("SSO 要求验证码（1506），退回浏览器求解")
+        return await self._login_via_browser(credentials)
+
+    async def _login_via_browser(self, credentials: Credentials) -> bool:
+        """浏览器触发 + 极验求解 + 注入登录；成功后补齐门户会话。"""
+        from kedaibiao.platforms.unipus.geetest.browser import login_via_browser
+
+        try:
+            result = login_via_browser(
+                platform="unipus",
+                username=credentials.username,
+                password=credentials.password,
+                cookie_file=self._cookie_file,
+                on_event=self.log.info,
+            )
+        except Exception as exc:  # noqa: BLE001 - 浏览器/驱动异常一律翻成登录失败
+            self.log.warning("浏览器求解登录异常: %s: %s", type(exc).__name__, exc)
+            return False
+        if not result.ok:
+            self.log.warning("浏览器求解登录失败: %s", result.message or "未返回原因")
+            return False
+        self._adopt_cookies(result.cookies)
+        # 浏览器会话里的 jwt cookie 就是门户 JWT，直接用它补齐会话
+        if await self._bootstrap_session_from_cookies():
+            self.log.info("浏览器登录成功，门户会话已补齐: %s", self.client().session.describe())
+            return True
+        # 兜底：TGC 已建立，重走纯 HTTP 登录（通常不再弹验证码）
+        try:
+            return await self.client().login(credentials.username, credentials.password)
+        except UnipusCaptchaRequired:
+            self.log.warning("浏览器登录后重试仍要求验证码")
+            return False
+
+    def _cookie_value(self, name: str) -> str:
+        """从当前 cookie 罐里取一个 cookie 值；取不到返回空串。"""
+        transport = getattr(self.ctx.client(), "transport", None)
+        jar = getattr(transport, "cookies", None)
+        if jar is None:
+            return ""
+        try:
+            items = list(jar)
+        except TypeError:
+            return ""
+        for cookie in items:
+            if getattr(cookie, "name", "") == name:
+                value = getattr(cookie, "value", "")
+                if value:
+                    return str(value)
+        return ""
+
+    def _adopt_cookies(self, cookies: Sequence[dict[str, Any]]) -> int:
+        """把浏览器拿到的 cookie 灌进当前 HttpClient 的 cookie 罐。
+
+        注意 ``urllib`` 的 ``CookieJar`` **没有** ``set()``（iTEST 那份同款代码会
+        静默跳过、等于没灌），所以这里手工造 ``http.cookiejar.Cookie``。
+        返回成功灌入的条数，方便排查。
+        """
+        transport = getattr(self.ctx.client(), "transport", None)
+        jar = getattr(transport, "cookies", None)
+        if jar is None or not cookies:
+            return 0
+        adopted = 0
+        for item in cookies:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if not name:
+                continue
+            domain = str(item.get("domain") or ".unipus.cn")
+            try:
+                jar.set_cookie(
+                    http.cookiejar.Cookie(
+                        version=0,
+                        name=name,
+                        value=str(item.get("value") or ""),
+                        port=None,
+                        port_specified=False,
+                        domain=domain,
+                        domain_specified=bool(item.get("domain")),
+                        domain_initial_dot=domain.startswith("."),
+                        path=str(item.get("path") or "/"),
+                        path_specified=True,
+                        secure=bool(item.get("secure")),
+                        expires=item.get("expires"),
+                        discard=False,
+                        comment=None,
+                        comment_url=None,
+                        rest={},
+                    )
+                )
+                adopted += 1
+            except Exception:  # noqa: BLE001 - 单条 cookie 坏掉不影响其它
+                self.log.debug("灌入 cookie 失败: %s", name, exc_info=True)
+        return adopted
+
+    async def _bootstrap_session_from_cookies(self) -> bool:
+        """用 cookie 罐里的 ``jwt`` 恢复门户会话。
+
+        为什么需要：账号库不存密码、会话快照也可能没落盘；但 SSO 会话里
+        ``.unipus.cn`` 的 ``jwt`` cookie 本身就是门户 JWT。拿它打一次用户信息
+        接口就能把 ``open_id``/``school`` 补齐 —— 这是「只有 cookie」时的兜底。
+        """
+        jwt = self._cookie_value("jwt")
+        if not jwt:
+            return False
+        client = self.client()
+        client.session.portal_token = jwt
+        try:
+            info = await client.fetch_user_info()
+        except UnipusError as exc:
+            self.log.info("cookie 里的 jwt 不被门户接受（%s），需要重新登录", exc)
+            client.session.clear()
+            return False
+        client.apply_user_info(info)
+        return True
 
     async def is_logged_in(self) -> bool:
+        """会话是否有效；没有内存会话时先尝试用 cookie 里的 jwt 恢复。"""
         if self._client is None:
-            return False
+            client = self.client()
+            if not client.session.has_portal_token and not await self._bootstrap_session_from_cookies():
+                return False
+            return await client.is_logged_in()
+        if not self._client.session.has_portal_token:
+            await self._bootstrap_session_from_cookies()
         return await self._client.is_logged_in()
 
     # -- 会话持久化 --------------------------------------------------------
@@ -477,15 +617,18 @@ def _to_assignment(
 
 
 def _to_question(item: parsing.ContentQuestion) -> Question:
+    #: 旧版规格（U1）说题面不可得；2026-10-20 用真实内容样本联调后已能取到：
+    #: ``children[].quesText`` 是子题题干（HTML），``children[].options[]`` 是选项。
+    #: 取不到时才退化成「题干不可得」，指纹回落到平台题目 ID。
+    stem_unavailable = not item.stem and not item.options
     return Question(
-        # 题面在协议规格里不可得（U1）：留空 + raw 保留解密后的原文
-        stem="",
+        stem=item.stem,
         type=item.core_type,
-        options=[],
+        options=list(item.options),
         remote_id=item.instance_id,
         score=None,  # 规格没有题目分值字段
         raw={
-            STEM_UNAVAILABLE_KEY: True,
+            STEM_UNAVAILABLE_KEY: stem_unavailable,
             "unipus_type": item.unipus_type,
             "item_count": item.item_count,
             "child_count": item.child_count,
@@ -493,6 +636,9 @@ def _to_question(item: parsing.ContentQuestion) -> Question:
             "question_type": item.question_type,
             "category": item.category,
             "media_types": list(item.media_types),
+            # 提交 progress 的键必须用 contents 下标，不是 type（踩过的坑）
+            "media_indexes": list(item.media_indexes),
+            "children": [dict(child) for child in item.children],
             "item": item.item,
             "inner": item.inner,
         },

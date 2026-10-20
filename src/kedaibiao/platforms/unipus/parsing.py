@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import html as _html
 import json
 import re
 from dataclasses import dataclass, field
@@ -25,6 +26,24 @@ from kedaibiao.core.models import QuestionType
 from kedaibiao.platforms.unipus.crypto import decrypt_unipus_cipher
 from kedaibiao.platforms.unipus.endpoints import CIPHER_PREFIX
 from kedaibiao.platforms.unipus.errors import UnipusProtocolError
+
+#: 题面/选项文本里的标签：只做「去标签 + 解实体 + 收敛空白」，不引入解析器。
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_html(value: Any) -> str:
+    """把平台给的富文本题面/选项转成纯文本。
+
+    2026-10-20 实测：内容的 ``quesText``/``options[].text``/``direction.text``
+    都是 HTML 片段（``<p>…</p>``、内嵌 ``<img>``）。题库指纹与作答都只认纯文本，
+    所以这里统一去标签、解 HTML 实体、收敛空白。
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    text = _TAG_RE.sub(" ", text)
+    text = _html.unescape(text)
+    return " ".join(text.split())
 
 # --------------------------------------------------------------------------
 # 基础类型转换
@@ -383,16 +402,37 @@ class BookshelfBook:
 
 
 def _bookshelf_class_entries(payload: dict[str, Any], *, what: str) -> list[dict[str, Any]]:
-    """书架根可能是 ``data`` 或 ``value``，班级列表键有多个候选（规格第 6.4 节）。"""
+    """取书架里的条目，兼容**两种**真实结构。
+
+    ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==
+    结构 A（当前线上，2026-10-20 实测）：``value.groups`` 是一个 dict，
+    值为教材列表，键有 ``CLASS_COURSE`` / ``PERSONAL`` / ``EXPIRED``；
+    列表元素**本身就是教材**（带 ``instanceId``/``resourceId``/``activation``）。
+
+    结构 B（规格第 6.4 节记录的旧形状）：``data|value.<classList|classes|courseList>``
+    是「班级节点」列表，每个班级节点里再挂 ``courseResourceList``。
+    ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==  ==
+    """
     for root_key in ("data", "value"):
         root = payload.get(root_key)
         if not isinstance(root, dict):
             continue
+        groups = root.get("groups")
+        if isinstance(groups, dict):
+            # 结构 A：把三个分组里的教材摊平；元素本身就是教材节点
+            books: list[dict[str, Any]] = []
+            for items in groups.values():
+                if isinstance(items, list):
+                    books.extend(item for item in items if isinstance(item, dict))
+            if books:
+                return books
         for list_key in ("classList", "classes", "courseList"):
             value = root.get(list_key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
-    raise UnipusProtocolError(f"{what} 里找不到班级列表（data/value 下的 classList/classes/courseList）")
+    raise UnipusProtocolError(
+        f"{what} 里找不到班级/教材列表（value.groups，或 data/value 下的 classList/classes/courseList）"
+    )
 
 
 def _parse_activation(value: Any, *, field_name: str) -> bool | None:
@@ -422,35 +462,44 @@ def _parse_activation(value: Any, *, field_name: str) -> bool | None:
 
 
 def parse_bookshelf(body: Any) -> tuple[BookshelfBook, ...]:
-    """解析 ``/api/cmgt/course/my/bookshelf``（不含进度）。"""
+    """解析 ``/api/cmgt/course/my/bookshelf``（不含进度）。
+
+    兼容两种结构（见 :func:`_bookshelf_class_entries`）：节点**本身**是教材时
+    直接取；节点是班级容器时再往 ``courseResourceList`` 里找。
+    """
     payload = as_dict(body, what="书架响应")
     books: list[BookshelfBook] = []
     for class_node in _bookshelf_class_entries(payload, what="书架响应"):
-        for key in TEXTBOOK_LIST_KEYS:
-            entries = class_node.get(key)
-            if not isinstance(entries, list):
+        candidates: list[dict[str, Any]] = []
+        if _looks_like_textbook(class_node):
+            # 结构 A：groups 的分组列表元素本身就是教材
+            candidates.append(class_node)
+        else:
+            for key in TEXTBOOK_LIST_KEYS:
+                entries = class_node.get(key)
+                if isinstance(entries, list):
+                    candidates.extend(item for item in entries if isinstance(item, dict))
+        for book in candidates:
+            if not _looks_like_textbook(book):
                 continue
-            for book in entries:
-                if not _looks_like_textbook(book):
-                    continue
-                books.append(
-                    BookshelfBook(
-                        course_instance_id=as_text(
-                            book.get("instanceId") or book.get("courseInstanceId") or "",
-                            field_name="instanceId",
-                        ),
-                        resource_id=as_text(book.get("resourceId"), field_name="resourceId"),
-                        book_name=as_text(
-                            book.get("name") or book.get("resourceName") or "",
-                            field_name="教材名",
-                        ),
-                        activated=_parse_activation(
-                            book.get("activation") if "activation" in book else None,
-                            field_name="activation",
-                        ),
-                        raw=dict(book),
-                    )
+            books.append(
+                BookshelfBook(
+                    course_instance_id=as_text(
+                        book.get("instanceId") or book.get("courseInstanceId") or "",
+                        field_name="instanceId",
+                    ),
+                    resource_id=as_text(book.get("resourceId"), field_name="resourceId"),
+                    book_name=as_text(
+                        book.get("name") or book.get("resourceName") or "",
+                        field_name="教材名",
+                    ),
+                    activated=_parse_activation(
+                        book.get("activation") if "activation" in book else None,
+                        field_name="activation",
+                    ),
+                    raw=dict(book),
                 )
+            )
     return tuple(books)
 
 
@@ -671,7 +720,21 @@ MEDIA_CONTENT_TYPES: frozenset[int] = frozenset({1, 2})
 
 @dataclass(slots=True, frozen=True)
 class ContentQuestion:
-    """内容侧一道题（规格第 7.1 节的字段是解析实现实际读取的全部）。"""
+    """内容侧一道题（一个平台 ``instanceId`` = 一个「题组」）。
+
+    2026-10-20 实测（真实内容样本，见 ``data/recon/unipus/``）：
+    ``inner.children[]`` 才是**子题**，每个子题自带 ``quesText``（HTML 题面）
+    与 ``options[]``（``{name,text,value}``）；``inner.contents[]`` 是媒体项
+    （type 1=音频 / 2=视频 / 4=正文 …）。
+
+    因此本类同时保留两种粒度：
+
+    - ``stem`` / ``options``：给 ``core.Question`` 用的**首个可读题面**（子题
+      题面按序拼接，取不到时退到 ``direction.text``）；
+    - ``children``：子题原始数组，提交时 ``answer.children`` 必须按它对齐；
+    - ``media_indexes``：媒体项在 ``contents`` 里的**下标**（提交 ``progress``
+      的键就是这个下标，不是 type！）。
+    """
 
     instance_id: str
     unipus_type: str
@@ -681,6 +744,14 @@ class ContentQuestion:
     question_type: str = ""
     category: int | None = None
     media_types: tuple[int, ...] = ()
+    #: 首个可读题面（已去 HTML）；子题多时按序用换行拼接
+    stem: str = ""
+    #: 首个子题/题目的选项文本（已去 HTML）；非选择题为空
+    options: tuple[str, ...] = ()
+    #: 子题原始数组（提交要用）
+    children: tuple[dict[str, Any], ...] = ()
+    #: 媒体项在 ``contents`` 里的下标（提交 ``progress`` 的键）
+    media_indexes: tuple[int, ...] = ()
     inner: dict[str, Any] = field(default_factory=dict)
     item: dict[str, Any] = field(default_factory=dict)
 
@@ -743,15 +814,21 @@ def parse_content(body: Any) -> tuple[ContentQuestion, ...]:
         inner = loads_json_field(item["content"], what=f"题目 {instance_id} 的 content")
         inner = as_dict(inner, what=f"题目 {instance_id} 的 content")
         children = inner.get("children")
+        child_list = [child for child in children if isinstance(child, dict)] if isinstance(children, list) else []
         child_count = len(children) if isinstance(children, list) else 0
         contents = inner.get("contents")
         media_types: list[int] = []
+        media_indexes: list[int] = []
         if isinstance(contents, list):
-            for entry in contents:
-                if isinstance(entry, dict):
-                    entry_type = as_optional_int(entry.get("type"), field_name="contents[].type")
-                    if entry_type is not None:
-                        media_types.append(entry_type)
+            for media_index, entry in enumerate(contents):
+                if not isinstance(entry, dict):
+                    continue
+                entry_type = as_optional_int(entry.get("type"), field_name="contents[].type")
+                if entry_type is None:
+                    continue
+                media_types.append(entry_type)
+                if entry_type in MEDIA_CONTENT_TYPES:
+                    media_indexes.append(media_index)
         reply_type = as_text(
             inner.get("replyType") or item.get("replyType") or "", field_name="replyType"
         )
@@ -768,6 +845,27 @@ def parse_content(body: Any) -> tuple[ContentQuestion, ...]:
             category=category,
             child_count=child_count,
         )
+        # 题面：优先子题 quesText（多子题按序拼接），退到 direction.text
+        sub_stems = [strip_html(child.get("quesText")) for child in child_list]
+        stem = "\n".join(text for text in sub_stems if text)
+        if not stem:
+            direction = inner.get("direction")
+            if isinstance(direction, dict):
+                stem = strip_html(direction.get("text") or direction.get("pcText") or "")
+        # 选项：取第一个带 options 的子题（选择题的子题共享选项集）
+        option_texts: list[str] = []
+        option_sources = child_list or [inner]
+        for candidate in option_sources:
+            raw_options = candidate.get("options")
+            if isinstance(raw_options, list) and raw_options:
+                for option in raw_options:
+                    if not isinstance(option, dict):
+                        continue
+                    text = strip_html(option.get("text"))
+                    if not text:
+                        text = strip_html(option.get("name"))
+                    option_texts.append(text)
+                break
         questions.append(
             ContentQuestion(
                 instance_id=instance_id,
@@ -778,6 +876,10 @@ def parse_content(body: Any) -> tuple[ContentQuestion, ...]:
                 question_type=question_type,
                 category=category,
                 media_types=tuple(media_types),
+                stem=stem,
+                options=tuple(option_texts),
+                children=tuple(child_list),
+                media_indexes=tuple(media_indexes),
                 inner=inner,
                 item=dict(item),
             )

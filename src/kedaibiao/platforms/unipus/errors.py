@@ -78,6 +78,16 @@ class UnipusApiError(UnipusError):
         self.payload = payload
 
 
+class UnipusCaptchaRequired(UnipusApiError):
+    """SSO 要求图片/滑块验证码（业务码 ``1506``）。
+
+    **这不是「凭据错了」**：密码可能是对的，只是风控要求先过验证码。
+    适配器捕获它之后退回「浏览器触发 + 极验求解 + 注入登录」那条已实测链路
+    （与 iTEST 共用 :mod:`kedaibiao.platforms.unipus.geetest.browser`）。
+    把它和普通业务失败分开，是为了不把「需要验证码」显示成「密码不对」。
+    """
+
+
 class UnipusRateLimited(UnipusApiError, TransportError):
     """撞上限流码（``600001`` / ``600002``）。
 

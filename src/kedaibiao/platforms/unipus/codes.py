@@ -136,6 +136,25 @@ def login_page_message(url: str) -> str:
     )
 
 
+#: SSO 风控要求图片/滑块验证码时返回的业务码（2026-10-20 实测）
+CAPTCHA_REQUIRED_CODE: int = 1506
+
+
+def is_captcha_required(body: Any) -> bool:
+    """响应是不是「需要验证码」（``code == 1506``）。
+
+    只认 SSO 登录这一步；但判定放在这里是因为「错误体长什么样」属于本模块的职责。
+    数字/字符串 ``"1506"`` 都接受 —— 平台的 code 类型并不稳定。
+    """
+    code = result_code(body)
+    if isinstance(code, bool) or code is None:
+        return False
+    try:
+        return int(str(code).strip()) == CAPTCHA_REQUIRED_CODE
+    except (TypeError, ValueError):
+        return False
+
+
 # --------------------------------------------------------------------------
 # 按应用分派（客户端只传"这个接口属于哪个应用/哪套判定"）
 # --------------------------------------------------------------------------

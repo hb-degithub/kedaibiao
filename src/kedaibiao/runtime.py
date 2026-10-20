@@ -211,6 +211,13 @@ class Runtime:
         try:
             return await self.pipeline.run(adapter, creds)
         finally:
+            # 会话本身（bearer/JWT 等 cookie 之外的部分）也要落盘：账号库不存密码，
+            # 只存 cookie 的话，下一次 CLI 跑批又会因为没有门户令牌而要求重新登录。
+            if self.cookie_file:
+                try:
+                    save_adapter_session(adapter, self.cookie_file)
+                except Exception:  # noqa: BLE001 - 落盘失败不影响本次结果
+                    log.debug("会话落盘失败", exc_info=True)
             await adapter.close()
             self._persist_cookies(adapter)
 

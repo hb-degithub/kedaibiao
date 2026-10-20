@@ -32,6 +32,7 @@ from kedaibiao.platforms.unipus.endpoints import UnipusApp
 from kedaibiao.platforms.unipus.errors import (
     UnipusApiError,
     UnipusAuthError,
+    UnipusCaptchaRequired,
     UnipusError,
     UnipusHttpError,
     UnipusNotLoggedIn,
@@ -205,6 +206,11 @@ class UnipusClient:
     def _business_error(self, app: UnipusApp, url: str, document: Any) -> UnipusApiError:
         message = codes.extract_message(document)
         code = codes.result_code(document)
+        if codes.is_captcha_required(document):
+            # 1506 不是「凭据错」：上层要退回浏览器求解，所以单独成类
+            return UnipusCaptchaRequired(
+                app=app.value, url=url, message=message, code=code, payload=document
+            )
         if codes.is_rate_limited(document):
             return UnipusRateLimited(
                 app=app.value, url=url, message=message, code=code, payload=document
@@ -237,6 +243,9 @@ class UnipusClient:
             )
         except UnipusRateLimited:
             # 限流不是"凭据被拒"：上抛给调度层退避重试
+            raise
+        except UnipusCaptchaRequired:
+            # 风控要验证码：上抛给适配器退回浏览器求解，**不要**当成密码错误
             raise
         except UnipusApiError as exc:
             # 不打印凭据，只打印平台的业务消息

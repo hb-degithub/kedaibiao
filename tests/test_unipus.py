@@ -150,7 +150,7 @@ def encrypt_block_b64_for_test(open_id: str, now_ms: int) -> str:
     )
     signing_input = f"{header}.{payload}"
     signature = hmac.new(
-        b"example-annotator-signing-secret-0001",
+        endpoints.ANNOTATOR_SIGNING_SECRET.encode("ascii"),
         signing_input.encode("ascii"),
         hashlib.sha256,
     ).digest()
@@ -649,7 +649,7 @@ class TestAnnotatorToken(unittest.TestCase):
             text,
             '{"open_id":"900001","name":"","email":"","administrator":false,'
             f'"exp":{NOW_MS + endpoints.ANNOTATOR_TTL_MS},'
-            '"iss":"example-annotator-issuer","aud":"edx.unipus.cn"}',
+            f'"iss":"{endpoints.ANNOTATOR_ISSUER}","aud":"{endpoints.ANNOTATOR_AUDIENCE}"}}',
         )
         self.assertEqual(
             [key for key in json.loads(text)],
@@ -667,7 +667,7 @@ class TestAnnotatorToken(unittest.TestCase):
             crypto.annotator_payload_json("abc", now_ms=0),
             '{"open_id":"abc","name":"","email":"","administrator":false,'
             f'"exp":{endpoints.ANNOTATOR_TTL_MS},'
-            '"iss":"example-annotator-issuer","aud":"edx.unipus.cn"}',
+            f'"iss":"{endpoints.ANNOTATOR_ISSUER}","aud":"{endpoints.ANNOTATOR_AUDIENCE}"}}',
         )
 
     def test_empty_open_id_raises(self) -> None:
