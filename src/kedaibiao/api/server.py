@@ -454,6 +454,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 interval=payload.get("interval") or 20,
                 max_groups=payload.get("max_groups") or 60,
                 subjective_placeholder=str(payload.get("subjective_placeholder") or ""),
+                llm_subjective=bool(payload.get("llm_subjective", False)),
                 mode=str(payload.get("mode") or ""),
                 viewer=viewer,
             ))

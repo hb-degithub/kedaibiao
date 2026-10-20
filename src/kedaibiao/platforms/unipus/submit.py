@@ -92,6 +92,10 @@ OBJECTIVE_TYPES: frozenset[str] = frozenset(
 #: 平台题型名（``parsing.classify_question`` 的产物）；缺 ``unipus_type`` 时的兜底
 _KIND_STUDY = "study"
 _KIND_OBJECTIVE = "objective"
+#: 需要「自拟内容」的题型（服务端不给标准答案）—— 翻译/写作/主观/讨论
+SUBJECTIVE_KINDS: frozenset[str] = frozenset(
+    {"subjective", "discussion", "translation", "writing", "text-area", "essay"}
+)
 
 
 class SubmitPayloadError(ValueError):
@@ -363,6 +367,7 @@ def build_ques_data(
     answer_version: int = 1,
     self_report_scores: bool = False,
     subjective_placeholder: str = "",
+    answer_overrides: dict[str, list[str]] | None = None,
     blockers: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """按题序拼 ``quesDatas``。
@@ -410,6 +415,22 @@ def build_ques_data(
                     blockers.append(reason + "；该组不可提交")
 
         children = tuple(_answers_of_child(standard, slot) for slot in range(slots))
+        # 自拟内容（翻译/写作）：按 instanceId 覆盖逐子题文本。
+        # 只在服务端没有标准答案、且调用方给了文本时生效。
+        override = (answer_overrides or {}).get(_instance_id(question))
+        if override:
+            texts = [str(item) for item in override if str(item).strip()]
+            if texts and not any(children):
+                if kind in SUBJECTIVE_KINDS:
+                    children = tuple(
+                        [texts[slot]] if slot < len(texts) else [""]
+                        for slot in range(slots)
+                    )
+                else:
+                    children = tuple(
+                        [texts[slot]] if slot < len(texts) else []
+                        for slot in range(slots)
+                    )
         answer_obj = build_answer_object(
             children=children,
             media_indexes=_media_indexes(question),
@@ -503,6 +524,7 @@ def build_submit_plan(
     answer_version: int = 1,
     self_report_scores: bool = False,
     subjective_placeholder: str = "",
+    answer_overrides: dict[str, list[str]] | None = None,
     is_completed: Sequence[bool] | None = None,
     third_party_judges: Sequence[Any] | None = None,
 ) -> SubmitPlan:
@@ -539,6 +561,7 @@ def build_submit_plan(
         standard_answers=standard_answers,
         answer_version=answer_version,
         self_report_scores=self_report_scores,
+        answer_overrides=answer_overrides,
         subjective_placeholder=subjective_placeholder,
         blockers=blockers,
     )
@@ -638,6 +661,8 @@ def build_submit_plan(
                 "stem": (getattr(question, "stem", "") or "")[:200],
                 "answer": _comma_join(_all_answers(standard) if standard else ()),
                 "has_standard_answer": bool(standard and _all_answers(standard)),
+                "needs_answer": kind in SUBJECTIVE_KINDS,
+                "wants_text": kind in SUBJECTIVE_KINDS,
                 "warnings": row_warnings,
             }
         )
@@ -679,10 +704,10 @@ def build_submit_plan(
             "组内有口语/角色扮演类题目：默认不自报分数（self_report_scores=False），"
             "这些题只能拿完成度、拿不到分数；需要时显式打开（合规风险自担）"
         )
-    if has_subjective_without_answer:
+    if has_subjective_without_answer and not answer_overrides and not subjective_placeholder:
         warnings.append(
             "组内有主观题且没有服务端标准答案：children[].value 发空串，"
-            "完成度可能为 0；如需占位文本请显式传 subjective_placeholder"
+            "完成度可能为 0；可开「大模型作答」或显式传 subjective_placeholder"
             "（参考实现用 [已提交]，但那不是学生写的，必须对外明示）"
         )
     if blockers:

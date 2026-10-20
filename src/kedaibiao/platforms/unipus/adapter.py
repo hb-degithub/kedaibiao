@@ -512,13 +512,15 @@ class UnipusAdapter(PlatformAdapter):
 
     # -- 控制台的原生提交链路（native_plan / native_submit）-----------------
 
-    async def native_plan(self, assignment_id: str) -> dict[str, Any]:
+    async def native_plan(
+        self, assignment_id: str, *, answer_overrides: dict[str, list[str]] | None = None
+    ) -> dict[str, Any]:
         """干跑：把「打算交什么」渲染成控制台能直接展示的 dict。**不发写请求。**
 
         只读 GET 内容 + 标准答案，然后做与真实提交**完全相同**的构造与校验
         （同一份逻辑，见 :meth:`_build_plan`）。
         """
-        plan = await self._build_plan(assignment_id)
+        plan = await self._build_plan(assignment_id, answer_overrides=answer_overrides)
         data = self._plan_summary(plan, answers=[])
         data.update(
             {
@@ -727,12 +729,14 @@ class UnipusAdapter(PlatformAdapter):
             "server_state": state.server_state,
         }
 
-    async def native_submit(self, assignment_id: str) -> dict[str, Any]:
+    async def native_submit(
+        self, assignment_id: str, *, answer_overrides: dict[str, list[str]] | None = None
+    ) -> dict[str, Any]:
         """真交：内容 → 答案 → 构造/校验 → POST → 回读 ``progress/v2``。
 
         不可逆。服务层只在人工确认后才调到这里；本地校验不通过时**拒绝发出**。
         """
-        plan = await self._build_plan(assignment_id)
+        plan = await self._build_plan(assignment_id, answer_overrides=answer_overrides)
         if plan.blockers:
             raise NotSupportedError(
                 "本地校验未通过，拒绝提交（未发出写请求）：" + "；".join(plan.blockers)
@@ -792,7 +796,9 @@ class UnipusAdapter(PlatformAdapter):
 
     # -- 提交辅助（submit / native_* 共用同一份构造逻辑）-------------------
 
-    async def _build_plan(self, assignment_id: str) -> submit_mod.SubmitPlan:
+    async def _build_plan(
+        self, assignment_id: str, *, answer_overrides: dict[str, list[str]] | None = None
+    ) -> submit_mod.SubmitPlan:
         """内容 + 标准答案 → 提交计划（**只读**，不发写请求）。"""
         if getattr(self.ctx, "http", None) is None:
             raise NotSupportedError(
@@ -810,6 +816,7 @@ class UnipusAdapter(PlatformAdapter):
             standard_answers=standard,
             self_report_scores=self.self_report_scores,
             subjective_placeholder=self.subjective_placeholder,
+            answer_overrides=answer_overrides,
         )
 
     def _plan_summary(

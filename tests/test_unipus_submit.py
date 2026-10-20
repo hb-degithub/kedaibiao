@@ -1010,3 +1010,73 @@ class TestNativeAssignmentStateFullMarks(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["total_items"], 0)
         self.assertFalse(state["full_marks"])
         self.assertTrue(state["finished"])
+
+
+class TestAnswerOverrides(unittest.TestCase):
+    """翻译/写作：服务端没有标准答案时，用自拟内容覆盖（大模型路径）。"""
+
+    def _question(self, *, reply_type: str = "text-area", child_count: int = 1):
+        from kedaibiao.platforms.unipus.parsing import ContentQuestion
+
+        inner = {
+            "replyType": reply_type,
+            "type": "basic",
+            "category": 0,
+            "children": [{"quesText": f"<p>第 {i} 题</p>"} for i in range(child_count)],
+            "contents": [],
+        }
+        return ContentQuestion(
+            instance_id="1234567890123456789",
+            unipus_type="subjective",
+            item_count=1,
+            child_count=child_count,
+            reply_type=reply_type,
+            inner=inner,
+        )
+
+    def test_override_fills_subjective_children(self) -> None:
+        from kedaibiao.platforms.unipus import submit as S
+
+        plan = S.build_submit_plan(
+            course_id="course-v2:x", group_id="g1", open_id="o1",
+            questions=[self._question()],
+            standard_answers=None,
+            answer_overrides={"1234567890123456789": ["Beijing is my hometown."]},
+        )
+        data = plan.payload["quesDatas"][0]
+        body = json.loads(data["answer"])
+        self.assertEqual(body["children"][0]["value"], "Beijing is my hometown.")
+        self.assertTrue(body["progress"].get("reply"))
+
+    def test_override_splits_multiple_children(self) -> None:
+        from kedaibiao.platforms.unipus import submit as S
+
+        plan = S.build_submit_plan(
+            course_id="course-v2:x", group_id="g1", open_id="o1",
+            questions=[self._question(child_count=2)],
+            standard_answers=None,
+            answer_overrides={"1234567890123456789": ["first", "second"]},
+        )
+        body = json.loads(plan.payload["quesDatas"][0]["answer"])
+        self.assertEqual([c["value"] for c in body["children"]], ["first", "second"])
+
+    def test_no_override_keeps_empty(self) -> None:
+        from kedaibiao.platforms.unipus import submit as S
+
+        plan = S.build_submit_plan(
+            course_id="course-v2:x", group_id="g1", open_id="o1",
+            questions=[self._question()],
+            standard_answers=None,
+        )
+        body = json.loads(plan.payload["quesDatas"][0]["answer"])
+        self.assertEqual(body["children"][0]["value"], "")
+
+    def test_plan_rows_expose_needs_answer(self) -> None:
+        from kedaibiao.platforms.unipus import submit as S
+
+        plan = S.build_submit_plan(
+            course_id="course-v2:x", group_id="g1", open_id="o1",
+            questions=[self._question()],
+            standard_answers=None,
+        )
+        self.assertTrue(plan.rows[0]["needs_answer"])

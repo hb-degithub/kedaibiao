@@ -6523,6 +6523,7 @@
       max_groups: parseInt(($('brush-max-groups') && $('brush-max-groups').value) || '60', 10) || 60,
       subjective_placeholder: ($('brush-placeholder') && $('brush-placeholder').checked)
         ? '[已提交]' : '',
+      llm_subjective: !!($('brush-llm') && $('brush-llm').checked),
       interval: 20
     };
     var what = mode === 'submit' ? '提交未完成任务'
@@ -6532,6 +6533,7 @@
       '\n\n教材：' + (state.brush.tree && state.brush.tree.course || state.brush.bookId) +
       (mode === 'submit' ? '' : '\n时长：' + minutes + ' 分钟') +
       '\n提交已完成？：' + (params.submit_pending ? '会提交未完成的组' : '不提交') +
+      '\n翻译/写作：' + (params.llm_subjective ? '大模型生成' : (params.subjective_placeholder ? '占位文本' : '空答案')) +
       '\n只处理必修：' + (params.only_required ? '是' : '否（非必修不计入进度）') +
       '\n本轮最多：' + params.max_groups + ' 组' +
       '\n\n' + (confirm ? '确定执行？' : '开始干跑？');

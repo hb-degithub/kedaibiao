@@ -282,6 +282,10 @@ PYTHONPATH=src python3 -m kedaibiao action unipus answers \
   遇限流或连续无权限会自己停手；
 - **只处理必修**：按班级策略里的必修任务（门户进度就是按它算的），默认勾选。
 
+- **翻译/写作**：服务端没有标准答案。可以勾选「**用大模型作答**」——按题面语言
+  生成译文/短文再提交（默认关；生成内容会写进日志可复查；主观点提交后需等老师批阅
+  才出分）。也可以只交占位文本拿完成分。
+
 > ⚠️ 刷时长的**记账仍未验证**（本机多次实测 credited=0），详见
 > [docs/verification/unipus-brush.md](docs/verification/unipus-brush.md)。
 

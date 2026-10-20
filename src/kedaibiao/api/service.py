@@ -2203,6 +2203,7 @@ class ConsoleService:
         interval: float = 20.0,
         max_groups: int = 60,
         subjective_placeholder: str = "",
+        llm_subjective: bool = False,
         mode: str = "",
         viewer: Viewer | None = None,
     ) -> dict[str, Any]:
@@ -2285,10 +2286,116 @@ class ConsoleService:
             target=self._run_brush,
             args=(job_id, scope, course, minutes, bool(confirm), bool(submit_pending),
                   bool(only_required), interval, owner_id, cookie_file, creds,
-                  do_duration, mode, max_groups, str(subjective_placeholder or "")),
+                  do_duration, mode, max_groups, str(subjective_placeholder or ""),
+                  bool(llm_subjective)),
             name=f"kedaibiao-brush-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
+
+    async def _llm_fill_group(
+        self, job_id: str, adapter: Any, group: dict[str, Any]
+    ) -> dict[str, list[str]]:
+        """对「服务端没有标准答案」的题组用大模型生成内容。
+
+        只处理翻译/写作/主观类（``needs_answer``），返回
+        ``{instanceId: [子题文本...]}`` 供提交时覆盖。
+        生成内容会写进日志（截断）便于人工复查。
+        """
+        from kedaibiao.tasks.llm import LLMAnswerer, LLMConfig
+
+        config = LLMConfig.from_env(self._llm_environ())
+        if not config.enabled:
+            raise ConsoleError(
+                "大模型未配置（控制台「设置」页填 BASE_URL 与 MODEL 后再试）",
+                kind="bad_request", status=400,
+            )
+        plan = await adapter.native_plan(group["assignment_id"])
+        rows = plan.get("questions") or []
+        answerer = LLMAnswerer(config)
+        overrides: dict[str, list[str]] = {}
+        for row in rows:
+            # 服务端有标准答案就不用模型：标准答案更准（翻译/阅读常带答案）
+            if row.get("has_standard_answer"):
+                continue
+            if not (row.get("needs_answer") or row.get("wants_text")):
+                continue
+            instance_id = str(row.get("instanceId") or "")
+            stem = str(row.get("stem") or "").strip()
+            if not instance_id or not stem:
+                continue
+            kind = str(row.get("kind") or "")
+            children = max(int(row.get("child_count") or 1), 1)
+            # 判断题面语言：含中文才走「翻译」，英文题（阅读理解/简答）走「作答」。
+            # 之前按题型标签一律当翻译，英文题会被喂「翻译助手」的提示，
+            # 网关对此常返回空内容（实测）。
+            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in stem)
+            if (kind == "translation" or "翻译" in str(group.get("type_label") or "")) and has_cjk:
+                system = (
+                    "你是英语翻译助手。把用户给的汉语逐句翻译成自然、准确的英语；"
+                    "只输出译文，不要解释。"
+                )
+                if children > 1:
+                    user = (
+                        f"下面共有 {children} 句中文。请逐句翻译，**每句一行、共 {children} 行**，"
+                        f"行首不要加编号或符号：\n{stem}"
+                    )
+                else:
+                    user = f"请把下面的内容翻译成英语：\n{stem}"
+            elif kind == "writing" or "写作" in str(group.get("type_label") or ""):
+                system = (
+                    "你是大学英语写作助手。按题目要求写一篇结构完整、"
+                    "语言自然的英语短文，只输出正文。"
+                )
+                user = f"题目要求：\n{stem}"
+            else:
+                system = (
+                    "你是大学英语答题助手。用英语简明作答，只输出答案正文。"
+                )
+                user = f"题目：\n{stem}"
+            text = ""
+            last_error = ""
+            for attempt in range(1, 4):     # 网关会偶发返回空串/超时，重试 2 次
+                try:
+                    text = (await answerer.complete(system, user, max_tokens=800) or "").strip()
+                except Exception as exc:  # noqa: BLE001
+                    last_error = f"{type(exc).__name__}: {exc}"
+                    text = ""
+                if text:
+                    break
+                last_error = last_error or "网关返回空内容"
+                self._job_log(
+                    job_id, "warn",
+                    f"  · 生成失败第 {attempt}/3 次（{last_error[:60]}）：{stem[:36]}…",
+                )
+                await asyncio.sleep(2.0 * attempt)
+            if not text:
+                self._job_log(
+                    job_id, "error",
+                    f"  ✗ 大模型未生成内容，该题跳过（原因：{last_error or '空响应'}）",
+                )
+                continue
+            text = (text or "").strip()
+            if not text:
+                continue
+            import re as _re
+
+            parts = [
+                _re.sub(r"^\s*\d+[.、)]\s*", "", part).strip()
+                for part in text.split("\n")
+                if part.strip()
+            ]
+            if children == 1:
+                values = [text]
+            elif len(parts) >= children:
+                values = parts[:children]
+            else:
+                values = parts + [""] * (children - len(parts))
+            overrides[instance_id] = values
+            self._job_log(
+                job_id, "info",
+                f"  · 大模型作答（{instance_id}）：{text[:80].replace(chr(10), ' ')}…",
+            )
+        return overrides
 
     def _run_brush(
         self, job_id: str, platform: str, course_id: str, minutes: float,
@@ -2296,6 +2403,7 @@ class ConsoleService:
         owner_id: int, cookie_file: str | None, credentials: Any,
         do_duration: bool = True, mode: str = "both", max_groups: int = 60,
         subjective_placeholder: str = "",
+        llm_subjective: bool = False,
     ) -> None:
         from kedaibiao.platforms.unipus import duration as duration_mod
 
@@ -2386,8 +2494,33 @@ class ConsoleService:
                             f"· 干跑：将提交 {group['name']}（{group['unit_name']}）",
                         )
                         continue
+                    overrides: dict[str, list[str]] = {}
+                    if llm_subjective and group.get("needs_answer"):
+                        try:
+                            overrides = asyncio.run(
+                                self._llm_fill_group(job_id, adapter, group)
+                            )
+                        except Exception as exc:  # noqa: BLE001 - 生成失败就退回无覆盖
+                            self._job_log(
+                                job_id, "warn",
+                                f"  · 大模型作答失败（{type(exc).__name__}: {exc}），"
+                                f"该组退回占位/空答案",
+                            )
+                    if group.get("needs_answer") and not overrides and not subjective_placeholder:
+                        counts["failed"] += 1
+                        self._job_log(
+                            job_id, "error",
+                            f"✗ {group['name']} 跳过提交：服务端无标准答案，"
+                            f"且大模型没有生成内容（空提交会记 0 分，而平台留存首条记录、"
+                            f"之后改不了）",
+                        )
+                        continue
                     try:
-                        result = asyncio.run(adapter.native_submit(group["assignment_id"]))
+                        result = asyncio.run(
+                            adapter.native_submit(
+                                group["assignment_id"], answer_overrides=overrides or None
+                            )
+                        )
                         counts["submitted"] += 1
                         rate_limited = 0
                         self._job_log(
