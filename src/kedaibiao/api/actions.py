@@ -1584,6 +1584,80 @@ async def _pinco_progress(adapter: Any, params: dict[str, Any]) -> dict[str, Any
     )
 
 
+async def _pinco_signin(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """课堂签到（写操作）—— 把签到链接里的 ``attendanceCode`` 提交给考勤接口。
+
+    ``confirm=true`` 才真的发；留空只解析签到码（干跑）。平台拒绝（码无效 /
+    已结束 / 不匹配）作为结果展示，不变成 502 —— 那也是一次签到的真实结果。
+    """
+    name = _pinco_platform(adapter)
+    raw = _pinco_require(params, "code", "签到码 / 签到链接")
+    confirm = str(params.get("confirm") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "是",
+    }
+    try:
+        outcome = await adapter.sign_in(raw, dry_run=not confirm)
+    except ValueError as exc:
+        raise ActionInputError(str(exc)) from exc
+
+    mode = "写入" if confirm else "干跑"
+    if outcome.dry_run:
+        result_text = "未发送（干跑）"
+    elif outcome.signed:
+        result_text = "已发送，签到成功"
+    else:
+        result_text = "已发送，平台拒绝"
+
+    fields = [
+        _field("平台", getattr(adapter, "display_name", "") or name),
+        _field("模式", mode),
+        _field("签到码", f"{outcome.masked_key}（{len(outcome.attendance_key)} 位）"),
+        _field("结果", result_text),
+    ]
+    if outcome.error_code is not None:
+        fields.append(_field("平台错误码", outcome.error_code))
+    if not outcome.dry_run and not outcome.signed:
+        fields.append(_field("失败原因", outcome.message))
+
+    if outcome.dry_run:
+        note = (
+            "干跑：只解析签到码，**没有发送任何请求**。"
+            "确认链接/码无误后把 confirm 填 true 再执行一次才会真的签到。"
+        )
+    elif outcome.signed:
+        note = (
+            "写操作：已调用 PostV1TeachingAttendanceAttend，平台接受了这次签到。"
+            "签到码是滚动码，不能复用；考勤统计以平台为准。"
+        )
+    else:
+        note = (
+            "写操作：请求已发出，但平台拒绝了这次签到（见失败原因）。"
+            "签到码是滚动码，过期/换码后需要重新取当次的链接再试。"
+        )
+
+    return detail(
+        platform=name,
+        action="signin",
+        label="课堂签到（写操作）",
+        title=f"课堂签到 · {mode}",
+        note=note,
+        fields=fields,
+        sections=[
+            _text_section(
+                "机制与证据边界",
+                "学生端 H5 /student/signin?attendanceCode=... 读链接里的 attendanceCode，"
+                "再发 PostV1TeachingAttendanceAttend {attendanceKey: <码>}。"
+                "字段名与失败码（7207 码无效 / 7208 已结束 / 10419 不匹配）已实测；"
+                "成功路径来自学生端 H5 静态代码，尚未用有效签到码实测。"
+                "老师端二维码约 10 秒一换，请粘贴当次链接，不要复用旧码。",
+            )
+        ],
+    )
+
+
 def _register_pinco() -> None:
     register(
         ActionSpec(
@@ -1663,6 +1737,32 @@ def _register_pinco() -> None:
             mutates=True,
         ),
         _pinco_progress,
+    )
+    register(
+        ActionSpec(
+            platform="pinco",
+            name="signin",
+            label="课堂签到（写操作）",
+            description=(
+                "把老师发的签到链接/签到码提交给考勤接口"
+                "（PostV1TeachingAttendanceAttend）。默认干跑，confirm=true 才真发。"
+            ),
+            params=(
+                ActionParam(
+                    "code",
+                    "签到码 / 签到链接",
+                    required=True,
+                    hint="支持 /student/signin?attendanceCode=... 整条链接，或直接填码",
+                ),
+                ActionParam(
+                    "confirm",
+                    "确认写入",
+                    hint="填 true 才会真的签到；留空 = 干跑（默认）",
+                ),
+            ),
+            mutates=True,
+        ),
+        _pinco_signin,
     )
 
 

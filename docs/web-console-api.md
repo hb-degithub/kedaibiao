@@ -663,18 +663,25 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
 | `answers` | `assignment_id`（必填） | 作业题目与作答槽：逐题题型/题干/选项 + 已有 `score/review/submitted` |
 | `connection` | 无 | 连接自检：会话、`is_logged_in`、`health_check`、课程数量 |
 | `progress` | `course`（必填）、`material_id`（可选）、`target`、`confirm`、`max_seconds`、`max_materials`、`page_interval` | **推进学习进度（写操作）**：按页翻课件；`confirm=true` 才真写，默认干跑 |
+| `signin` | `code`（必填，签到码或整条签到链接）、`confirm` | **课堂签到（写操作）**：把 `/student/signin?attendanceCode=…` 里的码提交给考勤接口；`confirm=true` 才真发，默认干跑 |
 
 > 前四个都是**只读**（`mutates=false`）。`answers` 需要在作业列表里定位作业号
 > （品课没有「按作业号取作业」的只读接口）；`connection` 是唯一一个「失败也
 > 返回结果而不是 502」的动作 —— 自检的价值就是把失败点说清楚。
 >
-> `progress` 是唯一的**写操作**（`mutates=true`，前端会显示「写操作」徽标）：
-> 机制是「打开课件拿总页数 → 逐页上报 `maxPageIndex`」，进度 =
-> `(maxPageIndex+1)/总页数`。默认干跑（`confirm` 留空），`confirm=true` 才真的
-> 翻页；`material_id` 留空时处理该课程下未达标的材料，最多 `max_materials` 份
-> （默认 3，可再执行一次续推 —— 进度从当前页继续）。批量/长时间推进仍建议用
-> `scripts/pinco_progress.py --all --live`（带页数/时长双上限），机制与证据见
-> [docs/verification/pinco-progress.md](verification/pinco-progress.md)。
+> 两个**写操作**（`mutates=true`，前端会显示「写操作」徽标）：
+>
+> - `progress`：机制是「打开课件拿总页数 → 逐页上报 `maxPageIndex`」，进度 =
+>   `(maxPageIndex+1)/总页数`。默认干跑（`confirm` 留空），`confirm=true` 才真的
+>   翻页；`material_id` 留空时处理该课程下未达标的材料，最多 `max_materials` 份
+>   （默认 3，可再执行一次续推 —— 进度从当前页继续）。批量/长时间推进仍建议用
+>   `scripts/pinco_progress.py --all --live`（带页数/时长双上限），机制与证据见
+>   [docs/verification/pinco-progress.md](verification/pinco-progress.md)。
+> - `signin`：解析 `attendanceCode`（也接受裸码 / 含链接的文本）后调
+>   `PostV1TeachingAttendanceAttend {attendanceKey}`；平台拒绝（7207 码无效 /
+>   7208 已结束 / 10419 不匹配）作为结果返回，不变成 502。签到码是滚动码，
+>   只能接当次链接；机制与未验证边界见
+>   [docs/verification/pinco-signin.md](verification/pinco-signin.md)。
 
 ### `POST /api/assignments/detail` —— 单个作业详情（双击作业行）
 

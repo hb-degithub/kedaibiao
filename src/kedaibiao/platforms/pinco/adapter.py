@@ -38,8 +38,8 @@ from kedaibiao.platforms.base import (
     NotSupportedError,
     PlatformAdapter,
 )
+from kedaibiao.platforms.pinco import attendance, guard, parsing, progress, solving, sso
 from kedaibiao.platforms.pinco import endpoints as ep
-from kedaibiao.platforms.pinco import guard, parsing, progress, solving, sso
 from kedaibiao.platforms.pinco.client import PincoClient
 from kedaibiao.platforms.pinco.errors import PincoApiError, PincoError, PincoNotLoggedIn
 from kedaibiao.platforms.pinco.models import (
@@ -594,6 +594,20 @@ class PincoAdapter(PlatformAdapter):
     @staticmethod
     def _ratio(detail: PincoMaterialDetail) -> float:
         return detail.progress
+
+    async def sign_in(self, raw_code: str, *, dry_run: bool = True) -> attendance.SignInOutcome:
+        """品课课堂签到（**写操作**）—— 默认只解析签到码，不发送请求。
+
+        机制：学生端 H5 ``/student/signin?attendanceCode=...`` 读链接里的码，
+        然后调 ``PostV1TeachingAttendanceAttend`` 发 ``{"attendanceKey": <码>}``。
+        本方法接受整条链接、含链接的文本或裸码。
+
+        平台拒绝（``7207`` 码无效 / ``7208`` 已结束 / ``10419`` 不匹配）作为
+        **结果**返回（``signed=False`` + ``error_code``），不抛异常；鉴权与协议
+        错误照常上抛。细节与证据边界见 :mod:`kedaibiao.platforms.pinco.attendance`。
+        """
+        self._require_session()
+        return await attendance.sign_in(self.client(), raw_code, dry_run=dry_run)
 
     async def fetch_questions(self, assignment: Assignment) -> list[Question]:
         """作业题目。学习任务（课程材料）没有题目 —— 对它调用会直接报错。

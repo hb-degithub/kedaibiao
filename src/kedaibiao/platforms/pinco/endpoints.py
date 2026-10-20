@@ -254,8 +254,18 @@ EVIDENCE["ACTION_COURSEWARE_OPEN"] = Evidence.MEASURED
 ACTION_COURSEWARE_MAX_LOOK = "PostV1CoursewareStudentMaxLook"
 EVIDENCE["ACTION_COURSEWARE_MAX_LOOK"] = Evidence.MEASURED
 
+#: 学生端「课堂签到」的提交接口（写操作）。
+#:
+#: 学生端 H5 ``/student/signin?attendanceCode=...`` 只做一件事：把链接里的
+#: ``attendanceCode`` 当 ``attendanceKey`` 发过来。链路来自 H5 静态代码；
+#: **失败路径已实测**：空 body → 401「attendanceKey 不能为null」，
+#: 随便填码 → 7207「考勤签到码无效」。成功路径尚未用真实签到码验证。
+#: 详见 :mod:`kedaibiao.platforms.pinco.attendance`。
+ACTION_ATTENDANCE_ATTEND = "PostV1TeachingAttendanceAttend"
+EVIDENCE["ACTION_ATTENDANCE_ATTEND"] = Evidence.MEASURED
+
 #: 危险动作名单。客户端对这些 action 要求显式 ``dangerous=True`` 才肯发。
-#: 进度上报（时长 / 翻页）与提交一样都是写操作，必须显式放行 ——
+#: 进度上报（时长 / 翻页）、签到与提交一样都是写操作，必须显式放行 ——
 #: 抓取/计划路径不可能顺手把它们发出去。
 DANGEROUS_ACTIONS = frozenset(
     {
@@ -265,6 +275,7 @@ DANGEROUS_ACTIONS = frozenset(
         ACTION_LEARNING_DURATION_REPORT,
         ACTION_COURSEWARE_OPEN,
         ACTION_COURSEWARE_MAX_LOOK,
+        ACTION_ATTENDANCE_ATTEND,
     }
 )
 
@@ -538,6 +549,9 @@ FIELD_PAGES = "pages"
 #: 页下标（**1 起**）。注意与 :data:`FIELD_MAX_PAGE_INDEX` 的 0 起不同，
 #: 两者差一，混淆会算错进度。
 FIELD_PAGE_INDEX = "pageIndex"
+#: 课堂签到的请求字段：**实测**（空 body 回 401「attendanceKey 不能为null」）。
+#: 值就是签到链接里的 ``attendanceCode`` —— 学生端 H5 原样这么传。
+FIELD_ATTENDANCE_KEY = "attendanceKey"
 FIELD_TOTAL = "total"
 for _name in (
     "FIELD_COURSE_MATERIALS",
@@ -559,6 +573,7 @@ for _name in (
     "FIELD_MAX_PAGE_INDEX",
     "FIELD_PAGES",
     "FIELD_PAGE_INDEX",
+    "FIELD_ATTENDANCE_KEY",
     "FIELD_COUNT_LEARNING_PROGRESS",
     "FIELD_LEARNING_DURATION",
     "FIELD_LEARN_INFO",

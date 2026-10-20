@@ -190,9 +190,33 @@ PYTHONPATH=src python3 -m kedaibiao action pinco answers assignment_id=…
 四个动作都**只读**：`learning`（材料 + 进度）、`material`（材料详情/下载地址）、
 `answers`（作业题目与作答槽）、`connection`（会话/健康检查/课程数）。
 
-另有一个写操作 `progress`（推进学习进度，控制台「工具」页会显示「写操作」徽标）：
-默认干跑，参数 `confirm=true` 才真的翻页；`material_id` 留空时处理整课未达标的
-材料（一次最多 `max_materials` 份，可重复执行续推）。批量推进仍用下面的脚本。
+另有两个写操作（控制台「工具」页会显示「写操作」徽标）：
+
+- `progress`（推进学习进度）：默认干跑，参数 `confirm=true` 才真的翻页；
+  `material_id` 留空时处理整课未达标的材料（一次最多 `max_materials` 份，
+  可重复执行续推）。批量推进仍用下面的脚本。
+- `signin`（课堂签到）：把老师发的签到链接/签到码提交给考勤接口；默认干跑，
+  `confirm=true` 才真发。见下面的「课堂签到」。
+
+#### 品课「课堂签到」
+
+老师发起课堂签到后，学生端入口是一条 H5 链接
+`https://pinco.seewo.com/student/signin?attendanceCode=<码>`。学生端页面只做一件事：
+把这个码当 `attendanceKey` 发给 `PostV1TeachingAttendanceAttend`。字段名与失败码
+（7207 码无效 / 7208 已结束 / 10419 不匹配）已实测；**成功路径尚未用有效签到码
+实测**（老师端二维码约 10 秒一换，只能接当次链接）。
+
+```bash
+# 干跑：只解析签到码，不发请求
+PYTHONPATH=src python3 scripts/pinco_signin.py --code 'https://pinco.seewo.com/student/signin?attendanceCode=…'
+
+# 真的签到（链接/码必须当次有效）
+PYTHONPATH=src python3 scripts/pinco_signin.py --code '<签到链接或码>' --live
+```
+
+> ⚠️ 这是**写操作**（会记一次考勤签到），默认 dry-run。证据与未验证边界见
+> [docs/verification/pinco-signin.md](docs/verification/pinco-signin.md)。
+> 控制台动作：`action pinco signin code=… [confirm=true]`。
 
 #### 品课「刷课」（按页推进学习进度）
 

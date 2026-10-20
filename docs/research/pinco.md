@@ -624,3 +624,24 @@ python3 res_id.py raw/apk_x/resources.arsc 0x7f130001  # 资源 ID 解析（辅�
 - 消息中心 `GetV1MsgcenterStudentMsgs {size,page}` 可用，能拿到「收到新作业」通知与 `extras.studentHomeworkId`
 
 > 样本原文（不入库）：`data/recon/pinco/samples/all_courses_scan.json`、`materials_scan.json`、`homework_samples.json`
+
+## L.5 课堂签到（2026-10-20）
+
+- 学生端签到页是 **`/student/signin?attendanceCode=<码>`**（不是微信那个
+  `/student/signin` 兜底页；带会话 + 桌面 UA 时服务端返回学生端 SPA，
+  chunk 为 `signin_c7880cbe57ac0b489d64.js`）。
+- 该页只做一件事：把链接里的 `attendanceCode` 当 `attendanceKey` 发到
+  `PostV1TeachingAttendanceAttend`。H5 里的失败码：`7207` 码无效 /
+  `7208` 已结束 / `10419` 不匹配；成功判据写作 `code === 200`。
+- **实测**：空 body → `401`「attendanceKey 不能为null」；任意随机码 →
+  `statusCode=7207`「考勤签到码无效」。有效码的成功响应**尚未验证**。
+- 老师端二维码是**滚动码**（防作弊考勤，约 10 秒一换），所以只能接当次链接；
+  `/student/signin` 的匿名访问会落到「请在微信客户端打开」的兜底页，带登录态才
+  是签到 SPA。
+- 老师端发起课堂（`PostV1ClassroomStart`）/签到（`PostV1TeachingAttendanceStart`）
+  在教师 Web 前端里**没有调用点**（教师 Web 只有考勤报表），属于教师客户端
+  能力；用真实会话试 `PostV1ClassroomStart` 因缺必填参数被拒（`illegal argument`，
+  **无副作用**）。这是 2026-10-20 用户口头授权的一次性侦察，产品代码仍只做学生端。
+- 实现：`platforms/pinco/attendance.py`、`adapter.sign_in()`、控制台动作
+  `signin`、`scripts/pinco_signin.py`；证据与未验证边界见
+  `docs/verification/pinco-signin.md`。

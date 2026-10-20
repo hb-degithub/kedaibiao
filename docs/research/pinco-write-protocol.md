@@ -38,13 +38,15 @@
 | 判分是否回传每题对错 | **读接口**按题回传 `answer.score` / `answer.review`（【实测】）；**提交接口自身**的响应结构 **未验证** | 【实测】/【未验证】 |
 | 幂等 / 重复提交 | **未验证**。平台读侧有 `submitted/expired/canSubmitted/canRedo/corrected/rejected`（【实测】）→ 实现应「提交前复查 detail」 | 【未验证】 |
 | 学习进度上报（刷课） | **已确认并跑通**：材料进度 = `(maxPageIndex+1)/总页数`；课件 `open` + 逐页 `maxLook` 即可推满（PPT/PDF 都适用）。学习时长上报是心跳，收下但不涨进度 | 【实测】 |
+| 课堂签到 | **链路已确认**：学生端 H5 `/student/signin?attendanceCode=...` → `PostV1TeachingAttendanceAttend {"attendanceKey": "<码>"}`；失败码 7207/7208/10419 与必填字段实测，**成功路径未用有效码验证** | 【静态-Web】+【实测（失败路径）】 |
 | 请求签名 | **无任何签名证据**；强制校验是 CSRF 双提交（`x-csrf-token` ← cookie `csrfToken`）+ **必需头 `x-server: main`** | 【实测】 |
 | 纯 HTTP 能否发写请求 | **不能**：登录态下纯 HTTP 仍回 `403 invalid csrf token`（csrf 与浏览器会话上下文绑定） | 【实测 pinco.md 附录 L】 |
 | 现有代码状态 | **有提交实现但自带闸门**：`submit_payload_confirmed = False`（声明 `adapter.py:140`，拦截 `adapter.py:639`，注释 `endpoints.py:406`），报文未确认前拒绝发出 | 【实测源码】 |
 
 **一句话**：写操作的**端点与前置条件已能确定**（Web 动作名 + App REST 路径 + 头/CSRF 要求），
-**逐题保存答案的请求体**也在 App 客户端里读到了结构；但**提交与进度上报的请求体、
-频率、幂等，全部需要一次真实抓包**才能闭合。
+**逐题保存答案的请求体**也在 App 客户端里读到了结构；刷课（§5.3）与签到（§5.4）
+的链路已经能实现，但**提交请求体、提交频率/幂等，以及签到的成功路径，还需要
+一次真实抓包 / 有效签到码**才能闭合。
 
 ---
 
@@ -276,6 +278,34 @@
 `adapter.open_courseware()` / `adapter.advance_learning()` +
 `scripts/pinco_progress.py`（默认 dry-run，`--live` 才写）。
 
+### 5.4 课堂签到（2026-10-20，【静态-Web】+【实测失败路径】）
+
+链路只有一步。学生端 `/student/signin` 页面（chunk
+`signin_c7880cbe57ac0b489d64.js`）从 URL 读 `attendanceCode`，然后发::
+
+    POST /student/api.json?actionName=PostV1TeachingAttendanceAttend
+    {"attendanceKey": "<attendanceCode>"}
+
+老师端出示的签到二维码就是一条指向
+`https://pinco.seewo.com/student/signin?attendanceCode=<码>` 的链接；码是滚动
+生成的（防作弊考勤，约 10 秒一换），不能离线预生成或复用。
+
+**实测**（真实会话）：
+
+| 请求 | 响应 |
+| --- | --- |
+| `{}`（空 body） | `401`「attendanceKey 不能为null」→ 字段名确认 |
+| `{"attendanceKey": "test"}` / `"000000"` / 任意随机码 | `statusCode=7207`「考勤签到码无效」 |
+| 同样请求换有效码 | **未验证**（没有进行中的签到） |
+
+学生端 H5 里还登记了 `7208`（已结束 / 超时）、`10419`（不匹配）两个失败码；
+H5 判成功的写法是 `code === 200`，与 Web RPC 家族「`statusCode` 为 0/200」一致。
+
+实现：`platforms/pinco/attendance.py`（解析 + 提交 + 失败码文案）、
+`adapter.sign_in()`、控制台动作 `signin`、`scripts/pinco_signin.py`
+（默认 dry-run，`--live` 才写；`PostV1TeachingAttendanceAttend` 在
+`DANGEROUS_ACTIONS` 里，客户端须显式放行）。
+
 ---
 
 ## 6. 风控与校验
@@ -335,6 +365,9 @@
 4. **判分读取**：提交后的分数走 `…/questions` 的 `answer.score/review`，不要从提交响应取。
 5. **刷课**：机制已确认并端到端跑通（§5.3）：`open` 取页数 + 逐页 `maxLook`。
    实现默认 dry-run，`--live` 才写；带页数/总时长上限与「不涨就停」熔断。
+6. **签到**：链路已确认（§5.4）：解析 `attendanceCode` → `attendanceKey` 一次
+   `PostV1TeachingAttendanceAttend`。实现默认 dry-run，`--live` 才写；
+   失败码 7207/7208/10419 已映射成人话。**成功路径待有效码实测**。
 
 ### 8.2 缺什么、优先级
 
@@ -344,9 +377,10 @@
 | **P0** | 重复提交语义（幂等） | 用户提供 **C2/C3** |
 | P0 | 逐题保存答案的附件结构 | 用户提供 **C4** |
 | — | ~~进度上报语义~~ 已完成：刷课 = 课件翻页（`maxLook`），见 §5.3 | 实测确认 |
+| **P0** | 签到**成功**路径（有效签到码 + 成功后考勤状态） | 用户提供一次真实签到链接（滚动码，需当次） |
 | P1 | 错误码语义（6569/10419/6582） | 用户提供 **C8** |
 | P2 | 浏览器内发请求的落地形态（BiDi / Playwright） | 工程决策；现有实测路径是 `scripts/bidi_ws.py` |
-| — | **不做**：教师端任何写入（范围裁决只做学生端） | 决策 |
+| — | **不做**：教师端任何写入（范围裁决只做学生端）。2026-10-20 为测试签到链路，用户口头授权调教师端口做一次性侦察：只读了课程/班级列表与「进行中课堂」，另试了 1 次 `PostV1ClassroomStart`（缺必填参数被拒，**无副作用**），未落地任何教师端实现 | 决策 + 一次性授权 |
 
 ### 8.3 与既有代码的冲突点
 

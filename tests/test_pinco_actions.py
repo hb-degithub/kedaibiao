@@ -5,7 +5,8 @@
 1. **注册表**：learning / material / answers / connection 四个只读动作，外加
    ``progress``（写操作）已登记；只读动作 ``mutates=False``、``progress``
    ``mutates=True``，参数形态与任务约定一致；``ConsoleService.actions("pinco")``
-   能列出它们（且通用动作仍是 builtin）；
+   能列出它们（且通用动作仍是 builtin）。签到 ``signin`` 的测试在
+   ``tests/test_pinco_signin.py``；
 2. **信封**：四个动作各自的 table / detail 形状与关键字段；
 3. **错误边界**：缺参数 / 找不到目标抛 ``ActionInputError``（服务层 400），
    平台异常原样上抛（由服务层统一翻成 502），不吞、不静默；
