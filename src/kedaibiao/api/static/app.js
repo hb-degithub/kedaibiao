@@ -6557,6 +6557,7 @@
         ? '[已提交]' : '',
       llm_subjective: !!($('brush-llm') && $('brush-llm').checked),
       resubmit_incomplete: !!($('brush-resubmit') && $('brush-resubmit').checked),
+      rooms: parseInt(($('brush-rooms') && $('brush-rooms').value) || '6', 10) || 6,
       interval: 20
     };
     var what = mode === 'submit' ? '提交未完成任务'

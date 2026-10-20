@@ -456,6 +456,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 subjective_placeholder=str(payload.get("subjective_placeholder") or ""),
                 llm_subjective=bool(payload.get("llm_subjective", False)),
                 resubmit_incomplete=bool(payload.get("resubmit_incomplete", False)),
+                rooms=payload.get("rooms") or 6,
                 mode=str(payload.get("mode") or ""),
                 viewer=viewer,
             ))

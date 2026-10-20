@@ -2205,6 +2205,7 @@ class ConsoleService:
         subjective_placeholder: str = "",
         llm_subjective: bool = False,
         resubmit_incomplete: bool = False,
+        rooms: int = 6,
         mode: str = "",
         viewer: Viewer | None = None,
     ) -> dict[str, Any]:
@@ -2288,7 +2289,7 @@ class ConsoleService:
             args=(job_id, scope, course, minutes, bool(confirm), bool(submit_pending),
                   bool(only_required), interval, owner_id, cookie_file, creds,
                   do_duration, mode, max_groups, str(subjective_placeholder or ""),
-                  bool(llm_subjective), bool(resubmit_incomplete)),
+                  bool(llm_subjective), bool(resubmit_incomplete), int(rooms or 6)),
             name=f"kedaibiao-brush-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
@@ -2406,6 +2407,7 @@ class ConsoleService:
         subjective_placeholder: str = "",
         llm_subjective: bool = False,
         resubmit_incomplete: bool = False,
+        rooms: int = 6,
     ) -> None:
         from kedaibiao.platforms.unipus import duration as duration_mod
 
@@ -2607,41 +2609,44 @@ class ConsoleService:
                 self._plog(platform, "ok", f"■ 刷课 {job_id} {summary}")
                 return
 
-            # 任务模式时长：目标 = 必修组（没有必修就用全部）
-            targets_pool = required or groups
-            targets = [
-                duration_mod.TaskTarget(
-                    instance=tree["instance_id"],
-                    unit=g["unit_id"],
-                    group=g["id"],
-                    name=g["name"],
-                )
-                for g in targets_pool
-            ][:40]
-            counts["targets"] = len(targets)
-            report = duration_mod.run_task_duration(
+            # 多房间刷时长（实测：单房间不记账，6 房间 150s 记 509s）
+            from kedaibiao.platforms.unipus import endpoints as unipus_endpoints
+
+            token = adapter.client().auth_headers(
+                unipus_endpoints.UnipusApp.UCONTENT
+            )[unipus_endpoints.UCONTENT_AUTH_HEADER]
+            counts["targets"] = 0
+            pool_report = duration_mod.run_duration_pool(
                 adapter.client().session.open_id,
-                adapter.client().auth_headers(
-                    __import__("kedaibiao.platforms.unipus.endpoints", fromlist=["UnipusApp"]).UnipusApp.UCONTENT
-                )["x-annotator-auth-token"],
-                targets,
+                token,
                 seconds=minutes * 60,
-                page_base=tree["page_base"],
+                rooms=int(rooms or 6),
                 confirm=confirm,
             )
-            counts["credited_seconds"] = int(report.credited_seconds)
-            for line in report.plan.warnings:
+            counts["rooms"] = len(pool_report.plan.rooms)
+            counts["credited_seconds"] = int(pool_report.credited_seconds)
+            counts["r_set"] = pool_report.r_set_updates
+            for line in pool_report.plan.warnings:
                 self._job_log(job_id, "warn", f"⚠️ {line}")
             if not confirm:
-                self._job_log(job_id, "info", f"· 干跑计划：{report.plan.summary()}")
-                self._job_log(job_id, "info", f"· 将连：{duration_mod.redact_duration_url(report.plan.url)}")
+                self._job_log(job_id, "info", f"· 干跑计划：{pool_report.plan.summary()}")
+                self._job_log(
+                    job_id, "info",
+                    f"· 将连 {len(pool_report.plan.rooms)} 条连接："
+                    + "、".join(f"{m}/{g}" for m, g in pool_report.plan.rooms),
+                )
             else:
                 self._job_log(
                     job_id, "info",
-                    f"· 任务模式：start {report.starts_sent} 次 / stop {report.stops_sent} 次 / "
-                    f"轮换 {report.rotations}；记账 {report.credited_seconds:.0f} 秒；"
-                    f"错误：{report.error or '无'}",
+                    f"· 房间池：连接 {pool_report.rooms_connected} 个 / kick {pool_report.rooms_kicked} 个；"
+                    f"记账 {pool_report.credited_seconds:.0f} 秒（r_set {pool_report.r_set_updates} 条）",
                 )
+                for name, credited in list(pool_report.per_room.items())[:6]:
+                    self._job_log(job_id, "info", f"    {name}: {credited:.0f}s")
+                for err in pool_report.errors[:3]:
+                    self._job_log(job_id, "warn", f"    {err}")
+            counts["targets"] = len(pool_report.plan.rooms)
+            report = pool_report
             prefix = "已停止" if stopped_any else "完成"
             summary = (
                 f"{prefix}：提交 {counts['submitted']}，跳过 {counts['skipped']}，"

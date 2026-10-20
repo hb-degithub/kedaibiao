@@ -1356,6 +1356,15 @@ __all__ = [
     "build_task_stop_frame",
     "plan_task_duration",
     "run_task_duration",
+    "ROOM_MODULES",
+    "ROOM_GROUPS",
+    "MAX_ROOMS",
+    "SAFE_ROOMS",
+    "build_room_pool",
+    "DurationPoolPlan",
+    "DurationPoolReport",
+    "plan_duration_pool",
+    "run_duration_pool",
 ]
 
 
@@ -1393,6 +1402,153 @@ TASK_ROTATE_SECONDS: Final[float] = 240.0
 TASK_CLIENT: Final[str] = "U校园pc"
 #: 任务页基础路径（真实页面就是这个）
 TASK_PAGE_PATH: Final[str] = "/_explorationpc_default/pc.html"
+
+
+#: 房间池：服务端按 (module, moduleGroup) 成对独立记账；**单房间不记账**（实测），
+#: 多房间并发才有 r_set（6 房间 150 秒实测 509 秒记账）。
+ROOM_MODULES: Final[tuple[str, ...]] = (
+    "cmgt", "ucmg", "course", "homework", "studio", "tla", "ach", "exam", "point", "cmgt2",
+)
+ROOM_GROUPS: Final[tuple[str, ...]] = ("h5", "pc", "app", "wx", "web", "v2")
+#: 最多房间数（参考实现：再多握手会被随机拒绝）
+MAX_ROOMS: Final[int] = len(ROOM_MODULES) * len(ROOM_GROUPS)
+#: 实测安全房间数
+SAFE_ROOMS: Final[int] = 20
+
+
+def build_room_pool(rooms: int = 6) -> tuple[tuple[str, str], ...]:
+    """构造 (module, moduleGroup) 房间池；按参考实现的顺序（先 group 后 module）。"""
+    if rooms < 1:
+        raise DurationConfigError("房间数至少 1")
+    pool: list[tuple[str, str]] = []
+    for group in ROOM_GROUPS:
+        for module in ROOM_MODULES:
+            if len(pool) >= min(rooms, MAX_ROOMS):
+                return tuple(pool)
+            pool.append((module, group))
+    return tuple(pool)
+
+
+@dataclass(slots=True)
+class DurationPoolPlan:
+    """多房间刷时长的干跑计划。"""
+
+    url: str
+    rooms: tuple[tuple[str, str], ...]
+    requested_seconds: float
+    ping_interval: float = DEFAULT_PING_INTERVAL
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def estimated_ratio(self) -> float:
+        # 参考实现实测：单房间约 0.7~0.79×，房间越多摊得越匀；只做粗略估值
+        return 0.7 * len(self.rooms)
+
+    def summary(self) -> str:
+        rooms = "、".join(f"{m}/{g}" for m, g in self.rooms[:6])
+        more = f" 等 {len(self.rooms)} 个房间" if len(self.rooms) > 6 else ""
+        return (
+            f"多房间时长：{self.requested_seconds:g} 秒，{len(self.rooms)} 个房间"
+            f"（{rooms}{more}），预计记账约 {self.requested_seconds * self.estimated_ratio / 60:.1f} 分钟"
+        )
+
+
+@dataclass(slots=True)
+class DurationPoolReport:
+    plan: DurationPoolPlan
+    dry_run: bool
+    credited_seconds: float = 0.0
+    r_set_updates: int = 0
+    rooms_connected: int = 0
+    rooms_kicked: int = 0
+    per_room: dict[str, float] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.rooms_connected > 0
+
+
+def plan_duration_pool(
+    open_id: str, token: str, *, seconds: float, rooms: int = 6
+) -> DurationPoolPlan:
+    requested = _validate_seconds(seconds, MAX_DURATION_SECONDS)
+    pool = build_room_pool(rooms)
+    warnings: list[str] = []
+    if requested < 60:
+        warnings.append("r_set 记账约每 60 秒一批：短于 60 秒的会话大概率记 0")
+    if len(pool) < 2:
+        warnings.append("只开 1 个房间时服务端**不记账**（实测），至少 2 个房间")
+    warnings.append(
+        "房间池是**账号级**记账（不含课程/分组信息），门户按教材归集可能有延迟"
+    )
+    return DurationPoolPlan(
+        url=build_duration_url(open_id, token),
+        rooms=pool,
+        requested_seconds=requested,
+        warnings=warnings,
+    )
+
+
+def run_duration_pool(
+    open_id: str,
+    token: str,
+    *,
+    seconds: float,
+    rooms: int = 6,
+    confirm: bool = False,
+    transport_factory: Callable[[], Any] | None = None,
+    reporter: Callable[..., Any] | None = None,
+) -> DurationPoolReport:
+    """多房间刷时长：每个房间一条连接（各自 kick 一次 + 心跳），汇总记账。
+
+    ``confirm=False``（默认）只出计划，**不建任何连接**。
+    实测：单房间 0 记账；6 房间 150 秒合计 509 秒。
+    """
+    plan = plan_duration_pool(open_id, token, seconds=seconds, rooms=rooms)
+    report = DurationPoolReport(plan=plan, dry_run=not confirm, warnings=list(plan.warnings))
+    if not confirm:
+        return report
+
+    run_one = reporter or (
+        lambda module, group: report_duration(
+            open_id, token, seconds, confirm=True,
+            enable_kick=True, module=module, module_group=group,
+            transport_factory=transport_factory,
+        )
+    )
+    import threading
+
+    results: dict[str, Any] = {}
+
+    def worker(module: str, group: str) -> None:
+        try:
+            results[f"{module}/{group}"] = run_one(module, group)
+        except Exception as exc:  # noqa: BLE001 - 单房间失败不影响其它
+            report.errors.append(f"{module}/{group}: {type(exc).__name__}: {exc}")
+
+    threads = [
+        threading.Thread(target=worker, args=(module, group), daemon=True)
+        for module, group in plan.rooms
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    for name, item in results.items():
+        credited = float(getattr(item, "credited_seconds", 0) or 0)
+        report.per_room[name] = credited
+        report.credited_seconds += credited
+        report.r_set_updates += int(getattr(item, "r_set_updates", 0) or 0)
+        if getattr(item, "connected", False):
+            report.rooms_connected += 1
+        if getattr(item, "kick_sent", False):
+            report.rooms_kicked += 1
+        if getattr(item, "error", ""):
+            report.errors.append(f"{name}: {item.error}")
+    return report
 
 
 def build_task_duration_url(open_id: str, token: str) -> str:

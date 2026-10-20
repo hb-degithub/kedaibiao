@@ -350,6 +350,11 @@
               <input id="brush-minutes" class="mono" type="number" min="0.5" max="240" step="0.5" value="10">
               <span class="field-hint">任务模式 1× 封顶；记账未验证，建议先干跑</span>
             </label>
+            <label class="field" for="brush-rooms">
+              <span class="field-label">刷时长房间数</span>
+              <input id="brush-rooms" class="mono" type="number" min="2" max="20" step="1" value="6">
+              <span class="field-hint">实测：单房间不记账，6 房间约 4 倍时长；建议 6~10</span>
+            </label>
             <label class="field" for="brush-submit-pending">
               <span class="field-label">提交未完成任务</span>
               <input id="brush-submit-pending" type="checkbox" checked>

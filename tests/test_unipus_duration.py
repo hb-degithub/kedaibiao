@@ -1054,3 +1054,56 @@ class TestTaskModeRun(unittest.TestCase):
         )
         self.assertFalse(report.ok)
         self.assertTrue(report.error)
+
+
+class TestRoomPool(unittest.TestCase):
+    """多房间刷时长：单房间服务端不记账（实测），所以至少 2 个房间。"""
+
+    def test_pool_order_and_size(self) -> None:
+        pool = duration.build_room_pool(6)
+        self.assertEqual(len(pool), 6)
+        self.assertEqual(pool[0], ("cmgt", "h5"))
+        self.assertEqual(pool[5], ("tla", "h5"))
+
+    def test_pool_clamped_to_max(self) -> None:
+        pool = duration.build_room_pool(9999)
+        self.assertEqual(len(pool), duration.MAX_ROOMS)
+
+    def test_pool_rejects_zero(self) -> None:
+        with self.assertRaises(duration.DurationConfigError):
+            duration.build_room_pool(0)
+
+    def test_plan_warns_single_room(self) -> None:
+        plan = duration.plan_duration_pool("oid", "tok", seconds=600, rooms=1)
+        self.assertTrue(any("不记账" in w for w in plan.warnings))
+        self.assertEqual(len(plan.rooms), 1)
+
+    def test_plan_estimates_ratio(self) -> None:
+        plan = duration.plan_duration_pool("oid", "tok", seconds=600, rooms=6)
+        self.assertAlmostEqual(plan.estimated_ratio, 4.2, places=2)
+        self.assertIn("6 个房间", plan.summary())
+
+    def test_pool_dry_run_never_connects(self) -> None:
+        report = duration.run_duration_pool("oid", "tok", seconds=60, rooms=6)
+        self.assertTrue(report.dry_run)
+        self.assertEqual(report.credited_seconds, 0)
+        self.assertEqual(report.rooms_connected, 0)
+
+    def test_pool_aggregates_rooms(self) -> None:
+        def fake_reporter(module: str, group: str):
+            return duration.DurationReport(
+                plan=duration.plan_duration_pool("oid", "tok", seconds=60, rooms=1),
+                dry_run=False,
+                connected=True,
+                kick_sent=True,
+                credited_seconds=100.0,
+                r_set_updates=5,
+            )
+
+        report = duration.run_duration_pool(
+            "oid", "tok", seconds=60, rooms=3, confirm=True, reporter=fake_reporter
+        )
+        self.assertEqual(report.rooms_connected, 3)
+        self.assertEqual(report.rooms_kicked, 3)
+        self.assertEqual(report.credited_seconds, 300.0)
+        self.assertEqual(report.r_set_updates, 15)
