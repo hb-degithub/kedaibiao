@@ -239,6 +239,33 @@ PYTHONPATH=src python3 scripts/pinco_progress.py --course <courseId> --all --liv
 > 阴性结果（学习时长上报不涨进度）与复现见
 > [docs/verification/pinco-progress.md](docs/verification/pinco-progress.md)。
 
+#### U校园（unipus）已接入的动作
+
+```bash
+PYTHONPATH=src python3 -m kedaibiao actions unipus        # 动作清单
+PYTHONPATH=src python3 -m kedaibiao action unipus courses  # 班级×教材（带真实进度）
+PYTHONPATH=src python3 -m kedaibiao action unipus assignments course=<课程号>
+# 题目 + 服务端标准答案（U校园的作答就是转发服务端答案，先看清楚要交什么）
+PYTHONPATH=src python3 -m kedaibiao action unipus answers \
+    assignment_id='course-v2:…/<groupId>'
+```
+
+- **登录**：纯 HTTP 三步；被风控要求验证码（`1506`）时自动退回浏览器求解
+  （与 iTEST 共用极验链路）。`jwt` cookie 还在时可以直接复原门户会话。
+- **提交**：`capabilities.submit` 已打开，但**默认干跑**——只读内容与标准答案、
+  构造并校验载荷（子题数对齐、`thirdPartyJudges` 等长），不发写请求。控制台
+  「提交」点确认后才会真发；CLI 用 `kedaibiao run unipus --live`。
+- **学习时长**：`action unipus duration seconds=600` 默认只出计划，`confirm=true`
+  才建立 engine.io 会话；`kick=true` 才会发记账报文（形状未实测，默认关）。
+- 证据边界（哪些实测、哪些没有）见
+  [docs/verification/unipus-readonly.md](docs/verification/unipus-readonly.md)、
+  [unipus-submit.md](docs/verification/unipus-submit.md)、
+  [unipus-duration.md](docs/verification/unipus-duration.md)、
+  [unipus-speech.md](docs/verification/unipus-speech.md)。
+
+> ⚠️ 提交 / 时长 / 语音评测都属**写操作**，一律默认干跑；语音评测的报文形状
+> 大部分未实测，只有模块与闸门，没有控制台入口。
+
 ### 可选依赖
 
 ```bash

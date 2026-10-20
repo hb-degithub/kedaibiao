@@ -1896,8 +1896,8 @@ class ConsoleService:
         ``confirm=True`` 才会真的调平台的写接口。
 
         平台没实现提交时**明确拒绝**（501 not_supported），而不是假装成功 ——
-        现在 pigai / unipus 都是 ``capabilities.submit = False``，
-        pinco 的请求体结构也还没由真实样本确认。
+        现在 pigai 仍是 ``capabilities.submit = False``；unipus 已实现但不能真交
+        （默认干跑，真发要 ``submit_live``）。
         """
         scope = self._check_platform(platform)
         assert scope is not None

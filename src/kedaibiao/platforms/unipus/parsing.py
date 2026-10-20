@@ -904,8 +904,11 @@ def parse_answers(body: Any) -> tuple[StandardAnswer, ...]:
     for index, raw_item in enumerate(data):
         item = as_dict(raw_item, what=f"答案项[{index}]")
         raw_answer = item.get("answer")
-        if raw_answer is None:
-            # 口语/主观题在答案接口处为空，这是**合法**的，不是错误
+        if raw_answer is None or (
+            isinstance(raw_answer, str) and not raw_answer.strip()
+        ):
+            # 口语/主观/讨论题在答案接口处可能为 null **或空字符串**，
+            # 两者都是合法的「没有标准答案」，不是解析错误（2026-10-20 实测）
             answers.append(StandardAnswer(children=(), raw=dict(item)))
             continue
         inner = loads_json_field(raw_answer, what=f"答案项[{index}] 的 answer")

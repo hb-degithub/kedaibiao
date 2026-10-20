@@ -1672,14 +1672,23 @@ class TestAdapterContract(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(adapter.capabilities.list_courses)
         self.assertTrue(adapter.capabilities.list_assignments)
         self.assertTrue(adapter.capabilities.fetch_questions)
-        self.assertFalse(adapter.capabilities.submit)
+        # 提交链路已实现：默认干跑，真发要显式 submit_live=True
+        self.assertTrue(adapter.capabilities.submit)
         self.assertFalse(adapter.capabilities.course_playback)
 
-    async def test_submit_is_not_supported(self) -> None:
-        adapter = UnipusAdapter()
+    async def test_submit_defaults_to_dry_run_and_never_posts(self) -> None:
+        adapter, fake = make_adapter(
+            content_response([content_item()]),
+            answer_response([answer_item([["A"]])]),
+        )
         assignment = Assignment(remote_id="course-v2:x/u1g1", title="t")
-        with self.assertRaises(NotSupportedError):
-            await adapter.submit(assignment, [])
+        result = await adapter.submit(assignment, [])
+        self.assertFalse(result.ok)
+        self.assertIn("干跑", result.message)
+        self.assertTrue(
+            all(call["method"].upper() != "POST" for call in fake.calls),
+            f"干跑不应发 POST，实际：{[c['method'] for c in fake.calls]}",
+        )
 
     async def test_missing_http_client_fails_loudly(self) -> None:
         adapter = UnipusAdapter(AdapterContext())

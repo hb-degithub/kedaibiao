@@ -1,8 +1,18 @@
 """U校园（Unipus）适配器：把平台数据翻译成 ``core.models``。
 
-本阶段**只做只读链路**：登录 → 拉课程 → 拉任务 → 拉题目。
-``capabilities.submit`` 为 ``False``，调用 ``submit`` 会走基类抛
-``NotSupportedError``。
+链路：登录 → 拉课程 → 拉任务 → 拉题目 → **提交（默认干跑）**。
+
+提交的两条入口共用同一份构造逻辑（``platforms/unipus/submit.py``）：
+
+- :meth:`UnipusAdapter.submit`：通用契约（CLI/流水线用），默认**干跑**，
+  只有显式 ``submit_live=True`` 才发 POST；
+- :meth:`UnipusAdapter.native_plan` / :meth:`UnipusAdapter.native_submit`：
+  控制台的「干跑 / 确认真交」入口（``native_submit_flow = True``）。U校园的
+  答案是服务端标准答案、通用 answerer 产不出来，所以不能走
+  ``fetch_questions → answerer → submit`` 三段式。
+
+成功判定与「接受 ≠ 达标」见 ``submit.parse_submit_result`` 与提交后回读
+``progress/v2``（规格 §8.3）。
 
 两条必须记住的约定（会进幂等键，上线后不能改）：
 
@@ -46,6 +56,7 @@ from kedaibiao.platforms.unipus.errors import (
     UnipusCaptchaRequired,
     UnipusError,
     UnipusProtocolError,
+    UnipusRateLimited,
 )
 from kedaibiao.platforms.unipus.parsing import (
     SCOPE_UCONTENT_LEAFS,
@@ -70,7 +81,7 @@ STATE_UNCONFIRMED_KEY = "state_unconfirmed"
 
 
 class UnipusAdapter(PlatformAdapter):
-    """U校园适配器（只读）。"""
+    """U校园适配器。"""
 
     name = "unipus"
     display_name = "U校园（Unipus）"
@@ -79,16 +90,22 @@ class UnipusAdapter(PlatformAdapter):
         list_courses=True,
         list_assignments=True,
         fetch_questions=True,
-        submit=False,
+        submit=True,
         course_playback=False,
     )
 
-    #: 提交载荷是否已由真实抓包确认。
+    #: 控制台（``api/service.py:_submit_one``）看到这个标记会走
+    #: :meth:`native_plan` / :meth:`native_submit`，而不是通用的
+    #: ``fetch_questions → answerer → submit``。原因：U校园的答案是**服务端标准
+    #: 答案原样转发**，题库/大模型产不出这种「答案」，通用路径到不了 submit。
+    native_submit_flow = True
+
+    #: 是否允许**真实发送**提交请求（默认 False = 干跑）。
     #:
-    #: 规格 §8.1 给了完整的形状，但 ``isCompleted`` / ``thirdPartyJudges`` 的
-    #: **取值语义**没给。这两个字段猜错不会报错、只会静默判错，所以默认关闭。
-    #: 拿到一次真实提交请求、核对完这两个字段后，把它置 True 即可启用。
-    submit_payload_confirmed: bool = False
+    #: ``submit()`` 受它控制；``native_submit()`` 是控制台「已人工确认」才调的
+    #: 入口，不受它限制（与 iTEST 的 native 链路一致）。干跑只做只读 GET
+    #: （内容 + 答案）来构造 plan，**不发任何写请求**。
+    submit_live: bool = False
 
     def __init__(
         self,
@@ -96,11 +113,19 @@ class UnipusAdapter(PlatformAdapter):
         *,
         timeout: float | None = None,
         clock: Any | None = None,
-        submit_payload_confirmed: bool | None = None,
+        submit_live: bool | None = None,
+        self_report_scores: bool = False,
+        subjective_placeholder: str = "",
     ) -> None:
         super().__init__(ctx)
-        if submit_payload_confirmed is not None:
-            self.submit_payload_confirmed = submit_payload_confirmed
+        if submit_live is not None:
+            self.submit_live = submit_live
+        #: 口语/角色扮演类是否**客户端自报满分**（默认 False，只交完成度）。
+        #: facts §2/§9.1-7：分数由客户端本地赋值、服务端照存；照搬属产品与合规决策。
+        self.self_report_scores = self_report_scores
+        #: 主观题无标准答案时的占位文本（默认空串）。参考实现用 ``[已提交]``，
+        #: 但那不是学生写的，要用必须对外明示。
+        self.subjective_placeholder = subjective_placeholder
         self._client: UnipusClient | None = None
         self._timeout = timeout
         self._clock = clock
@@ -391,59 +416,198 @@ class UnipusAdapter(PlatformAdapter):
     async def submit(
         self, assignment: Assignment, answers: list[Answer]
     ) -> SubmissionResult:
-        """提交一个任务组。
+        """提交一个任务组（通用契约，CLI/流水线用）。
 
-        ⚠️ **默认被闸门挡住**（``submit_payload_confirmed = False``）—— 见类属性
-        注释。闸门打开后，流程是：
+        **默认干跑**：只做两件只读 GET（内容 + 标准答案）构造 plan，绝不发提交
+        POST；真发必须显式打开 ``submit_live``。U校园的答案是**服务端标准答案
+        原样转发**（规格 §7.3），所以 ``answers`` 参数**不参与平台载荷构造** ——
+        它只出现在干跑摘要里做对照（``raw["answers_argument_*"]``）。
 
-        1. 取内容（题目结构，用来算计分点数与子题数组）；
-        2. 取标准答案（规格 §7.3：答案是**服务端标准答案原样转发**，
-           本方法不用 ``answers`` 参数里的内容）；
-        3. 构造提交体（:mod:`kedaibiao.platforms.unipus.submit`）；
-        4. POST 提交端点；
-        5. 回读一次 ``progress/v2`` 确认（规格 §8.3：服务端接受不等于记下了成绩）。
+        流程（真发时）：内容 → 答案 → 构造 + 本地校验 → POST → 回读
+        ``progress/v2``（规格 §8.3：服务端接受 ≠ 达标）。限流
+        ``UnipusRateLimited`` 直接上抛给调度层，本层不 sleep、不重试。
         """
+        if getattr(self.ctx, "http", None) is None:
+            return SubmissionResult(
+                assignment_id=assignment.remote_id,
+                ok=False,
+                message=(
+                    f"干跑（submit_live={self.submit_live}）：没有注入 HTTP 客户端，"
+                    "连只读的提交计划也构造不了；未发送任何请求。"
+                ),
+                raw={"dry_run": True, "reason": "no-http"},
+            )
+
+        plan = await self._build_plan(assignment.remote_id)
+        summary = self._plan_summary(plan, answers=answers)
+
+        if not self.submit_live:
+            return SubmissionResult(
+                assignment_id=assignment.remote_id,
+                ok=False,
+                message=(
+                    "干跑（submit_live=False）：未发送任何写请求。"
+                    f"{plan.summary()}。"
+                    f"U校园转发服务端标准答案，answers 参数不参与载荷"
+                    f"（收到 {len(answers)} 条，仅作对照）。"
+                ),
+                raw=summary,
+            )
+
+        if plan.blockers:
+            message = "本地校验未通过，拒绝提交（未发出写请求）：" + "；".join(plan.blockers)
+            self.log.warning("%s", message)
+            summary["refused"] = True
+            return SubmissionResult(
+                assignment_id=assignment.remote_id, ok=False,
+                message=message, raw=summary,
+            )
+
         instance_id, group_id = split_assignment_id(assignment.remote_id)
+        result, readback, readback_error = await self._post_and_readback(
+            instance_id, group_id, plan
+        )
+        summary.update(
+            {
+                "dry_run": False,
+                "submit_type": plan.submit_type,
+                "item_count": plan.item_count,
+                "question_count": plan.question_count,
+                "warnings": list(plan.warnings),
+                "server_accepted": result.accepted,
+                "code": result.code,
+                "code_type": result.code_type,
+                "state": result.state,
+                "score": list(result.score),
+                "version": result.version,
+                "readback": _readback_dict(readback),
+                "readback_error": readback_error,
+            }
+        )
+        return SubmissionResult(
+            assignment_id=assignment.remote_id,
+            ok=result.accepted,
+            score=result.score_pct,
+            message=_submit_message(result, readback, readback_error),
+            raw=summary,
+        )
 
-        if not self.submit_payload_confirmed:
-            message = (
-                "提交载荷的取值语义尚未由真实抓包确认（isCompleted / "
-                "thirdPartyJudges），拒绝发出写请求。"
-            )
-            # 有网络客户端的话，顺手把「按规格能构造出的载荷」也演示出来 ——
-            # 让用户看到到底还差什么，比一句「不支持」有用。
-            if getattr(self.ctx, "http", None) is not None:
-                try:
-                    content = await self.client().fetch_content(instance_id, group_id)
-                    plan = submit_mod.build_submit_plan(
-                        course_id=self._course_v2(instance_id),
-                        group_id=group_id,
-                        open_id=self.session.open_id if self.session else "",
-                        questions=content,
-                    )
-                    message += (
-                        f"\n已按规格 §8.1 构造出载荷：{plan.summary()}"
-                        f"\n待确认项：{'；'.join(plan.warnings) or '无'}"
-                    )
-                except Exception as exc:  # noqa: BLE001 - 只是演示，失败不影响结论
-                    message += f"\n（顺带构造载荷时失败：{type(exc).__name__}）"
-            message += (
-                "\n拿到一次真实提交请求后，把 UnipusAdapter.submit_payload_confirmed "
-                "置 True 即可启用。"
-            )
-            raise NotSupportedError(message)
+    # -- 控制台的原生提交链路（native_plan / native_submit）-----------------
 
+    async def native_plan(self, assignment_id: str) -> dict[str, Any]:
+        """干跑：把「打算交什么」渲染成控制台能直接展示的 dict。**不发写请求。**
+
+        只读 GET 内容 + 标准答案，然后做与真实提交**完全相同**的构造与校验
+        （同一份逻辑，见 :meth:`_build_plan`）。
+        """
+        plan = await self._build_plan(assignment_id)
+        data = self._plan_summary(plan, answers=[])
+        data.update(
+            {
+                "platform": self.name,
+                "assignment_id": assignment_id,
+                "dry_run": True,
+                "can_submit": plan.submittable,
+                "answered": sum(1 for row in plan.rows if row["has_standard_answer"]),
+                "note": (
+                    "干跑结果，没有向平台提交任何内容。"
+                    + (
+                        f" 本地校验有 {len(plan.blockers)} 处问题，确认后也不会提交。"
+                        if plan.blockers
+                        else " 本地校验通过，确认后会真发。"
+                    )
+                ),
+            }
+        )
+        return data
+
+    async def native_submit(self, assignment_id: str) -> dict[str, Any]:
+        """真交：内容 → 答案 → 构造/校验 → POST → 回读 ``progress/v2``。
+
+        不可逆。服务层只在人工确认后才调到这里；本地校验不通过时**拒绝发出**。
+        """
+        plan = await self._build_plan(assignment_id)
+        if plan.blockers:
+            raise NotSupportedError(
+                "本地校验未通过，拒绝提交（未发出写请求）：" + "；".join(plan.blockers)
+            )
+        instance_id, group_id = split_assignment_id(assignment_id)
+        result, readback, readback_error = await self._post_and_readback(
+            instance_id, group_id, plan
+        )
+        return {
+            "platform": self.name,
+            "assignment_id": assignment_id,
+            "dry_run": False,
+            "submitted": result.accepted,
+            "ok": result.accepted,
+            "server_finish": readback.finished if readback is not None else None,
+            "first_pass": (
+                readback.first_pass_datetime if readback is not None else None
+            ),
+            "readback": _readback_dict(readback),
+            "readback_error": readback_error,
+            "score_pct": result.score_pct,
+            "score": list(result.score),
+            "code": result.code,
+            "code_type": result.code_type,
+            "message": _submit_message(result, readback, readback_error),
+            "submit_type": plan.submit_type,
+            "question_count": plan.question_count,
+            "item_count": plan.item_count,
+            "can_submit": plan.submittable,
+            "warnings": list(plan.warnings),
+            "blockers": list(plan.blockers),
+        }
+
+    # -- 提交辅助（submit / native_* 共用同一份构造逻辑）-------------------
+
+    async def _build_plan(self, assignment_id: str) -> submit_mod.SubmitPlan:
+        """内容 + 标准答案 → 提交计划（**只读**，不发写请求）。"""
+        if getattr(self.ctx, "http", None) is None:
+            raise NotSupportedError(
+                "U校园提交需要 AdapterContext.http（协议型适配器），当前没有注入"
+            )
+        instance_id, group_id = split_assignment_id(assignment_id)
         content = await self.client().fetch_content(instance_id, group_id)
         standard = await self.client().fetch_answers(instance_id, group_id)
-        plan = submit_mod.build_submit_plan(
+        session = self.session
+        return submit_mod.build_submit_plan(
             course_id=self._course_v2(instance_id),
             group_id=group_id,
-            open_id=self.session.open_id if self.session else "",
+            open_id=session.open_id if session is not None else "",
             questions=content,
             standard_answers=standard,
+            self_report_scores=self.self_report_scores,
+            subjective_placeholder=self.subjective_placeholder,
         )
-        if plan.warnings:
-            self.log.warning("提交前提示：%s", "；".join(plan.warnings))
+
+    def _plan_summary(
+        self, plan: submit_mod.SubmitPlan, *, answers: Sequence[Answer]
+    ) -> dict[str, Any]:
+        """干跑摘要：plan 视图 + ``answers`` 参数的对照信息。"""
+        data = plan.as_dict()
+        data["dry_run"] = True
+        data["platform"] = self.name
+        data["answers_argument_used"] = False
+        data["answers_argument_count"] = len(answers)
+        data["answers_argument_note"] = (
+            "U校园转发服务端标准答案（规格 §7.3），answers 参数不参与平台载荷；"
+            "这里只做数量对照。"
+        )
+        return data
+
+    async def _post_and_readback(
+        self, instance_id: str, group_id: str, plan: submit_mod.SubmitPlan
+    ) -> tuple[submit_mod.SubmitResult, GroupState | None, str]:
+        """POST 提交端点 + 回读 ``progress/v2``（规格 §8.3）。
+
+        - 限流 ``UnipusRateLimited`` **原样上抛**给调度层（不 sleep、不重试）；
+        - 回读失败软着陆：不影响「提交请求已被接受」这一事实，只把原因记下来。
+        """
+        self.log.info("提交 %s/%s：%s", instance_id, group_id, plan.summary())
+        for warning in plan.warnings:
+            self.log.warning("提交前提示：%s", warning)
 
         document = await self.client().request(
             endpoints.UnipusApp.UCONTENT,
@@ -453,24 +617,26 @@ class UnipusAdapter(PlatformAdapter):
             payload=plan.payload,
         )
         result = submit_mod.parse_submit_result(document)
-
-        # 回读一次，确认成绩真的记下了（规格 §8.3）
-        try:
-            state = await self.client().fetch_group_state(instance_id, group_id)
-            self.log.info(
-                "提交后回读 group state：first_pass=%s", getattr(state, "first_pass", None)
-            )
-        except Exception:  # noqa: BLE001 - 回读失败不影响「提交请求已被接受」的事实
-            self.log.warning("提交后回读状态失败（不影响提交结果）", exc_info=True)
-
-        return SubmissionResult(
-            assignment_id=assignment.remote_id,
-            ok=result.accepted,
-            score=result.score_pct,
-            message=result.summary(),
-            raw={"state": result.state, "score": result.score,
-                 "version": result.version, "submitType": plan.submit_type},
+        self.log.info(
+            "提交响应：code=%r（类型 %s）：%s", result.code, result.code_type, result.summary()
         )
+
+        readback: GroupState | None = None
+        readback_error = ""
+        try:
+            readback = await self.client().fetch_group_state(instance_id, group_id)
+            self.log.info(
+                "提交后回读 progress/v2：first_pass=%s finished=%s score_pct=%s",
+                readback.first_pass_datetime,
+                readback.finished,
+                readback.score_pct,
+            )
+        except UnipusRateLimited:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 回读失败不影响「已被接受」的事实
+            readback_error = f"{type(exc).__name__}: {exc}"
+            self.log.warning("提交后回读状态失败（不影响提交结果本身）: %s", readback_error)
+        return result, readback, readback_error
 
     def _course_v2(self, instance_id: str) -> str:
         """实例 ID → ``course-v2:...`` 形态（规格 §6.1）。"""
@@ -519,6 +685,50 @@ class UnipusAdapter(PlatformAdapter):
                         f"{len(answer.children)}（{assignment.remote_id}）；这组不可提交"
                     )
         return list(answers)
+
+
+# --------------------------------------------------------------------------
+# 提交辅助
+# --------------------------------------------------------------------------
+
+
+def _readback_dict(state: GroupState | None) -> dict[str, Any] | None:
+    """回读 ``progress/v2`` 的摘要（服务端接受 ≠ 达标，规格 §8.3）。"""
+    if state is None:
+        return None
+    return {
+        "first_pass": state.first_pass_datetime,
+        "finished": state.finished,
+        "score": list(state.score),
+        "score_pct": state.score_pct,
+        "server_state": state.server_state,
+        "last_submit": state.last_submit,
+    }
+
+
+def _submit_message(
+    result: submit_mod.SubmitResult,
+    readback: GroupState | None,
+    readback_error: str,
+) -> str:
+    """提交结果的一句话说明（含「接受 ≠ 达标」的判定）。"""
+    parts = [result.summary()]
+    if result.accepted:
+        if readback is None:
+            parts.append(
+                "回读 progress/v2 失败，达标情况未知"
+                + (f"（{readback_error}）" if readback_error else "")
+            )
+        elif readback.finished:
+            parts.append(f"回读：first_pass={readback.first_pass_datetime}（已记录首做）")
+        else:
+            parts.append(
+                "回读：服务端仍无 first_pass 记录 —— **接受 ≠ 达标**，"
+                "成绩是否记下需稍后重读 progress/v2"
+            )
+        if readback is not None and readback.score_pct is not None:
+            parts.append(f"服务端得分率 {readback.score_pct:.0%}")
+    return "；".join(parts)
 
 
 # --------------------------------------------------------------------------

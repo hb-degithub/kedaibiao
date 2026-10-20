@@ -259,6 +259,12 @@ class Pipeline:
     async def _solve_and_submit(
         self, adapter: PlatformAdapter, assignment: Assignment, record: RunRecord
     ) -> None:
+        # 原生链路平台（iTEST / U校园）：取题与提交都在适配器内部完成
+        # （U校园的答案是服务端标准答案，通用 answerer 产不出来）。
+        if getattr(adapter, "native_submit_flow", False):
+            await self._native_solve_and_submit(adapter, assignment, record)
+            return
+
         questions: list[Question] = list(assignment.questions)
         if not questions and adapter.capabilities.fetch_questions:
             questions = await adapter.fetch_questions(assignment)
@@ -308,6 +314,43 @@ class Pipeline:
 
         if self.config.write_back and self.bank is not None:
             self._write_back(questions, answers, result, platform=adapter.name)
+
+    async def _native_solve_and_submit(
+        self, adapter: PlatformAdapter, assignment: Assignment, record: RunRecord
+    ) -> None:
+        """原生链路：作答与提交都由适配器完成（``native_plan`` / ``native_submit``）。
+
+        为什么需要：U校园的答案是**服务端标准答案原样转发**，通用 answerer
+        （题库/大模型）产不出来；iTEST 的作答发生在浏览器里。这两类平台自己
+        声明 ``native_submit_flow = True``，流水线只负责「干跑闸门 + 记录」。
+
+        安全默认不变：``dry_run=True`` 只调 ``native_plan``（只读），绝不调
+        ``native_submit``。
+        """
+        try:
+            plan = await adapter.native_plan(assignment.remote_id)  # type: ignore[attr-defined]
+        except NotSupportedError as exc:
+            raise AbortedBeforeSubmit(str(exc)) from exc
+        record.attempts += 1
+        record.detail["plan"] = plan
+        record.detail["question_count"] = int(plan.get("question_count") or 0)
+        record.detail["answered"] = int(plan.get("answered") or 0)
+        if not plan.get("can_submit", True):
+            blockers = plan.get("blockers") or []
+            raise AbortedBeforeSubmit(
+                "本地校验未通过，拒绝提交：" + ("；".join(map(str, blockers)) or "不可提交")
+            )
+        if self.config.dry_run:
+            record.detail["dry_run"] = True
+            raise AbortedBeforeSubmit(plan.get("note") or "dry_run=True，未提交")
+
+        try:
+            result = await adapter.native_submit(assignment.remote_id)  # type: ignore[attr-defined]
+        except NotSupportedError as exc:
+            raise AbortedBeforeSubmit(str(exc)) from exc
+        record.detail["submit"] = result
+        if not result.get("ok"):
+            raise RuntimeError(f"提交被拒: {result.get('message') or result}")
 
     def _write_back(
         self,

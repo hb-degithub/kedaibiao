@@ -1940,6 +1940,93 @@ async def _unipus_duration(adapter: Any, params: dict[str, Any]) -> dict[str, An
     )
 
 
+async def _unipus_submit(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """提交一个任务组：``confirm=false`` 只出计划，``true`` 才真发（不可逆）。"""
+    name = _unipus_platform(adapter)
+    assignment_id = _unipus_require(params, "assignment_id", "任务号")
+    confirm = _unipus_flag(params, "confirm")
+    if not getattr(adapter, "native_submit_flow", False):
+        raise ActionInputError("该适配器没有原生提交链路（native_plan/native_submit）")
+
+    if not confirm:
+        plan = await adapter.native_plan(assignment_id)
+        rows: list[dict[str, Any]] = []
+        for item in plan.get("questions") or []:
+            rows.append(
+                {
+                    "index": int(item.get("index") or 0) + 1,
+                    "kind": item.get("kind") or "—",
+                    "children": item.get("child_count"),
+                    "stem": _unipus_short(item.get("stem") or "", 140) or "（无文字题干）",
+                    "answer": item.get("answer") or "—",
+                    "points": item.get("item_count"),
+                }
+            )
+        blockers = [str(item) for item in (plan.get("blockers") or [])]
+        warnings = [str(item) for item in (plan.get("warnings") or [])]
+        return detail(
+            platform=name,
+            action="submit",
+            label="提交计划（干跑）",
+            title=f"{plan.get('title') or assignment_id} · 提交计划",
+            note=(
+                "干跑：只读内容 + 标准答案并做本地校验，**没有向平台提交任何内容**。"
+                "确认无误后加 confirm=true 才会真发（不可逆）。"
+            ),
+            fields=[
+                _field("任务号", assignment_id),
+                _field("分组", plan.get("group_id") or "—"),
+                _field("提交类型", plan.get("submit_type")),
+                _field("题目数", plan.get("question_count")),
+                _field("计分点", plan.get("item_count")),
+                _field("可提交", "是" if plan.get("can_submit") else "否"),
+                _field("结论", plan.get("verdict") or "—"),
+                _field("阻塞项", "；".join(blockers) or "无"),
+            ],
+            sections=[
+                _table_section(
+                    "题目与将要提交的答案",
+                    [
+                        {"key": "index", "label": "#"},
+                        {"key": "kind", "label": "平台题型"},
+                        {"key": "children", "label": "子题"},
+                        {"key": "stem", "label": "题干"},
+                        {"key": "answer", "label": "将提交的答案"},
+                        {"key": "points", "label": "计分点"},
+                    ],
+                    rows,
+                ),
+                _text_section("提示", "\n".join(warnings) or "无"),
+            ],
+        )
+
+    try:
+        result = await adapter.native_submit(assignment_id)
+    except NotSupportedError as exc:
+        raise ActionInputError(str(exc)) from exc
+    readback = result.get("readback") or {}
+    lines = [
+        f"服务端已接受：{'是' if result.get('ok') else '否'}",
+        f"code={result.get('code')!r}（类型 {result.get('code_type')}）",
+        f"得分率：{result.get('score_pct')}",
+        f"回读 progress/v2：server_finish={result.get('server_finish')} "
+        f"first_pass={result.get('first_pass')}",
+    ]
+    if result.get("readback_error"):
+        lines.append(f"回读失败：{result['readback_error']}")
+    if readback:
+        lines.append(f"回读详情：{json.dumps(readback, ensure_ascii=False)}")
+    for warning in result.get("warnings") or []:
+        lines.append(f"⚠️ {warning}")
+    return message(
+        platform=name,
+        action="submit",
+        label="提交结果",
+        title=f"{result.get('assignment_id') or assignment_id} · 提交结果",
+        message="\n".join(lines),
+    )
+
+
 def _register_unipus() -> None:
     register(
         ActionSpec(
@@ -1953,6 +2040,27 @@ def _register_unipus() -> None:
             params=(ActionParam("assignment_id", "任务号", required=True),),
         ),
         _unipus_answers,
+    )
+    register(
+        ActionSpec(
+            platform="unipus",
+            name="submit",
+            label="提交任务组（写操作）",
+            description=(
+                "U校园的作答 = 转发服务端标准答案。默认干跑（只出计划），"
+                "confirm=true 才真的提交，提交后回读 progress/v2。"
+            ),
+            params=(
+                ActionParam("assignment_id", "任务号", required=True),
+                ActionParam(
+                    "confirm",
+                    "确认提交",
+                    hint="填 true 才会真的提交（不可逆）；留空 = 干跑（默认）",
+                ),
+            ),
+            mutates=True,
+        ),
+        _unipus_submit,
     )
     register(
         ActionSpec(
