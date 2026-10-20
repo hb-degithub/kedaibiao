@@ -195,6 +195,8 @@ class ConsoleService:
         self._platform_logs: dict[str, list[dict[str, Any]]] = {}
         self._seq = 0
         self._active_job_id: str | None = None
+        #: 用户点了「停止」的任务 id（后台线程每个循环点检查一次）
+        self._cancel_requested: set[str] = set()
         # 动作与适配器注册表都是进程级的，重复登记会覆盖，这里调用是幂等的。
         # 必须显式调用：程序化使用 ConsoleService 时不会经过 CLI 的 main()，
         # 否则会出现「平台数 0」这种看起来像坏了的结果。
@@ -2199,6 +2201,7 @@ class ConsoleService:
         submit_pending: bool = False,
         only_required: bool = True,
         interval: float = 20.0,
+        max_groups: int = 60,
         mode: str = "",
         viewer: Viewer | None = None,
     ) -> dict[str, Any]:
@@ -2229,6 +2232,11 @@ class ConsoleService:
         if not (0.5 <= minutes <= 240):
             raise ConsoleError("minutes 要在 0.5~240 之间", kind="bad_request", status=400)
         interval = max(5.0, min(float(interval or 20.0), 120.0))
+        try:
+            max_groups = int(max_groups or 60)
+        except (TypeError, ValueError):
+            max_groups = 60
+        max_groups = max(1, min(max_groups, 500))
         mode = str(mode or "").strip().lower()
         if mode and mode not in ("submit", "duration", "both"):
             raise ConsoleError("mode 只能是 submit / duration / both", kind="bad_request", status=400)
@@ -2252,7 +2260,7 @@ class ConsoleService:
                 "job_id": job_id, "kind": "brush", "platform": scope,
                 "course": course, "minutes": minutes, "confirm": bool(confirm),
                 "submit_pending": bool(submit_pending), "only_required": bool(only_required),
-                "mode": mode,
+                "mode": mode, "max_groups": max_groups,
                 "status": "running", "started_at": _now(), "finished_at": None,
                 "summary": "", "error": "", "logs": [],
                 "counts": {"submitted": 0, "skipped": 0, "failed": 0,
@@ -2276,7 +2284,7 @@ class ConsoleService:
             target=self._run_brush,
             args=(job_id, scope, course, minutes, bool(confirm), bool(submit_pending),
                   bool(only_required), interval, owner_id, cookie_file, creds,
-                  do_duration, mode),
+                  do_duration, mode, max_groups),
             name=f"kedaibiao-brush-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
@@ -2285,7 +2293,7 @@ class ConsoleService:
         self, job_id: str, platform: str, course_id: str, minutes: float,
         confirm: bool, submit_pending: bool, only_required: bool, interval: float,
         owner_id: int, cookie_file: str | None, credentials: Any,
-        do_duration: bool = True, mode: str = "both",
+        do_duration: bool = True, mode: str = "both", max_groups: int = 60,
     ) -> None:
         from kedaibiao.platforms.unipus import duration as duration_mod
 
@@ -2326,12 +2334,40 @@ class ConsoleService:
                 f"未完成 {len(pending)}（范围：{'仅必修' if only_required else '全部'}）",
             )
 
+            stopped_any = False
+            if len(pending) > max_groups:
+                self._job_log(
+                    job_id, "warn",
+                    f"· 本轮最多提交 {max_groups} 组（剩余 {len(pending) - max_groups} 组未处理，"
+                    f"可再跑一次；勾选「只处理必修」能少交很多）",
+                )
+                pending = pending[:max_groups]
+            if not only_required:
+                non_required = [g for g in pending if not g.get("required")]
+                if non_required:
+                    self._job_log(
+                        job_id, "warn",
+                        f"· 未勾选「只处理必修」：这 {len(non_required)} 组不在班级必修里，"
+                        f"提交不会计入门户进度",
+                    )
             if submit_pending:
                 rate_limited = 0
                 permission_denied = 0
                 aborted = False
+                stopped = False
+                estimated_minutes = (len(pending) * (interval + 1.5)) / 60 if confirm else 0
+                if confirm and pending:
+                    self._job_log(
+                        job_id, "info",
+                        f"· 预计耗时约 {estimated_minutes:.0f} 分钟"
+                        f"（{len(pending)} 组 × 约 {interval + 1.5:.0f}s）；"
+                        f"随时可点「停止任务」",
+                    )
                 for index, group in enumerate(pending):
-                    if aborted:
+                    if self._cancelled(job_id):
+                        stopped = True
+                        stopped_any = True
+                    if stopped or aborted:
                         counts["skipped"] += 1
                         continue
                     if not confirm:
@@ -2350,7 +2386,9 @@ class ConsoleService:
                             f"✓ 已提交 {group['name']}：code={result.get('code')!r}",
                         )
                         if index < len(pending) - 1:
-                            time.sleep(interval)
+                            if self._sleep_interruptible(job_id, interval):
+                                stopped = True
+                                stopped_any = True
                     except Exception as exc:  # noqa: BLE001
                         counts["failed"] += 1
                         code = getattr(exc, "code", None)
@@ -2446,8 +2484,9 @@ class ConsoleService:
                     f"轮换 {report.rotations}；记账 {report.credited_seconds:.0f} 秒；"
                     f"错误：{report.error or '无'}",
                 )
+            prefix = "已停止" if stopped_any else "完成"
             summary = (
-                f"完成：提交 {counts['submitted']}，跳过 {counts['skipped']}，"
+                f"{prefix}：提交 {counts['submitted']}，跳过 {counts['skipped']}，"
                 f"失败 {counts['failed']}，时长目标 {counts['targets']} 个，"
                 f"记账 {counts['credited_seconds']} 秒"
             )
@@ -2796,6 +2835,41 @@ class ConsoleService:
                 job["summary"] = summary
             if error:
                 job["error"] = error
+
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        """请求停止一个后台任务（刷课 / 批量提交）。
+
+        只置标记，真正的停在后台线程的下一个检查点生效 —— 正在飞的那一个
+        请求会照常完成，不会留下半提交状态。
+        """
+        job_id = str(job_id or "").strip()
+        with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            if job is None:
+                raise ConsoleError(
+                    f"任务 {job_id!r} 不存在或已被清理", kind="not_found", status=404
+                )
+            if job.get("status") != "running":
+                return _jsonable(job)
+            self._cancel_requested.add(job_id)
+            job["cancel_requested"] = True
+        self._job_log(job_id, "warn", "· 收到停止请求：处理完当前这一组就停")
+        return _jsonable(self._jobs_by_id.get(job_id) or job)
+
+    def _cancelled(self, job_id: str) -> bool:
+        with self._lock:
+            return job_id in self._cancel_requested
+
+    def _sleep_interruptible(self, job_id: str, seconds: float) -> bool:
+        """分片睡；返回 True 表示期间收到了停止请求。"""
+        remaining = float(seconds)
+        while remaining > 0:
+            if self._cancelled(job_id):
+                return True
+            step = min(1.0, remaining)
+            time.sleep(step)
+            remaining -= step
+        return self._cancelled(job_id)
 
     def wait_for_idle(self, timeout: float = 30.0) -> bool:
         """等当前任务结束。给测试与优雅关闭用。"""

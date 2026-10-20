@@ -429,6 +429,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 viewer=viewer,
             ))
 
+        if path.startswith("/api/jobs/") and path.endswith("/cancel"):
+            job_id = path[len("/api/jobs/") : -len("/cancel")].strip("/")
+            if not job_id or "/" in job_id:
+                return self._error(404, f"没有这个路由: {path}", "not_found")
+            return self._json(200, self.service.cancel_job(job_id))
+
         if path.startswith("/api/platforms/") and path.endswith("/brush"):
             name = path[len("/api/platforms/") : -len("/brush")].strip("/")
             if not name or "/" in name:
@@ -445,7 +451,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 confirm=bool(payload.get("confirm", False)),
                 submit_pending=bool(payload.get("submit_pending", False)),
                 only_required=bool(payload.get("only_required", True)),
-                interval=payload.get("interval") or 8,
+                interval=payload.get("interval") or 20,
+                max_groups=payload.get("max_groups") or 60,
                 mode=str(payload.get("mode") or ""),
                 viewer=viewer,
             ))

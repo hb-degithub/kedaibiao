@@ -366,6 +366,13 @@ FastAPI / uvicorn。于是控制台用标准库 `http.server` 实现。
 `confirm=false` 只出计划（不提交、不建连接）。`job.counts` 含
 `submitted / skipped / failed / targets / credited_seconds`；日志在 `job.logs`。
 
+可选参数：`max_groups`（默认 60，单轮最多提交多少组）、`interval`（默认 20 秒）。
+
+### `POST /api/jobs/<job_id>/cancel` —— 停止后台任务
+
+刷课 / 批量提交运行中可以停：只置停止标记，**正在飞的那一个请求会照常完成**，
+之后不再继续。返回任务对象（`cancel_requested: true`）。任务不存在或已结束 → 200/404。
+
 ### `POST /api/platforms/<name>/batch-submit` —— 一键全部提交（后台任务）
 
 只对**有原生提交链路**（`native_submit_flow = true`）且 `capabilities.submit = true`

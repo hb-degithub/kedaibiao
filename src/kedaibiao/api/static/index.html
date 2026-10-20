@@ -354,6 +354,11 @@
               <input id="brush-submit-pending" type="checkbox" checked>
               <span class="field-hint">只提交没做过的组；组间默认停 20 秒，遇限流会自动停手</span>
             </label>
+            <label class="field" for="brush-max-groups">
+              <span class="field-label">本轮最多提交几组</span>
+              <input id="brush-max-groups" class="mono" type="number" min="1" max="500" step="1" value="60">
+              <span class="field-hint">防止一口气跑两小时；每轮 20 秒一组，可分批</span>
+            </label>
             <label class="field" for="brush-only-required">
               <span class="field-label">只处理必修</span>
               <input id="brush-only-required" type="checkbox" checked>
@@ -365,6 +370,7 @@
             <button id="brush-submit-live" class="btn btn-warn" type="button">提交未完成（真交）</button>
             <button id="brush-duration-dry" class="btn btn-run" type="button">刷时长（干跑）</button>
             <button id="brush-duration-live" class="btn btn-warn" type="button">刷时长（真跑）</button>
+            <button id="brush-stop" class="btn" type="button" hidden>停止任务</button>
             <button id="brush-back" class="btn" type="button">收起面板</button>
             <span id="brush-state" class="field-hint"></span>
           </div>

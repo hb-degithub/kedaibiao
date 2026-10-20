@@ -5798,6 +5798,15 @@
       $('brush-duration-live').addEventListener('click', function () { startBrush(true, 'duration'); });
     }
     if ($('brush-back')) { $('brush-back').addEventListener('click', closeBrushBook); }
+    if ($('brush-stop')) {
+      $('brush-stop').addEventListener('click', function () {
+        if (!state.brush.jobId) { return; }
+        if (!window.confirm('停止当前刷课任务？\n\n正在提交的那一组会做完，之后不再继续。')) { return; }
+        postJson('/api/jobs/' + encodeURIComponent(state.brush.jobId) + '/cancel', {})
+          .then(function () { brushLog('· 已发出停止请求…'); })
+          .catch(function (e) { brushLog('✗ 停止失败：' + describeError(e)); });
+      });
+    }
     if ($('batch-dry')) { $('batch-dry').addEventListener('click', function () { batchStart(false); }); }
     if ($('batch-live')) { $('batch-live').addEventListener('click', function () { batchStart(true); }); }
     if ($('batch-close')) {
@@ -6465,9 +6474,11 @@
         ' · 记账 ' + (counts.credited_seconds || 0) + ' 秒');
       if (job.status === 'running') {
         setText('brush-state', '任务 ' + jobId + ' 运行中…');
+        show($('brush-stop'), true);
         state.brush.timer = setTimeout(brushPoll, 1200);
         return;
       }
+      show($('brush-stop'), false);
       state.brush.busy = false;
       if (job.status === 'done') {
         setText('brush-state', job.summary || '完成');
@@ -6498,6 +6509,7 @@
       submit_pending: mode !== 'duration' &&
         !!($('brush-submit-pending') && $('brush-submit-pending').checked),
       only_required: !!($('brush-only-required') && $('brush-only-required').checked),
+      max_groups: parseInt(($('brush-max-groups') && $('brush-max-groups').value) || '60', 10) || 60,
       interval: 20
     };
     var what = mode === 'submit' ? '提交未完成任务'
@@ -6507,7 +6519,8 @@
       '\n\n教材：' + (state.brush.tree && state.brush.tree.course || state.brush.bookId) +
       (mode === 'submit' ? '' : '\n时长：' + minutes + ' 分钟') +
       '\n提交已完成？：' + (params.submit_pending ? '会提交未完成的组' : '不提交') +
-      '\n只处理必修：' + (params.only_required ? '是' : '否') +
+      '\n只处理必修：' + (params.only_required ? '是' : '否（非必修不计入进度）') +
+      '\n本轮最多：' + params.max_groups + ' 组' +
       '\n\n' + (confirm ? '确定执行？' : '开始干跑？');
     if (!window.confirm(msg)) { return; }
     state.brush.busy = true;
