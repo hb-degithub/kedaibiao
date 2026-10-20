@@ -52,7 +52,7 @@
                     │  platforms/base.PlatformAdapter  (契约)    │
                     └───┬───────────┬───────────┬───────────────┘
                         │           │           │
-                    unipus/       超星/       智慧树/   …         适配层
+                    unipus/    neusoft/     超星/       智慧树/   …      适配层
                         │           │           │
             ┌───────────┴───────────┴───────────┴───────────────┐
             │ 两种传输方式，按平台二选一                          │
@@ -238,6 +238,28 @@ PYTHONPATH=src python3 scripts/pinco_progress.py --course <courseId> --all --liv
 > 10 页 PPT 从 50% → 100%，整门课 15 份材料（9~387 页）全部推到 100%。证据、
 > 阴性结果（学习时长上报不涨进度）与复现见
 > [docs/verification/pinco-progress.md](docs/verification/pinco-progress.md)。
+
+#### 东软智慧教育（neusoft）已接入的动作
+
+```bash
+PYTHONPATH=src python3 -m kedaibiao actions neusoft          # 动作清单
+PYTHONPATH=src python3 -m kedaibiao action neusoft courses   # 课程（按学期聚合）
+PYTHONPATH=src python3 -m kedaibiao action neusoft resources course=<课程号>
+PYTHONPATH=src python3 -m kedaibiao action neusoft study course=<课程号> limit=1
+PYTHONPATH=src python3 -m kedaibiao action neusoft attendance
+PYTHONPATH=src python3 -m kedaibiao action neusoft sign attendance_id=<场次号>
+```
+
+- **登录**：走 App 接口（`/system/auth/app/login`），**平台侧没有图形验证码**，
+  因此不涉及任何验证码对抗；租户从 `/system/tenant/app/option` 的「外网」条目解析。
+- **刷课**：`startStudy` → 三段进度上报（`watchProgress=99999`）→ **回读**
+  `getRecordInfo`，只有 `studyStatus == 2` 才算完成。接口 `code=0` 不算数。
+- **作业**：学习任务是**跨课程的学期列表**（`study-task/page` 要 `termId`，
+  传课程上下文会 403），`ctlId` 就是作答要的 `testId`。
+- **交卷**：默认**只存草稿不交卷**（写路径只有 APK 静态证据），要交卷需设
+  `KEDAIBIAO_NEUSOFT_ALLOW_SUBMIT=1`。
+- **签到**：已签 / 已结束 / 需定位却无坐标，三条守卫挡在请求之前。
+- 协议事实与实测记录见 [docs/research/neusoft.md](docs/research/neusoft.md)。
 
 #### U校园（unipus）已接入的动作
 

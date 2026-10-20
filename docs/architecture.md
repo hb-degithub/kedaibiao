@@ -222,8 +222,11 @@ CLI 与将来的 Web 控制面必须共用**同一套**装配逻辑。各拼各�
 
 ## 7. 已知待办
 
-- 东软系具体平台清单未落地：`platforms/neusoft/` 目前只有包占位。
-  接入前需要先做一次平台调研（登录协议、题型、端点），产出放进 `docs/research/`。
+- ~~东软系具体平台清单未落地~~ —— 已落地 **NEUMOOC**（`platforms/neusoft/`）：
+  协议档案在 [research/neusoft.md](research/neusoft.md)，实现覆盖登录（App 接口，免验证码）、
+  课程/资源、刷课（视频+文档，以回读 `studyStatus` 判定）、学习任务与作业、考勤签到。
+  仍待补的三项写在档案 §8：`questionType` 完整枚举、组合题 `parentQuestionNo`、
+  `refreshToken` 的域名。
 - 本项目许可已定为 `AGPL-3.0-only`（见 `LICENSE` 与
   [license-policy.md](license-policy.md)）。**接入任何第三方代码前必须先过
   兼容性检查** —— AGPL 第 7 条禁止附加限制，非商业/同等条款类协议一律不可并入。

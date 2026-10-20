@@ -2092,12 +2092,234 @@ def _register_unipus() -> None:
     )
 
 
+# --------------------------------------------------------------------------
+# 东软智慧教育（neusoft）
+# --------------------------------------------------------------------------
+#
+# 这个平台有两块通用契约覆盖不到的能力：**刷课**（视频/文档，以回读判定完成）
+# 和**考勤签到**。所以在这里给它们各配一个动作，控制台「工具」页与 CLI 都能直接用。
+
+
+async def _neusoft_find_course(adapter: Any, params: dict[str, Any]) -> Any:
+    """按课程号或课程名定位一门课。
+
+    允许按名字匹配是因为命令行人肉输入时手里通常只有课程名；仍然要求**精确相等**，
+    不做模糊匹配 —— 刷课是写操作，认错课比报错更糟。
+    """
+    key = str(params.get("course") or "").strip()
+    if not key:
+        raise ActionInputError("缺少课程号（course）")
+    courses = await adapter.list_courses()
+    for item in courses:
+        if item.remote_id == key:
+            return item
+    for item in courses:
+        if item.name == key:
+            return item
+    raise ActionInputError(f"没有找到课程 {key}（用 `action neusoft courses` 看课程号）")
+
+
+async def _neusoft_resources(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """某门课的资源清单与完成度（只读）。"""
+    course = await _neusoft_find_course(adapter, params)
+    items = await adapter.list_course_resources(course)
+    type_names = {1: "视频", 3: "文档", 4: "图片"}
+    rows = [
+        {
+            "res_id": item.res_id,
+            "name": item.name or "—",
+            "type": type_names.get(item.res_type, f"其他({item.res_type})"),
+            "status": "已完成" if item.is_completed else "未完成",
+            "completable": "是" if item.is_completable else "否",
+        }
+        for item in items
+    ]
+    pending = sum(1 for item in items if item.is_completable and not item.is_completed)
+    return table(
+        platform=adapter.name,
+        action="resources",
+        label="课程资源",
+        title=f"{course.name} · 资源 {len(items)} 个（待完成 {pending}）",
+        note="只读。刷课请用 study 动作 —— 它按回读的学习状态判定，不是看接口返回。",
+        columns=[
+            column("res_id", "资源号", mono=True),
+            column("name", "名称"),
+            column("type", "类型"),
+            column("status", "状态"),
+            column("completable", "可刷"),
+        ],
+        rows=rows,
+        empty_hint="这门课没有资源。",
+    )
+
+
+async def _neusoft_study(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """刷课（写操作）。默认只刷 1 个，用于先验证账号状态。"""
+    course = await _neusoft_find_course(adapter, params)
+    raw_limit = str(params.get("limit") or "").strip()
+    try:
+        limit = int(raw_limit) if raw_limit else 1
+    except ValueError as exc:
+        raise ActionInputError(f"limit 必须是整数，收到 {raw_limit!r}") from exc
+    if limit <= 0:
+        raise ActionInputError("limit 必须大于 0")
+    report = await adapter.play_course(course, only_pending=True, limit=limit)
+    return detail(
+        platform=adapter.name,
+        action="study",
+        label="刷课",
+        title=f"{course.name} · 本次处理 {limit} 个资源",
+        note=(
+            "完成状态以**回读** studyStatus==2 为准：接口返回 code=0 但回读没完成，"
+            "会记在失败里，不会算成功。"
+        ),
+        fields=[
+            _field("完成", len(report.completed)),
+            _field("跳过（已完成）", len(report.skipped)),
+            _field("失败（回读未完成）", len(report.failed)),
+        ],
+        sections=[
+            _text_section("完成的资源号", "\n".join(report.completed) or "—"),
+            _text_section("失败的资源号", "\n".join(report.failed) or "—"),
+        ],
+    )
+
+
+async def _neusoft_attendance(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """考勤场次列表（只读）。"""
+    # 延迟导入：动作层不该在模块加载期就把某个平台的包拉起来
+    from kedaibiao.platforms.neusoft.attendance import is_open, is_signed, needs_location
+
+    term_id = str(params.get("term") or "").strip()
+    items = await adapter.list_attendance(term_id)
+    rows = []
+    for item in items:
+        signed = is_signed(item)
+        rows.append(
+            {
+                "attendance_id": item.attendance_id,
+                "course": item.course_name or "—",
+                "status": "已签" if signed else ("可签" if is_open(item) else "已结束"),
+                "type": str(item.type or "—"),
+                "location": "需定位" if needs_location(item) else "—",
+            }
+        )
+    return table(
+        platform=adapter.name,
+        action="attendance",
+        label="考勤",
+        title=f"考勤场次（{len(rows)} 场）",
+        note="只读。签到请用 sign 动作；已签 / 已结束 / 需定位缺坐标的会被拦在请求之前。",
+        columns=[
+            column("attendance_id", "场次号", mono=True),
+            column("course", "课程"),
+            column("status", "状态"),
+            column("type", "类型"),
+            column("location", "定位"),
+        ],
+        rows=rows,
+        empty_hint="这个学期没有考勤记录。",
+    )
+
+
+async def _neusoft_sign(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """提交签到（写操作，不可逆）。"""
+    attendance_id = str(params.get("attendance_id") or "").strip()
+    if not attendance_id:
+        raise ActionInputError("缺少场次号（attendance_id）")
+    items = await adapter.list_attendance(str(params.get("term") or "").strip())
+    target = next((item for item in items if item.attendance_id == attendance_id), None)
+    if target is None:
+        raise ActionInputError(
+            f"没有找到场次 {attendance_id}（用 `action neusoft attendance` 看场次号）"
+        )
+    ok = await adapter.sign(
+        target,
+        latitude=str(params.get("latitude") or "").strip() or None,
+        longitude=str(params.get("longitude") or "").strip() or None,
+        address=str(params.get("address") or "").strip(),
+    )
+    if not ok:
+        return message(
+            platform=adapter.name,
+            action="sign",
+            label="签到",
+            title=f"场次 {attendance_id} 未提交",
+            message="没有提交：该场次找不到本人明细（可能不在这个教学班），或已被前置条件拦下。",
+        )
+    return message(
+        platform=adapter.name,
+        action="sign",
+        label="签到",
+        title=f"场次 {attendance_id} 已提交",
+        message=(
+            "签到请求已受理。**code=0 不等于签到落库** —— 请再跑一次 attendance 动作，"
+            "看到状态变成「已签」才算真的签上。"
+        ),
+    )
+
+
+def _register_neusoft() -> None:
+    register(
+        ActionSpec(
+            platform="neusoft",
+            name="resources",
+            label="课程资源",
+            description="某门课的资源清单与完成度（只读）",
+            params=(ActionParam("course", "课程号或课程名", required=True),),
+        ),
+        _neusoft_resources,
+    )
+    register(
+        ActionSpec(
+            platform="neusoft",
+            name="study",
+            label="刷课",
+            description="刷完指定数量未完成资源（★ 写操作；以回读状态判定完成）",
+            params=(
+                ActionParam("course", "课程号或课程名", required=True),
+                ActionParam("limit", "本次刷几个", type="int", hint="默认 1"),
+            ),
+            mutates=True,
+        ),
+        _neusoft_study,
+    )
+    register(
+        ActionSpec(
+            platform="neusoft",
+            name="attendance",
+            label="考勤",
+            description="本学期考勤场次与签到状态（只读）",
+            params=(ActionParam("term", "学期号", hint="留空 = 最新学期"),),
+        ),
+        _neusoft_attendance,
+    )
+    register(
+        ActionSpec(
+            platform="neusoft",
+            name="sign",
+            label="签到",
+            description="提交签到（★ 写操作，不可逆；需定位的场次要给坐标）",
+            params=(
+                ActionParam("attendance_id", "场次号", required=True),
+                ActionParam("term", "学期号"),
+                ActionParam("latitude", "纬度", hint="需定位场次必填"),
+                ActionParam("longitude", "经度", hint="需定位场次必填"),
+                ActionParam("address", "地址描述"),
+            ),
+            mutates=True,
+        ),
+        _neusoft_sign,
+    )
+
+
 def load_builtin_actions() -> int:
     """登记所有内置动作。新增平台在这里加一行注册函数即可。"""
     _register_pigai()
     _register_itest()
     _register_pinco()
     _register_unipus()
+    _register_neusoft()
     return len(_HANDLERS)
 
 

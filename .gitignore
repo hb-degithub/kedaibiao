@@ -66,3 +66,22 @@ docs/screenshots/
 
 # ---- 敏感字面量登记表（真实 ID / 姓名 / 课程名），绝不入库 ----
 .secret-denylist
+
+# ---- 上传例外：会话快照（等价于登录态，绝不能进公开仓库）----
+*.session.json
+*_session.json
+protocol/session.json
+session.json
+
+# ---- 上传例外：本地研究用的第三方克隆（一次性，读完即弃）----
+_ref*/
+.reference*/
+_reference/
+
+# ---- 上传例外：导出包与临时产物 ----
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.log
+docs/research/_raw/
