@@ -228,6 +228,10 @@ async def cmd_quiz(args: argparse.Namespace) -> int:
         )
         report = await runner.run_section_quiz(args.chapter, confirm=args.confirm)
         print(f"\n■ {name} 章节测验「{report.title}」：{report.summary()}")
+        if report.submitted:
+            print(f"  交卷结果：{report.score_text or report.submit_note or '平台未回显分数'}")
+            if report.score is not None:
+                print(f"  得分：{report.score:g}")
         for item in report.items:
             mark = "✓" if item.verified else ("-" if not item.answer else "?")
             print(
@@ -242,6 +246,107 @@ async def cmd_quiz(args: argparse.Namespace) -> int:
     finally:
         await browser.close()
     return 0
+
+
+async def cmd_exams(args: argparse.Namespace) -> int:
+    """列出考试/作业（只读）。"""
+    browser = PwBrowser(PwConfig(storage_state=args.state, user_agent=UA))
+    await browser.start()
+    page = await browser.new_page()
+    try:
+        await login.ensure_login(
+            page,
+            username=args.user or os.environ.get("CHAOXING_USER", ""),
+            password=args.password or os.environ.get("CHAOXING_PASSWORD", ""),
+            state_path=args.state,
+        )
+        course_id, clazz_id, name = await resolve_course(page, args.course)
+        runner = ChaoxingQuiz(page, course_id=course_id, clazz_id=clazz_id)
+        items = await runner.list_exams()
+        print(f"课程：{name}（{course_id}）共 {len(items)} 场考试/作业")
+        for item in items:
+            flag = {
+                "todo": "待做", "done": "已完成", "expired": "已过期",
+            }.get(item.status, item.status)
+            mobile = "（只允许手机APP）" if item.mobile_only else ""
+            print(
+                f"  {flag:<4} {item.exam_id:<10} {item.title[:36]:<38} "
+                f"{item.end_time_text[:20]}{mobile}"
+            )
+    finally:
+        await browser.close()
+    return 0
+
+
+async def cmd_exam(args: argparse.Namespace) -> int:
+    """做一场考试/作业（默认干跑，--confirm 才交卷并回读分数）。"""
+    from kedaibiao.platforms.chaoxing.quiz import ExamItem
+
+    answerer = _build_chain_answerer(no_llm=args.no_llm)
+    browser = PwBrowser(PwConfig(storage_state=args.state, user_agent=UA))
+    await browser.start()
+    page = await browser.new_page()
+    try:
+        await login.ensure_login(
+            page,
+            username=args.user or os.environ.get("CHAOXING_USER", ""),
+            password=args.password or os.environ.get("CHAOXING_PASSWORD", ""),
+            state_path=args.state,
+        )
+        course_id, clazz_id, name = await resolve_course(page, args.course)
+        runner = ChaoxingQuiz(
+            page,
+            course_id=course_id,
+            clazz_id=clazz_id,
+            answerer=answerer,
+            emit=make_emit(args.verbose),
+            human_gate=_cli_human_gate,
+        )
+        item = ExamItem(
+            title=args.title or args.exam_id,
+            status="todo",
+            exam_id=args.exam_id,
+            relation_id=args.relation_id,
+            action="goTest",
+        )
+        report = await runner.run_exam(item, confirm=args.confirm)
+        print(f"\n■ {name} 考试/作业「{report.title}」：{report.summary()}")
+        if report.submitted:
+            print(f"  交卷结果：{report.score_text or report.submit_note or '平台未回显分数'}")
+        for plan_item in report.items:
+            print(
+                f"  {plan_item.number:>2}. {plan_item.type_name} "
+                f"答案={plan_item.answer or '（未答）'} "
+                f"置信度={plan_item.confidence:.2f} 来源={plan_item.source}"
+            )
+    finally:
+        await browser.close()
+    return 0
+
+
+def _build_chain_answerer(*, no_llm: bool = False):
+    from kedaibiao.tasks.answerer import ChainAnswerer, RuleAnswerer
+    from kedaibiao.tasks.llm import build_llm_answerer
+
+    chain: list[Any] = []
+    if not no_llm:
+        llm = build_llm_answerer(_env_map())
+        if llm is not None:
+            chain.append(llm)
+    chain.append(RuleAnswerer())
+    return ChainAnswerer(chain, min_confidence=0.0)
+
+
+async def _cli_human_gate(kind: str, message: str) -> bool:
+    """CLI 版人工认证：打印原因，等用户回车。
+
+    人脸认证只有在有摄像头的可见浏览器里才能完成；CLI 至少要做到「别偷偷跳过」。
+    """
+    print(f"\n⚠ {message}")
+    answer = await asyncio.to_thread(
+        input, "完成认证后按回车继续（输入 n 放弃）："
+    )
+    return answer.strip().lower() not in ("n", "no", "q")
 
 
 def _env_map() -> dict[str, str]:
@@ -291,6 +396,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_study.add_argument("--doc-seconds", type=float, default=0.0, help="每个文档停留秒数")
     p_study.add_argument("--all", action="store_true", help="包含已完成的")
     p_study.set_defaults(func=cmd_study)
+
+    p_exams = sub.add_parser("exams", help="列出考试/作业")
+    p_exams.add_argument("--course", required=True)
+    p_exams.set_defaults(func=cmd_exams)
+
+    p_exam = sub.add_parser("exam", help="做考试/作业（默认干跑，--confirm 才交卷）")
+    p_exam.add_argument("--course", required=True)
+    p_exam.add_argument("--exam-id", required=True, help="考试 id（考试列表里那一列）")
+    p_exam.add_argument("--title", default="", help="考试名称（只用于显示）")
+    p_exam.add_argument("--relation-id", default="", help="作答记录 id（可留空）")
+    p_exam.add_argument("--confirm", action="store_true", help="真交卷（不可逆）")
+    p_exam.add_argument("--no-llm", action="store_true", help="不用大模型，只查题库/规则")
+    p_exam.set_defaults(func=cmd_exam)
 
     p_quiz = sub.add_parser("quiz", help="自动刷题（默认干跑，--confirm 才交卷）")
     p_quiz.add_argument("--course", required=True)

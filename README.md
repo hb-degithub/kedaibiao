@@ -438,38 +438,36 @@ python3 scripts/chaoxing_studio.py
 #   → http://127.0.0.1:8900/
 ```
 
-页面左边选课程，右边两个页签：
+页面左边选课程，右边四个页签：
 
 - **任务点 / 刷课**：列出视频/文档任务点与完成状态，点「开始刷课」；可限制
   最多任务点数、倍速（上限 2x）、文档停留秒数。视频逐个播完，日志实时滚动；
-- **测验 / 刷题**：列出章节测验，「干跑填卷」只填卷并逐题回读核验、不提交；
-  「填卷并交卷」才真交（不可逆，二次确认）。
+- **章节测验**：「干跑填卷」只填卷并逐题回读核验、不提交；「填卷并交卷」才真交；
+- **作业 / 考试**：列出考试/作业（待做/已完成/已过期/只允许手机 APP），
+  网页端可做的可直接干跑或交卷；**交卷后显示平台回显的分数**
+  （本次成绩/最终成绩），平台不公布时如实说明；
+- **运行日志**：勾选顶栏「前台显示」，会显示浏览器当前画面（视频播放、答题页
+  都能看到）和实时日志。
 
 ![学习通自动化台](docs/screenshots/chaoxing/studio.png)
 
-##### 命令行
+![考试列表与交卷](docs/screenshots/chaoxing/studio-exam.png)
+
+**人工认证**：考试/视频出现人脸识别时会**暂停**，页面弹出「我已完成认证，继续」。
+服务器没有摄像头，需要在有摄像头的本机用 `--show` 跑（会显示浏览器窗口）：
 
 ```bash
-# 课程 / 任务点
-python3 scripts/chaoxing_auto.py courses
-python3 scripts/chaoxing_auto.py tasks --course 205643380
-
-# 刷课：先 --limit 1 验证一个，再放开
-python3 scripts/chaoxing_auto.py study --course 205643380 --limit 1
-
-# 刷题：默认干跑；--confirm 才交卷
-python3 scripts/chaoxing_auto.py quiz --course 219456814 --chapter 461423614
-python3 scripts/chaoxing_auto.py quiz --course 219456814 --chapter 461423614 --confirm
+python3 scripts/chaoxing_studio.py --show
 ```
 
-**边界与纪律**：
+点按钮前请在窗口里完成学习通的人脸认证，再点继续。
 
-- 视频**人脸采集**、考试**验证码**不代过 —— 检测到就停在日志里等人工；
-- 同账号同一时刻只跑一个任务（并发会互相顶掉播放器）；
-- 2x 是播放器白名单上限（更高会被打回 1x 并暂停），不建议硬改；
-- 题面里的**公式截图**模型看不到，这类题在报告里标低置信度，不当成「已答对」；
-- 考试（尤其「只允许手机 APP」的）不在自动化范围内；
-- 只读看板仍保留：`scripts/chaoxing_web.py --profile ...` / `scripts/chaoxing_peek.py`。
+##### 公式截图题
+
+题面里的公式是图片，纯文本模型答不了。刷题链路会把题干/选项图片交给
+`VisionAnswerer`（OpenAI 多模态格式，需要可读图的模型；可用
+`KEDAIBIAO_LLM_VISION_MODEL` 单独指定，UA 用 `KEDAIBIAO_LLM_USER_AGENT`）。
+模型不可用时降级规则答题器，报告里如实标低置信度。
 
 ![学习通只读看板](docs/screenshots/chaoxing/overview.png)
 

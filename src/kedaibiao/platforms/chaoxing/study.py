@@ -273,6 +273,7 @@ class ChaoxingStudy:
         emit: Callable[[str, str], None] | None = None,
         rate: float = 2.0,
         poll: float = 2.0,
+        human_gate: Callable[[str, str], Any] | None = None,
     ) -> None:
         self.page = page
         self.course_id = str(course_id)
@@ -283,6 +284,8 @@ class ChaoxingStudy:
         self.rate = max(1.0, min(float(rate or 2.0), 2.0))
         self.poll = max(_MIN_POLL, float(poll or 2.0))
         self._emit = emit or (lambda level, message: log.info("%s", message))
+        #: 人脸采集/防挂机需要人工认证时的钩子：``await human_gate(kind, message) -> bool``
+        self.human_gate = human_gate
         self._tree: tree_mod.CourseTree | None = None
         self._cards_cache: dict[tuple[str, int], dict[str, Any] | None] = {}
 
@@ -512,6 +515,14 @@ class ChaoxingStudy:
                 "",
             )
             if human_text:
+                handled = await self._ask_human(
+                    "face",
+                    f"播放器要求人工认证：{human_text[:40]}（请在可见窗口完成，然后继续）",
+                )
+                if handled:
+                    self.emit("ok", "人工认证已完成，继续播放")
+                    await self._resume(frame)
+                    continue
                 return StepResult(
                     task,
                     "needs_human",
@@ -601,6 +612,20 @@ class ChaoxingStudy:
             except Exception:  # noqa: BLE001 - 回调失败不打断播放
                 log.debug("on_question 回调失败", exc_info=True)
         return await self._click_continue(frame)
+
+    async def _ask_human(self, kind: str, message: str) -> bool:
+        """暂停等人工处理（人脸采集/弹题）。没有钩子就返回 False。"""
+        if self.human_gate is None:
+            return False
+        self.emit("warn", message)
+        try:
+            result = self.human_gate(kind, message)
+            if asyncio.iscoroutine(result):
+                result = await result
+            return bool(result)
+        except Exception:  # noqa: BLE001 - 人工钩子失败按「没处理」算
+            log.debug("human_gate 失败", exc_info=True)
+            return False
 
     async def _resume(self, frame: Any) -> None:
         with contextlib.suppress(PwError):

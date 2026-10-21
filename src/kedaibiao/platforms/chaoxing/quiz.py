@@ -764,13 +764,16 @@ def _exam_item(li: _Node) -> ExamItem | None:
     exam_id = ""
     relation_id = ""
     end_time_text = ""
+    # 实测（2026-10-21）：examnotes?examId=<args[1]> 能打开该场考试；
+    # args[2] 是作答记录 id（须知页 startBtn 的 tId=<args[1]>&id=<args[2]>）。
+    # viewExamAnswer(<examId>,<answerId>) 同理。
     if action == "goTest":
-        relation_id = args[1] if len(args) > 1 else ""
-        exam_id = args[2] if len(args) > 2 else ""
+        exam_id = args[1] if len(args) > 1 else ""
+        relation_id = args[2] if len(args) > 2 else ""
         end_time_text = args[3] if len(args) > 3 else ""
     elif action == "viewExamAnswer":
-        relation_id = args[0] if args else ""
-        exam_id = args[1] if len(args) > 1 else ""
+        exam_id = args[0] if args else ""
+        relation_id = args[1] if len(args) > 1 else ""
     if not end_time_text:
         end_time_text = _end_time_text(li)
 

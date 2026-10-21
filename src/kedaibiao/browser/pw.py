@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -436,6 +437,45 @@ class PwPage:
         return str(target)
 
     # -- 帧 ---------------------------------------------------------------
+
+    async def click_text(
+        self,
+        text: str,
+        *,
+        timeout: int = 15000,
+        exact: bool = False,
+        tag: str = "*",
+    ) -> None:
+        """按可见文本点击元素。
+
+        学习通的导航/弹窗按钮经常只有文本没有稳定 id（「章节」「考试」「进入考试」），
+        按文本点比维护一堆选择器稳。``exact=False`` 用包含匹配，优先最短命中
+        （避免「考试」点到「考试须知」）。
+        """
+        deadline = time.time() + timeout / 1000.0
+        while time.time() < deadline:
+            hit = await self.eval(
+                "(() => {"
+                " const want = " + js_str(text) + ";"
+                " const exact = " + ("true" if exact else "false") + ";"
+                " const tag = " + js_str(tag) + ";"
+                " const nodes = Array.from(document.querySelectorAll(tag));"
+                " const hits = nodes.filter(el => {"
+                "   const value = (el.innerText || '').trim();"
+                "   if (!value) return false;"
+                "   if (exact ? value !== want : value.indexOf(want) < 0) return false;"
+                "   return (el.offsetWidth || 0) > 0 && (el.offsetHeight || 0) > 0;"
+                " });"
+                " if (!hits.length) return false;"
+                " hits.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);"
+                " hits[0].click();"
+                " return true;"
+                "})()"
+            )
+            if hit:
+                return
+            await asyncio.sleep(0.25)
+        raise PwError(f"找不到可点击的文本：{text!r}")
 
     async def fetch_text(self, url: str, *, headers: dict[str, str] | None = None,
                         timeout: int = 30000) -> str:

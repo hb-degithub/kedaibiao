@@ -112,3 +112,20 @@ def test_quiz_report_summary() -> None:
     assert "作答 1" in summary
     assert "核验通过 1" in summary
     assert "未提交（干跑）" in summary
+
+
+def test_parse_score_text_real_exam_view() -> None:
+    # 实测已完成考试页原文：交卷成功 / 本次成绩85.0分 / 最终成绩85.0分
+    text = "交卷成功\n当前时间2026-10-21 16:47:54\n本次成绩85.0分\n最终成绩85.0分"
+    score, snippet = quizrun.parse_score_text(text)
+    assert score == 85.0
+    assert "85" in snippet
+
+
+def test_parse_score_text_variants() -> None:
+    assert quizrun.parse_score_text("得分：72")[0] == 72.0
+    assert quizrun.parse_score_text("本次成绩：90 分")[0] == 90.0
+    assert quizrun.parse_score_text("最终成绩 100")[0] == 100.0
+    # 「满分 100.0」不是得分，不能误判
+    assert quizrun.parse_score_text("题量: 5 满分: 100.0")[0] is None
+    assert quizrun.parse_score_text("")[0] is None

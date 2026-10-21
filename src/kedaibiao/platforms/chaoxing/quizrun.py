@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -43,6 +44,10 @@ CARDS_URL = (
     "&ut=s&cpi={cpi}&v=2025-0424-1038-4&mooc2=1&isMicroCourse=false"
     "&editorPreview=0&crossId="
 )
+COURSE_URL = (
+    "https://mooc1.chaoxing.com/visit/stucoursemiddle"
+    "?courseid={courseid}&clazzid={clazzid}&cpi={cpi}&ismooc2=1&v=2"
+)
 EXAM_NOTES_URL = (
     "https://mooc1.chaoxing.com/exam-ans/exam/test/examcode/examnotes"
     "?courseId={courseid}&classId={clazzid}&examId={exam}&cpi={cpi}"
@@ -57,6 +62,38 @@ _QTYPE_MAP = {
     2: QuestionType.FILL,
     3: QuestionType.JUDGE,
 }
+
+
+#: 交卷后页面上的分数格式（实测：「本次成绩85.0分」「最终成绩85.0分」）
+_SCORE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"本次成绩\s*[:：]?\s*(\d+(?:\.\d+)?)\s*分?"), "本次成绩"),
+    (re.compile(r"最终成绩\s*[:：]?\s*(\d+(?:\.\d+)?)\s*分?"), "最终成绩"),
+    (re.compile(r"得分\s*[:：]?\s*(\d+(?:\.\d+)?)"), "得分"),
+    (re.compile(r"成绩\s*[:：]?\s*(\d+(?:\.\d+)?)\s*分"), "成绩"),
+)
+
+
+def parse_score_text(text: str) -> tuple[float | None, str]:
+    """从交卷结果页正文里抠分数：返回 ``(分数, 原文片段)``；没有就 ``(None, "")``。
+
+    - 只认「本次成绩/最终成绩/得分/成绩X分」这些明确措辞，避免把「满分 100.0」
+      误当成得分；
+    - 分数原文片段直接给界面展示（例如「本次成绩 85 分」）。
+    """
+    body = text or ""
+    for pattern, label in _SCORE_PATTERNS:
+        match = pattern.search(body)
+        if not match:
+            continue
+        try:
+            score = float(match.group(1))
+        except ValueError:  # pragma: no cover - 正则已限制为数字
+            continue
+        snippet = match.group(0).strip()
+        if "分" not in snippet:
+            snippet = f"{label} {score:g} 分"
+        return score, snippet
+    return None, ""
 
 
 @dataclass(slots=True)
@@ -87,6 +124,12 @@ class QuizReport:
     items: list[PlanItem] = field(default_factory=list)
     submitted: bool = False
     submit_detail: str = ""
+    #: 交卷后平台回显的分数（没回显就是 None，别编一个）
+    score: float | None = None
+    #: 分数原文（「本次成绩 85.0 分」这种），给界面展示用
+    score_text: str = ""
+    #: 交卷后需要人工处理的原因（图形验证码/未及格重做等）
+    submit_note: str = ""
     started_at: float = field(default_factory=time.time)
     finished_at: float = 0.0
 
@@ -107,8 +150,14 @@ class QuizReport:
         ]
         if self.submitted:
             parts.append("已提交")
+            if self.score is not None:
+                parts.append(f"得分 {self.score:g}")
+            elif self.score_text:
+                parts.append(self.score_text)
         else:
             parts.append("未提交（干跑）")
+        if self.submit_note:
+            parts.append(self.submit_note)
         parts.append(f"耗时 {elapsed:.1f} 秒")
         return "，".join(parts)
 
@@ -125,6 +174,7 @@ class ChaoxingQuiz:
         cpi: str = "",
         answerer: Any | None = None,
         emit: Callable[[str, str], None] | None = None,
+        human_gate: Callable[[str, str], Any] | None = None,
     ) -> None:
         self.page = page
         self.course_id = str(course_id)
@@ -132,6 +182,8 @@ class ChaoxingQuiz:
         self.cpi = str(cpi or "")
         self.answerer = answerer
         self._emit = emit or (lambda level, message: log.info("%s", message))
+        #: 需要人工认证（人脸/验证码）时的钩子：``await human_gate(kind, message) -> bool``
+        self.human_gate = human_gate
         self._questions: dict[str, quiz_mod.Question] = {}
 
     def emit(self, level: str, message: str) -> None:
@@ -162,8 +214,60 @@ class ChaoxingQuiz:
             await asyncio.sleep(1.5)
         raise PwError("没有找到章节测验 iframe（doHomeWorkNew）")
 
+    async def list_exams(self) -> list[quiz_mod.ExamItem]:
+        """打开课程页 → 「考试」tab → 解析考试/作业/测验列表（只读）。"""
+        await self.page.goto(
+            COURSE_URL.format(
+                courseid=self.course_id, clazzid=self.clazz_id, cpi=self.cpi
+            ),
+            timeout=60000,
+        )
+        await self.page.wait_for("span.nav_content", timeout=30000)
+        await self.page.click_text("考试", timeout=15000)
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            frame = await self.page.frame("exam-list")
+            if frame is not None:
+                html = await frame.html()
+                items = quiz_mod.parse_exam_list(html)
+                if items:
+                    return items
+            await asyncio.sleep(1.5)
+        raise PwError("考试列表为空：可能没有考试，或会话已失效")
+
+    async def _wait_human(self, kind: str, message: str) -> bool:
+        """暂停等人工处理（人脸采集/图形验证码）。没有钩子就返回 False。"""
+        if self.human_gate is None:
+            return False
+        self.emit("warn", message)
+        try:
+            result = self.human_gate(kind, message)
+            if asyncio.iscoroutine(result):
+                result = await result
+            return bool(result)
+        except Exception:  # noqa: BLE001 - 人工钩子失败按「没处理」算
+            log.debug("human_gate 失败", exc_info=True)
+            return False
+
+    async def _page_has_face_capture(self) -> bool:
+        """考试须知/答题页是否出现人脸识别层。"""
+        html = ""
+        with contextlib.suppress(PwError):
+            html = await self.page.html()
+        return any(
+            marker in html
+            for marker in ("人脸比对", "reFaceRecognition", "face_Box", "人脸识别")
+        )
+
     async def open_exam_item(self, item: quiz_mod.ExamItem) -> PwPage:
-        """打开考试/作业：须知页 → 勾选同意 → 进入考试 → 返回答题页。"""
+        """打开考试/作业：须知页 → 勾选同意 → 进入考试 → 返回答题页。
+
+        - 「只允许手机 APP 考试」直接拒绝（网页端没有这条路）；
+        - 考试人脸识别不代过：检测到就调 ``human_gate`` 等人工完成，再重试进入；
+        - 答题页可能开在新标签里，按 URL/标题特征挑出来。
+        """
+        if item.mobile_only:
+            raise PwError(f"「{item.title}」只允许手机 APP 作答，网页端做不了")
         url = EXAM_NOTES_URL.format(
             courseid=self.course_id,
             clazzid=self.clazz_id,
@@ -172,27 +276,150 @@ class ChaoxingQuiz:
         )
         await self.page.goto(url, timeout=90000)
         self.emit("info", f"考试须知：{item.title}（{item.status}）")
-        # 勾「我已阅读并同意」，再点「进入考试」
-        for _ in range(3):
+        for _attempt in range(3):
             with contextlib.suppress(PwError):
                 await self.page.click(".face_agreement", timeout=8000)
+            await asyncio.sleep(0.5)
             with contextlib.suppress(PwError):
                 await self.page.click("#startBtn", timeout=8000)
-            await asyncio.sleep(3)
-            if "examnotes" not in self.page.url:
-                break
-        # 答题页可能开在新标签里
+            await asyncio.sleep(4)
+            if await self._page_has_face_capture():
+                handled = await self._wait_human(
+                    "face",
+                    "考试要求人脸识别：请在可见的浏览器窗口里完成认证后再继续",
+                )
+                if not handled:
+                    raise PwError("考试需要人脸识别，未完成认证（可用 --show 打开窗口人工认证）")
+                continue
+            answer_page = await self._pick_answer_page()
+            if answer_page is not None:
+                return answer_page
+        raise PwError("进入考试后没有找到答题页（可能需要人脸识别/被风控）")
+
+    async def _pick_answer_page(self) -> PwPage | None:
+        """在已打开的页面里找答题页（新标签或当前页跳转两种都可能）。"""
         context = getattr(self.page.raw, "context", None)
-        deadline = time.time() + 60
+        pages = list(getattr(context, "pages", []) or [])
+        for raw_page in pages:
+            url = str(getattr(raw_page, "url", "") or "")
+            if "examnotes" in url:
+                continue
+            if "reVersionTestStartNew" in url or "/test/" in url:
+                return PwPage(raw_page)
+        deadline = time.time() + 30
         while time.time() < deadline:
             pages = list(getattr(context, "pages", []) or [])
-            for candidate in pages:
-                if "reVersionTestStartNew" in candidate.url or "/test/" in candidate.url:
-                    return PwPage(candidate)
-            if "examnotes" not in self.page.url:
-                return self.page
-            await asyncio.sleep(2)
-        raise PwError("进入考试后没有找到答题页（可能被风控/需要人脸）")
+            for raw_page in pages:
+                url = str(getattr(raw_page, "url", "") or "")
+                if "examnotes" in url:
+                    continue
+                candidate = PwPage(raw_page)
+                with contextlib.suppress(PwError):
+                    html = await candidate.html()
+                    if 'id="question' in html or "TiMu" in html:
+                        return candidate
+            await asyncio.sleep(1.5)
+        return None
+
+    async def run_exam(
+        self,
+        item: quiz_mod.ExamItem,
+        *,
+        confirm: bool = False,
+        max_seconds: float = 0.0,
+    ) -> QuizReport:
+        """作业/考试全链路：进入 → 解析 → 作答 → 填卷 → 核验 →（可选）交卷 → 回读分数。"""
+        report = QuizReport(title=item.title)
+        page: Any = None
+        try:
+            page = await self.open_exam_item(item)
+            self.emit("info", f"已进入答题页：{page.url[:120]}")
+            html = await page.html()
+            work = quiz_mod.parse_work(html)
+            if not work.questions:
+                # 题目可能在 iframe 里
+                for frame in await page.frames():
+                    with contextlib.suppress(PwError):
+                        work = quiz_mod.parse_work(await frame.html())
+                    if work.questions:
+                        page = frame
+                        break
+            await self.set_questions(work)
+            report.title = work.title or item.title
+            self.emit(
+                "info",
+                f"「{report.title}」：{len(work.questions)} 题"
+                f"（字体解码{'已启用' if work.deobfuscated else '未启用'}）",
+            )
+            report.items = await self.plan(work)
+            filled = await self.fill(page, report.items)
+            await self.verify(page, report.items)
+            if confirm and filled == 0:
+                report.submit_note = "一题都没填上，拒绝交卷（避免交白卷）"
+                self.emit("warn", report.submit_note)
+                confirm = False
+            if confirm:
+                result = await self._exam_submit(page, confirm=True)
+                report.submitted = bool(result.get("submitted"))
+                if report.submitted:
+                    outcome = await self.wait_result(timeout=max(max_seconds, 90.0))
+                    report.score = outcome.get("score")
+                    report.score_text = str(outcome.get("score_text") or "")
+                    report.submit_note = str(outcome.get("submit_note") or "")
+            else:
+                await self._exam_submit(page, confirm=False)
+        finally:
+            if page is not None and page is not self.page:
+                with contextlib.suppress(Exception):
+                    await page.raw.close()
+        report.finished_at = time.time()
+        return report
+
+    async def _exam_submit(self, page: Any, *, confirm: bool) -> dict[str, Any]:
+        """考试交卷：定位「交卷」按钮；确认后点两次（页面自身有二次确认层）。"""
+        script = (
+            "(() => {"
+            " const labels = ['交卷', '提交试卷', '确认交卷'];"
+            " const nodes = Array.from(document.querySelectorAll('a,button,div,span'));"
+            " for (const label of labels) {"
+            "   const hit = nodes.find(el => (el.innerText || '').trim() === label"
+            "     && (el.offsetWidth || 0) > 0 && (el.offsetHeight || 0) > 0);"
+            "   if (hit) { if (!"
+            + ("false" if confirm else "true")
+            + ") hit.click(); return {ok: true, text: label, selector: 'text'}; }"
+            " }"
+            " return {ok: false, error: '找不到交卷按钮'};"
+            "})()"
+        )
+        result = await page.eval(script)
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "交卷脚本返回异常"}
+        if not confirm:
+            self.emit(
+                "info",
+                f"干跑：找到交卷按钮「{result.get('text', '?')}」，未点击"
+                if result.get("ok")
+                else f"干跑：{result.get('error', '找不到交卷按钮')}",
+            )
+            return result
+        # 页面自身的二次确认层
+        await asyncio.sleep(2)
+        confirm_script = (
+            "(() => {"
+            " const labels = ['确定', '确认', '确认交卷', '继续交卷'];"
+            " const nodes = Array.from(document.querySelectorAll('a,button,div,span'));"
+            " for (const label of labels) {"
+            "   const hit = nodes.find(el => (el.innerText || '').trim() === label"
+            "     && (el.offsetWidth || 0) > 0 && (el.offsetHeight || 0) > 0);"
+            "   if (hit) { hit.click(); return true; }"
+            " }"
+            " return false;"
+            "})()"
+        )
+        with contextlib.suppress(PwError):
+            await page.eval(confirm_script)
+        result["submitted"] = True
+        return result
 
     # -- 解析与作答计划 ---------------------------------------------------
 
@@ -201,16 +428,33 @@ class ChaoxingQuiz:
         return quiz_mod.parse_work(html)
 
     def _core_question(self, question: quiz_mod.Question) -> CoreQuestion:
+        """把学习通题目转成统一 Question，**把图片 URL 也带上**。
+
+        带图题（公式截图）交给 ``VisionAnswerer`` 走视觉；纯文本题行为不变。
+        选项文本为空但有图的，先放占位符，避免选项列表错位。
+        """
         qtype = _QTYPE_MAP.get(int(question.qtype), QuestionType.UNKNOWN)
-        images = [f"[图片{i + 1}]" for i in range(len(question.images))]
         stem = (question.text or "").strip()
-        if images and not stem:
+        if not stem and question.images:
             stem = "（题面是图片）"
+        options = []
+        for opt in question.options:
+            text = (opt.text or "").strip()
+            if not text and opt.images:
+                text = f"（选项{opt.letter}是图片）"
+            options.append(text or f"选项{opt.letter}")
+        raw: dict[str, Any] = {"images": list(question.images)}
+        option_images = {
+            opt.letter: list(opt.images) for opt in question.options if opt.images
+        }
+        if option_images:
+            raw["option_images"] = option_images
         return CoreQuestion(
             stem=stem,
             type=qtype,
-            options=[opt.text or " ".join(images) for opt in question.options],
+            options=options,
             remote_id=question.qid,
+            raw=raw,
         )
 
     async def plan(self, work: quiz_mod.Work) -> list[PlanItem]:
@@ -326,9 +570,16 @@ class ChaoxingQuiz:
         return passed
 
     async def submit(self, frame: Any, *, confirm: bool = False) -> dict[str, Any]:
-        """交卷。``confirm=False`` 只定位提交按钮（干跑），不点击。"""
+        """交卷。``confirm=False`` 只定位提交按钮（干跑），不点击。
+
+        真交卷后**回读结果**：平台一般会把「本次成绩/最终成绩」打回页面，
+        这里轮询页面与各 iframe 的正文，把分数原文与数值一起带回来。
+        """
         script = quiz_mod.submit_script(dry_run=not confirm)
-        result = await frame.eval(script)
+        try:
+            result = await frame.eval(script)
+        except PwError as exc:
+            return {"ok": False, "error": f"提交脚本执行失败：{exc}"}
         if not isinstance(result, dict):
             result = {"ok": False, "error": f"提交脚本返回 {type(result).__name__}"}
         if not confirm:
@@ -339,10 +590,85 @@ class ChaoxingQuiz:
                 else f"干跑：{result.get('error', '找不到提交按钮')}",
             )
             return result
-        await asyncio.sleep(3)
-        result["page_text"] = (await self.page.text("body"))[:300]
         result["submitted"] = True
+        # 交卷后页面可能跳转/弹层，最多等 90 秒把结果捞出来
+        outcome = await self.wait_result()
+        result.update(outcome)
         return result
+
+    async def _collect_text(self) -> str:
+        """页面 + 所有 iframe 的可见正文（交卷结果可能在任一层）。"""
+        chunks: list[str] = []
+        with contextlib.suppress(PwError):
+            chunks.append(await self.page.text("body"))
+        for frame in await self.page.frames():
+            with contextlib.suppress(PwError):
+                text = await frame.eval("document.body ? document.body.innerText : ''")
+                if text:
+                    chunks.append(str(text))
+        return "\n".join(chunks)
+
+    async def wait_result(self, *, timeout: float = 90.0) -> dict[str, Any]:
+        """等交卷结果：返回 ``{score, score_text, submit_note, page_text}``。
+
+        只有平台真的回显分数才填 ``score``；找不到就如实返回 ``None``，
+        并给出「平台没有回显分数」的说明，不猜一个数字。
+        """
+        deadline = time.time() + timeout
+        finished_markers = (
+            "提交成功", "交卷成功", "已交卷", "测评结果", "查看答案", "答题结果",
+        )
+        last_text = ""
+        while time.time() < deadline:
+            text = last_text = await self._collect_text()
+            if "请输入验证码" in text or "验证码" in text and "提交" in text:
+                return {
+                    "score": None,
+                    "score_text": "",
+                    "submit_note": "需要图形验证码，已停止（请人工提交一次）",
+                    "page_text": text[:500],
+                }
+            if "未达到及格线" in text or "未达到通过标准" in text:
+                return {
+                    "score": None,
+                    "score_text": "",
+                    "submit_note": "平台提示未达到及格线/通过标准，需要重做",
+                    "page_text": text[:500],
+                }
+            if "答题次数" in text and "已用完" in text:
+                return {
+                    "score": None,
+                    "score_text": "",
+                    "submit_note": "答题次数已用完",
+                    "page_text": text[:500],
+                }
+            score, snippet = parse_score_text(text)
+            if score is not None:
+                self.emit("ok", f"交卷成功，平台回显：{snippet}")
+                return {
+                    "score": score,
+                    "score_text": snippet,
+                    "submit_note": "",
+                    "page_text": text[:500],
+                }
+            if any(marker in text for marker in finished_markers):
+                # 页面显示已交卷但没给分（老师设置了考后不公布/不显示分数）
+                await asyncio.sleep(3)
+                text = await self._collect_text()
+                if any(marker in text for marker in finished_markers):
+                    return {
+                        "score": None,
+                        "score_text": "",
+                        "submit_note": "平台已收卷，但没有回显分数（老师可能关闭了成绩显示）",
+                        "page_text": text[:500],
+                    }
+            await asyncio.sleep(2)
+        return {
+            "score": None,
+            "score_text": "",
+            "submit_note": "交卷后 90 秒内没有读到结果",
+            "page_text": last_text[:500],
+        }
 
     async def run_section_quiz(
         self,
@@ -363,16 +689,26 @@ class ChaoxingQuiz:
             f"（字体解码{'已启用' if work.deobfuscated else '未启用'}）",
         )
         report.items = await self.plan(work)
-        await self.fill(frame, report.items)
+        filled = await self.fill(frame, report.items)
         await self.verify(frame, report.items)
+        if confirm and filled == 0:
+            report.submit_note = "一题都没填上，拒绝交卷（避免交白卷）"
+            self.emit("warn", report.submit_note)
+            confirm = False
         if confirm:
             result = await self.submit(frame, confirm=True)
             report.submitted = bool(result.get("submitted"))
-            report.submit_detail = json.dumps(result, ensure_ascii=False)[:300]
+            report.score = result.get("score")
+            report.score_text = str(result.get("score_text") or "")
+            report.submit_note = str(result.get("submit_note") or "")
+            report.submit_detail = json.dumps(
+                {k: v for k, v in result.items() if k != "page_text"},
+                ensure_ascii=False,
+            )[:300]
         else:
             await self.submit(frame, confirm=False)
         report.finished_at = time.time()
         return report
 
 
-__all__ = ["ChaoxingQuiz", "PlanItem", "QuizReport"]
+__all__ = ["ChaoxingQuiz", "PlanItem", "QuizReport", "parse_score_text"]

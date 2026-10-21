@@ -80,6 +80,14 @@ class Job:
     started_at: float = field(default_factory=time.time)
     finished_at: float = 0.0
     stop: bool = False
+    #: 最近一帧页面截图（前台显示用；JPEG 字节）
+    live: bytes | None = None
+    live_at: float = 0.0
+    #: 交卷后平台回显的分数
+    score: float | None = None
+    score_text: str = ""
+    #: 正在等人工认证时的提示（人脸采集/验证码）
+    human: str = ""
 
     def add(self, level: str, message: str) -> None:
         stamp = time.strftime("%H:%M:%S")
@@ -94,6 +102,10 @@ class Job:
             "status": self.status,
             "summary": self.summary,
             "logs": self.logs,
+            "has_live": self.live is not None,
+            "score": self.score,
+            "score_text": self.score_text,
+            "human": self.human,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "elapsed": round((self.finished_at or time.time()) - self.started_at, 1),
@@ -111,6 +123,9 @@ class Studio:
         self._seq = 0
         self._courses: list[dict[str, str]] = []
         self._courses_at = 0.0
+        #: job_id → 人工认证等待事件（POST /api/human 置位）
+        self._human_events: dict[str, threading.Event] = {}
+        self._exams: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 
     # -- 浏览器会话 -------------------------------------------------------
 
@@ -123,6 +138,51 @@ class Studio:
 
     async def _ensure_login(self, page: Any) -> None:
         await login.ensure_login(page, state_path=self.state)
+
+    # -- 前台显示 / 人工认证 ----------------------------------------------
+
+    async def _live_loop(self, page: Any, job: Job) -> None:
+        """后台每 2 秒抓一帧页面截图，供前端「前台显示」用。"""
+        while job.status == "running":
+            try:
+                job.live = await page.raw.screenshot(type="jpeg", quality=60)
+                job.live_at = time.time()
+            except Exception:  # noqa: BLE001 - 截图失败不影响任务
+                log.debug("截图失败", exc_info=True)
+            await asyncio.sleep(2.0)
+
+    async def _wait_human(self, job: Job, kind: str, message: str) -> bool:
+        """暂停任务等人工认证（人脸采集/验证码）；前端点按钮后继续。"""
+        event = threading.Event()
+        self._human_events[job.job_id] = event
+        job.human = message
+        job.add("warn", message + "（在页面上点「我已完成认证」继续）")
+        handled = False
+        try:
+            # 分段等：用户点「停止」时也要能立刻结束，不要干等 10 分钟
+            for _ in range(60):
+                if job.stop:
+                    break
+                if await asyncio.to_thread(event.wait, 10):
+                    handled = True
+                    break
+        finally:
+            job.human = ""
+            self._human_events.pop(job.job_id, None)
+        if handled:
+            job.add("ok", "人工认证已完成，任务继续")
+        return bool(handled)
+
+    def human_done(self, job_id: str) -> bool:
+        """前端按钮：告诉正在等待的任务「人已经处理完了」。"""
+        event = self._human_events.get(job_id)
+        if event is None:
+            return False
+        event.set()
+        return True
+
+    def live(self) -> bytes | None:
+        return self._job.live if self._job is not None else None
 
     # -- 课程与任务点（同步接口，内部跑 asyncio） -------------------------
 
@@ -226,20 +286,29 @@ class Studio:
                 async with PwBrowser(self._config()) as browser:
                     page = await browser.new_page()
                     await self._ensure_login(page)
-                    study = ChaoxingStudy(
-                        page,
-                        course_id=course_id,
-                        clazz_id=clazz_id,
-                        emit=emit,
-                        rate=rate,
-                    )
-                    report = await study.run(
-                        kinds=tuple(k.strip() for k in kinds.split(",") if k.strip()),
-                        limit=limit,
-                        doc_seconds=doc_seconds,
-                        cancel=lambda: job.stop,
-                    )
-                    return report.summary()
+                    live = asyncio.create_task(self._live_loop(page, job))
+                    try:
+                        study = ChaoxingStudy(
+                            page,
+                            course_id=course_id,
+                            clazz_id=clazz_id,
+                            emit=emit,
+                            rate=rate,
+                            human_gate=lambda kind, message: self._wait_human(
+                                job, kind, message
+                            ),
+                        )
+                        report = await study.run(
+                            kinds=tuple(
+                                k.strip() for k in kinds.split(",") if k.strip()
+                            ),
+                            limit=limit,
+                            doc_seconds=doc_seconds,
+                            cancel=lambda: job.stop,
+                        )
+                        return report.summary()
+                    finally:
+                        live.cancel()
 
             return asyncio.run(run())
 
@@ -253,26 +322,124 @@ class Studio:
                 async with PwBrowser(self._config()) as browser:
                     page = await browser.new_page()
                     await self._ensure_login(page)
-                    runner = ChaoxingQuiz(
-                        page,
-                        course_id=course_id,
-                        clazz_id=clazz_id,
-                        answerer=answerer,
-                        emit=emit,
-                    )
-                    report = await runner.run_section_quiz(chapter_id, confirm=confirm)
-                    for item in report.items:
-                        emit(
-                            "ok" if item.verified else "warn",
-                            f"{item.number}. {item.type_name} → {item.answer or '（未答）'}"
-                            f"（{item.confidence:.2f} {item.source}）",
+                    live = asyncio.create_task(self._live_loop(page, job))
+                    try:
+                        runner = ChaoxingQuiz(
+                            page,
+                            course_id=course_id,
+                            clazz_id=clazz_id,
+                            answerer=answerer,
+                            emit=emit,
+                            human_gate=lambda kind, message: self._wait_human(
+                                job, kind, message
+                            ),
                         )
-                    return report.summary()
+                        report = await runner.run_section_quiz(
+                            chapter_id, confirm=confirm
+                        )
+                    finally:
+                        live.cancel()
+                for item in report.items:
+                    emit(
+                        "ok" if item.verified else "warn",
+                        f"{item.number}. {item.type_name} → {item.answer or '（未答）'}"
+                        f"（{item.confidence:.2f} {item.source}）",
+                    )
+                if report.submitted:
+                    job.score = report.score
+                    job.score_text = report.score_text or report.submit_note
+                return report.summary()
 
             return asyncio.run(run())
 
         mode = "填卷并交卷" if confirm else "干跑填卷"
         return self.start("quiz", f"{mode} {chapter_id}", worker)
+
+    # -- 考试 / 作业 ------------------------------------------------------
+
+    def exams(self, course_id: str, clazz_id: str, *, refresh: bool = False
+              ) -> list[dict[str, Any]]:
+        """考试/作业列表（含待做/已完成/只允许手机 APP 等状态）。"""
+        key = (course_id, clazz_id)
+        cached = self._exams.get(key)
+        if cached and not refresh and time.time() - cached[0] < 120:
+            return cached[1]
+
+        async def run() -> list[dict[str, Any]]:
+            async with PwBrowser(self._config()) as browser:
+                page = await browser.new_page()
+                await self._ensure_login(page)
+                runner = ChaoxingQuiz(
+                    page, course_id=course_id, clazz_id=clazz_id
+                )
+                items = await runner.list_exams()
+                return [
+                    {
+                        "title": item.title,
+                        "status": item.status,
+                        "exam_id": item.exam_id,
+                        "relation_id": item.relation_id,
+                        "end_time": item.end_time_text,
+                        "mobile_only": item.mobile_only,
+                        "action": item.action,
+                    }
+                    for item in items
+                ]
+
+        data = asyncio.run(run())
+        self._exams[key] = (time.time(), data)
+        return data
+
+    def exam(self, *, course_id: str, clazz_id: str, exam_id: str,
+             title: str, relation_id: str = "", confirm: bool = False
+             ) -> dict[str, Any]:
+        """做一场「网页端可做」的考试/作业：干跑填卷或交卷并回读分数。"""
+        def worker(job: Job, emit) -> str:
+            async def run() -> str:
+                from kedaibiao.platforms.chaoxing.quiz import ExamItem
+
+                answerer = _answerer()
+                item = ExamItem(
+                    title=title or exam_id,
+                    status="todo",
+                    exam_id=exam_id,
+                    relation_id=relation_id,
+                    action="goTest",
+                )
+                async with PwBrowser(self._config()) as browser:
+                    page = await browser.new_page()
+                    await self._ensure_login(page)
+                    live = asyncio.create_task(self._live_loop(page, job))
+                    try:
+                        runner = ChaoxingQuiz(
+                            page,
+                            course_id=course_id,
+                            clazz_id=clazz_id,
+                            answerer=answerer,
+                            emit=emit,
+                            human_gate=lambda kind, message: self._wait_human(
+                                job, kind, message
+                            ),
+                        )
+                        report = await runner.run_exam(item, confirm=confirm)
+                    finally:
+                        live.cancel()
+                for plan_item in report.items:
+                    emit(
+                        "ok" if plan_item.verified else "warn",
+                        f"{plan_item.number}. {plan_item.type_name} → "
+                        f"{plan_item.answer or '（未答）'}"
+                        f"（{plan_item.confidence:.2f} {plan_item.source}）",
+                    )
+                if report.submitted:
+                    job.score = report.score
+                    job.score_text = report.score_text or report.submit_note
+                return report.summary()
+
+            return asyncio.run(run())
+
+        mode = "考试交卷" if confirm else "考试干跑"
+        return self.start("exam", f"{mode} {title or exam_id}", worker)
 
 
 def _answerer() -> Any:
@@ -338,19 +505,29 @@ PAGE = """<!doctype html>
         border:1px solid var(--line)}
   .pill.ok{color:var(--ok);border-color:#235c42}
   .pill.warn{color:var(--warn);border-color:#5c4a1d}
+  .pill.bad{color:var(--bad);border-color:#5c2a32}
   .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 14px}
   input[type=number]{width:80px;background:var(--panel2);color:var(--fg);
         border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+  #score{display:none;margin:0 0 10px;padding:10px 14px;border-radius:10px;
+         border:1px solid #235c42;background:#12211b;color:var(--ok);font-weight:600}
+  #human{display:none;margin:0 0 10px;padding:10px 14px;border-radius:10px;
+         border:1px solid #5c4a1d;background:#221d12;color:var(--warn)}
+  #livebox{display:none;margin-bottom:10px;border:1px solid var(--line);border-radius:10px;
+           overflow:hidden;background:#000}
+  #livebox img{width:100%;display:block}
   #log{background:#0b0e13;border:1px solid var(--line);border-radius:10px;padding:12px;
-       height:calc(100vh - 240px);overflow:auto;font-family:ui-monospace,Consolas,monospace;
+       height:calc(100vh - 320px);overflow:auto;font-family:ui-monospace,Consolas,monospace;
        font-size:12.5px;white-space:pre-wrap}
   .l-ok{color:var(--ok)} .l-warn{color:var(--warn)} .l-error{color:var(--bad)}
   .l-info{color:#9fb3cc}
   .hint{color:var(--muted);font-size:12.5px}
+  label.chk{display:flex;align-items:center;gap:6px;color:var(--muted);cursor:pointer}
 </style></head><body>
 <header>
   <div class="brand">学习通 · 自动化台</div>
   <span class="muted" id="state">正在检查登录态…</span>
+  <label class="chk"><input type="checkbox" id="livechk">前台显示</label>
   <button class="btn" id="login">账号密码登录</button>
   <button class="btn" id="stop">停止当前任务</button>
 </header>
@@ -362,7 +539,8 @@ PAGE = """<!doctype html>
   <section>
     <div class="tabs">
       <div class="tab active" data-tab="tasks">任务点 / 刷课</div>
-      <div class="tab" data-tab="quiz">测验 / 刷题</div>
+      <div class="tab" data-tab="quiz">章节测验</div>
+      <div class="tab" data-tab="exam">作业 / 考试</div>
       <div class="tab" data-tab="log">运行日志</div>
     </div>
     <div id="pane-tasks">
@@ -374,23 +552,34 @@ PAGE = """<!doctype html>
         <button class="btn" id="refresh">刷新任务点</button>
       </div>
       <p class="hint">刷课会真的播放视频/打开文档，进度由播放器自己上报；
-        完成判定回读平台记录。人脸采集会停下等人工。</p>
+        完成判定回读平台记录。人脸采集会暂停，等你点「我已完成认证」。</p>
       <table><thead><tr><th>类型</th><th>小节</th><th>名称</th><th>时长</th><th>状态</th></tr></thead>
       <tbody id="tasks"></tbody></table>
     </div>
     <div id="pane-quiz" style="display:none">
-      <p class="hint">刷题默认干跑：解析题面 → 作答 → 填卷 → 逐题回读核验，不点提交。
-        点「填卷并交卷」才真交（不可逆）。</p>
+      <p class="hint">刷题默认干跑：解析题面（含公式截图，交给视觉模型）→ 作答 → 填卷 →
+        逐题回读核验，不点提交。点「填卷并交卷」才真交，交完显示平台回显的分数。</p>
       <table><thead><tr><th>小节</th><th>标题</th><th>操作</th></tr></thead>
       <tbody id="quizzes"></tbody></table>
     </div>
+    <div id="pane-exam" style="display:none">
+      <div class="controls">
+        <button class="btn" id="refresh-exams">刷新考试列表</button>
+        <span class="hint">只允许手机 APP 的条目网页端做不了，会标出来。</span>
+      </div>
+      <table><thead><tr><th>名称</th><th>状态</th><th>截止</th><th>操作</th></tr></thead>
+      <tbody id="exams"></tbody></table>
+    </div>
     <div id="pane-log" style="display:none">
+      <div id="score"></div>
+      <div id="human"></div>
+      <div id="livebox"><img id="live" alt="前台画面"></div>
       <div id="log">等待任务……</div>
     </div>
   </section>
 </main>
 <script>
-var current = null, courses = [], timer = null, tab = 'tasks';
+var current = null, courses = [], timer = null, liveTimer = null, tab = 'tasks';
 function q(id){return document.getElementById(id)}
 function api(path, body){
   var opt = body ? {method:'POST', headers:{'Content-Type':'application/json'},
@@ -406,6 +595,13 @@ function pill(kind, passed){
   return passed === true ? '<span class="pill ok">已完成</span>'
                          : '<span class="pill warn">待完成</span>';
 }
+function statusPill(status){
+  var map = {todo:'<span class="pill warn">待做</span>',
+             done:'<span class="pill ok">已完成</span>',
+             expired:'<span class="pill bad">已过期</span>'};
+  return map[status] || '<span class="pill">' + status + '</span>';
+}
+function cell(text){ return '<td>' + text + '</td>'; }
 function renderCourses(){
   q('courses').innerHTML = courses.map(function(c){
     return '<div class="course' + (current && current.course_id === c.course_id ? ' active' : '') +
@@ -419,12 +615,11 @@ function renderCourses(){
 function selectCourse(id, clazz){
   current = {course_id: id, clazz_id: clazz};
   renderCourses(); loadTasks();
+  if (tab === 'exam') loadExams();
 }
-function cell(text){ return '<td>' + text + '</td>'; }
 function loadTasks(){
   if (!current) return;
-  var loading = '<tr><td colspan="5" class="muted">读取任务点…（首次要几十秒）</td></tr>';
-  q('tasks').innerHTML = loading;
+  q('tasks').innerHTML = '<tr><td colspan="5" class="muted">读取任务点…（首次要几十秒）</td></tr>';
   api('/api/tasks?course=' + current.course_id + '&clazz=' + current.clazz_id)
     .then(function(res){
     if (res.error) {
@@ -446,8 +641,47 @@ function loadTasks(){
         t.chapter_id + '">填卷并交卷</button>';
       return '<tr>' + cell(t.index) + cell(t.name) + cell(dry + real) + '</tr>';
     }).join('') || '<tr><td colspan="3" class="muted">这门课没有章节测验</td></tr>';
-    Array.prototype.forEach.call(document.querySelectorAll('#quizzes button'), function(btn){
-      btn.onclick = function(){ startQuiz(btn.dataset.ch, btn.dataset.act === 'confirm'); };
+    wireQuizButtons();
+  });
+}
+function wireQuizButtons(){
+  Array.prototype.forEach.call(document.querySelectorAll('#quizzes button'), function(btn){
+    btn.onclick = function(){ startQuiz(btn.dataset.ch, btn.dataset.act === 'confirm'); };
+  });
+}
+function loadExams(){
+  if (!current) return;
+  q('exams').innerHTML = '<tr><td colspan="4" class="muted">读取考试列表…</td></tr>';
+  api('/api/exams?course=' + current.course_id + '&clazz=' + current.clazz_id)
+    .then(function(res){
+    if (res.error) {
+      q('exams').innerHTML = '<tr><td colspan="4">' + res.error + '</td></tr>';
+      return;
+    }
+    var rows = (res.exams || []).map(function(e){
+      var ops = '<span class="muted">—</span>';
+      if (e.mobile_only) {
+        ops = '<span class="pill bad">只允许手机 APP</span>';
+      } else if (e.status === 'todo') {
+        ops = '<button class="btn" data-act="dry" data-exam="' + e.exam_id +
+          '" data-title="' + e.title.replace(/"/g, '&quot;') +
+          '" data-rel="' + e.relation_id + '">干跑填卷</button> ' +
+          '<button class="btn danger" data-act="confirm" data-exam="' + e.exam_id +
+          '" data-title="' + e.title.replace(/"/g, '&quot;') +
+          '" data-rel="' + e.relation_id + '">交卷</button>';
+      } else if (e.action === 'viewExamAnswer') {
+        ops = '<span class="muted">已交卷（可查看答案）</span>';
+      }
+      return '<tr>' + cell(e.title) + cell(statusPill(e.status)) +
+        cell(e.end_time || '—') + cell(ops) + '</tr>';
+    });
+    q('exams').innerHTML = rows.join('') ||
+      '<tr><td colspan="4" class="muted">没有考试/作业</td></tr>';
+    Array.prototype.forEach.call(document.querySelectorAll('#exams button'), function(btn){
+      btn.onclick = function(){
+        startExam(btn.dataset.exam, btn.dataset.title, btn.dataset.rel,
+                  btn.dataset.act === 'confirm');
+      };
     });
   });
 }
@@ -456,13 +690,20 @@ function startStudy(){
   var body = {course: current.course_id, clazz: current.clazz_id,
               limit: +q('limit').value || 0, rate: +q('rate').value || 2,
               doc_seconds: +q('docsec').value || 0, kinds: 'video,document'};
-  api('/api/study', body).then(function(res){ handleStart(res); });
+  api('/api/study', body).then(handleStart);
 }
 function startQuiz(chapter, confirm){
   if (!current) return;
   if (confirm && !window.confirm('交卷不可逆，确认提交？')) return;
   api('/api/quiz', {course: current.course_id, clazz: current.clazz_id,
                     chapter: chapter, confirm: confirm}).then(handleStart);
+}
+function startExam(examId, title, rel, confirm){
+  if (!current) return;
+  if (confirm && !window.confirm('考试交卷不可逆，确认提交？')) return;
+  api('/api/exam', {course: current.course_id, clazz: current.clazz_id,
+                    exam_id: examId, title: title, relation_id: rel,
+                    confirm: confirm}).then(handleStart);
 }
 function handleStart(res){
   if (res.error) { alert(res.error); return; }
@@ -475,10 +716,22 @@ function switchTab(name){
   });
   q('pane-tasks').style.display = name === 'tasks' ? '' : 'none';
   q('pane-quiz').style.display = name === 'quiz' ? '' : 'none';
+  q('pane-exam').style.display = name === 'exam' ? '' : 'none';
   q('pane-log').style.display = name === 'log' ? '' : 'none';
+  if (name === 'exam') loadExams();
+}
+function renderLive(hasLive){
+  var box = q('livebox');
+  if (q('livechk').checked && hasLive) {
+    box.style.display = 'block';
+    q('live').src = '/api/live?t=' + Date.now();
+  } else {
+    box.style.display = 'none';
+  }
 }
 function pollJob(){
-  api('/api/job').then(function(job){
+  api('/api/job').then(function(payload){
+    var job = payload.job;
     if (!job) return;
     var log = q('log');
     log.innerHTML = (job.logs || []).map(function(item){
@@ -487,15 +740,45 @@ function pollJob(){
     log.scrollTop = log.scrollHeight;
     setState(job.status === 'running' ? ('运行中：' + job.label) : ('上次任务：' + job.summary),
              job.status === 'done');
+    var score = q('score');
+    if (job.score_text || job.score !== null && job.score !== undefined) {
+      score.style.display = 'block';
+      score.textContent = '交卷结果：' + (job.score_text ||
+        ('得分 ' + job.score)) + '（' + (job.summary || '') + '）';
+    } else {
+      score.style.display = 'none';
+    }
+    var human = q('human');
+    if (job.human) {
+      human.style.display = 'block';
+      human.innerHTML = job.human +
+        ' <button class="btn" id="human-done">我已完成认证，继续</button>';
+      q('human-done').onclick = function(){
+        api('/api/human', {job_id: job.job_id}).then(function(){ human.style.display = 'none'; });
+      };
+    } else {
+      human.style.display = 'none';
+    }
+    renderLive(job.has_live);
     q('study').disabled = job.status === 'running';
     clearTimeout(timer);
     if (job.status === 'running') timer = setTimeout(pollJob, 1500);
-    else loadTasks();
+    else if (tab === 'tasks') loadTasks();
   });
 }
 q('study').onclick = startStudy;
 q('refresh').onclick = loadTasks;
+q('refresh-exams').onclick = loadExams;
 q('stop').onclick = function(){ api('/api/stop', {}).then(pollJob); };
+q('livechk').onchange = function(){
+  if (q('livechk').checked) {
+    clearInterval(liveTimer);
+    liveTimer = setInterval(function(){ renderLive(true); }, 2000);
+  } else {
+    clearInterval(liveTimer);
+    q('livebox').style.display = 'none';
+  }
+};
 q('login').onclick = function(){
   var user = prompt('手机号 / 超星号'); if (!user) return;
   var pwd = prompt('密码（只用于这一次登录，不落盘）'); if (!pwd) return;
@@ -566,6 +849,28 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/job":
             self._json(200, {"job": self.studio.job()})
             return
+        if parsed.path == "/api/live":
+            frame = self.studio.live()
+            if frame is None:
+                self._send(404, b"no frame", "text/plain")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(frame)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(frame)
+            return
+        if parsed.path == "/api/exams":
+            query = parse_qs(parsed.query)
+            course = (query.get("course") or [""])[0]
+            clazz = (query.get("clazz") or [""])[0]
+            try:
+                self._json(200, {"exams": self.studio.exams(course, clazz)})
+            except Exception as exc:  # noqa: BLE001
+                log.exception("读取考试列表失败")
+                self._json(200, {"error": f"{type(exc).__name__}: {exc}"})
+            return
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - 基类接口
@@ -590,6 +895,19 @@ class Handler(BaseHTTPRequestHandler):
                     chapter_id=str(body.get("chapter") or ""),
                     confirm=bool(body.get("confirm")),
                 ))
+            elif parsed.path == "/api/exam":
+                self._json(200, self.studio.exam(
+                    course_id=str(body.get("course") or ""),
+                    clazz_id=str(body.get("clazz") or ""),
+                    exam_id=str(body.get("exam_id") or ""),
+                    title=str(body.get("title") or ""),
+                    relation_id=str(body.get("relation_id") or ""),
+                    confirm=bool(body.get("confirm")),
+                ))
+            elif parsed.path == "/api/human":
+                self._json(200, {
+                    "ok": self.studio.human_done(str(body.get("job_id") or ""))
+                })
             elif parsed.path == "/api/stop":
                 self._json(200, {"stopped": self.studio.stop()})
             else:

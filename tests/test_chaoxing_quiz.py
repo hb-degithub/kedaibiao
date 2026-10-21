@@ -142,20 +142,20 @@ def test_real_exam_list_todo_and_done() -> None:
 
     assert (todo.status, todo.action) == ("todo", "goTest")
     assert todo.title == "【64】概率第2次课后作业"
-    # goTest('课程id', 关系id, 考试id, 截止时间, ...) —— 已用 examnotes 的
-    # reVersionTestStartNew?tId=<关系id>&id=<考试id> 反查确认
-    assert todo.relation_id == "10932150"
-    assert todo.exam_id == "170759892"
+    # goTest('课程id', 考试id, 作答记录id, 截止时间, ...) —— 实测
+    # examnotes?examId=<args[1]> 才能打开该场考试（args[2] 是作答记录 id）
+    assert todo.exam_id == "10932150"
+    assert todo.relation_id == "170759892"
     assert todo.end_time_text.startswith("2026-10-25")
     assert todo.mobile_only is False
     assert todo.raw_onclick.startswith("goTest(")
 
     assert (done.status, done.action) == ("done", "viewExamAnswer")
-    assert done.relation_id == "10997040"
-    assert done.exam_id == "170760180"
+    assert done.exam_id == "10997040"
+    assert done.relation_id == "170760180"
     assert done.title == "【64】概率第2章单元测验"
 
-    assert [item.exam_id for item in (done2, done3)] == ["170520397", "170498045"]
+    assert [item.exam_id for item in (done2, done3)] == ["10822427", "10789518"]
 
 
 def test_real_exam_list_expired_and_unknown_action() -> None:
@@ -163,8 +163,8 @@ def test_real_exam_list_expired_and_unknown_action() -> None:
     assert len(items) == 8
     expired_view, expired_other = items[-2], items[-1]
     assert (expired_view.status, expired_view.action) == ("expired", "viewExamAnswer")
-    assert expired_view.exam_id == "0"  # 已过期只给了关系 id
-    assert expired_view.relation_id == "10834678"
+    assert expired_view.exam_id == "10834678"  # 已过期只给了考试 id
+    assert expired_view.relation_id == "0"
 
     # lookUpPaper 不是能进考试的入口，action 归为 unknown，但 raw_onclick 保留现场
     assert (expired_other.status, expired_other.action) == ("expired", "unknown")
@@ -186,7 +186,7 @@ def test_real_exam_list_mobile_only_marker() -> None:
     mobile = next(item for item in items if item.mobile_only)
     assert mobile.title == "第九章单元测验（80课时）"
     assert mobile.status == "done"
-    assert mobile.exam_id == "170077869"
+    assert mobile.exam_id == "9776957"
 
 
 def test_real_work_list_with_no_work() -> None:
@@ -588,8 +588,8 @@ def test_synthetic_exam_list() -> None:
     assert (todo.status, todo.action, todo.exam_id, todo.relation_id) == (
         "todo",
         "goTest",
-        "333",
         "222",
+        "333",
     )
     assert todo.end_time_text == "2026-11-01 09:00:00.0"
     assert todo.mobile_only is True
@@ -597,8 +597,8 @@ def test_synthetic_exam_list() -> None:
     assert (done.status, done.action, done.exam_id, done.relation_id) == (
         "done",
         "viewExamAnswer",
-        "666",
         "555",
+        "666",
     )
     assert done.mobile_only is False
 
@@ -623,7 +623,7 @@ def test_synthetic_exam_item_quotes_and_escapes() -> None:
     item = items[0]
     assert item.title == "双引号 & 转义"
     assert item.status == "todo"
-    assert (item.relation_id, item.exam_id) == ("42", "43")
+    assert (item.exam_id, item.relation_id) == ("42", "43")
 
 
 def test_exam_item_dataclass_defaults() -> None:
