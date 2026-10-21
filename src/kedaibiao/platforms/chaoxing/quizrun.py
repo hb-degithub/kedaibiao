@@ -503,6 +503,23 @@ class ChaoxingQuiz:
         return str(label or "")
 
     @staticmethod
+    def items_payload(items: list[PlanItem]) -> list[dict[str, Any]]:
+        """把题目计划转成纯数据（控制台「题目信息」表直接渲染）。"""
+        return [
+            {
+                "number": item.number,
+                "type": item.type_name,
+                "answer": item.answer,
+                "confidence": round(item.confidence, 2),
+                "source": item.source,
+                "verified": item.verified,
+                "unsupported": item.unsupported,
+                "text": (item.text or "")[:160],
+            }
+            for item in items
+        ]
+
+    @staticmethod
     def _png_data_url(png: bytes) -> str:
         return "data:image/png;base64," + base64.b64encode(png).decode()
 
@@ -713,6 +730,7 @@ class ChaoxingQuiz:
         *,
         confirm: bool = False,
         max_questions: int = 60,
+        on_items: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> QuizReport:
         """作业/考试全链路：进入（含自动解滑块）→ 逐题作答 → 交卷 → 回读分数。"""
         report = QuizReport(title=item.title)
@@ -733,6 +751,8 @@ class ChaoxingQuiz:
                     seen.add(qid)
                 plan_item = await self._exam_answer(page, info)
                 report.items.append(plan_item)
+                if on_items is not None:
+                    on_items(self.items_payload(report.items))
                 mark = "ok" if plan_item.answer else "warn"
                 self.emit(
                     mark,
@@ -860,32 +880,86 @@ class ChaoxingQuiz:
         )
 
     async def plan(
-        self, work: quiz_mod.Work, *, frame: Any | None = None
+        self,
+        work: quiz_mod.Work,
+        *,
+        frame: Any | None = None,
+        on_items: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> list[PlanItem]:
-        """每题调用作答器，得到字母/文本。
+        """逐题调用作答器，得到字母/文本。
 
-        ``frame`` 给了且开了 OCR：逐题按 ``#question<qid>`` 截图，交给视觉模型
-        识别题面（字体混淆、公式图都不怕）；截图失败才退回 DOM 解析文本。
+        开了 OCR 且给了 ``frame`` 时**一题一题来**：截图 → 视觉作答 → 立刻通过
+        ``on_items`` 推给界面，用户能看着题目信息一条条出现，而不是等 90 秒。
+        没开 OCR 就退回原来的批量链路。
         """
         items: list[PlanItem] = []
+        sequential = frame is not None and self._ocr_supported()
+        if sequential:
+            self.emit("info", "题面走 OCR：逐题截图识别（字体混淆/公式图都按图片读）")
+
+        def remember(question: quiz_mod.Question, answer: Answer | None) -> None:
+            letters, text_answer, confidence, source = self._answer_to_letters(
+                question, answer
+            )
+            items.append(
+                PlanItem(
+                    number=question.number,
+                    qid=question.qid,
+                    type_name=question.type_name,
+                    text=question.text,
+                    options=[opt.letter for opt in question.options],
+                    images=len(question.images),
+                    answer=letters or text_answer,
+                    confidence=confidence,
+                    source=source,
+                )
+            )
+
+        if sequential:
+            for question in work.questions:
+                if question.unsupported:
+                    items.append(
+                        PlanItem(
+                            number=question.number,
+                            qid=question.qid,
+                            type_name=question.type_name,
+                            text=question.text,
+                            options=[opt.letter for opt in question.options],
+                            images=len(question.images),
+                            answer="",
+                            confidence=0.0,
+                            source="unsupported",
+                            unsupported=question.unsupported,
+                        )
+                    )
+                else:
+                    core: CoreQuestion | None = None
+                    if question.qid:
+                        core = await self._ocr_core_question(
+                            frame,
+                            f"#question{question.qid}",
+                            type_name=question.type_name,
+                            number=question.number,
+                            letters=[opt.letter for opt in question.options],
+                            option_texts=[opt.text for opt in question.options],
+                        )
+                    core = core or self._core_question(question)
+                    answer: Answer | None = None
+                    if self.answerer is not None:
+                        produced = await self.answerer.answer([core])
+                        answer = produced[0] if produced else None
+                    remember(question, answer)
+                if on_items is not None:
+                    on_items(self.items_payload(items))
+            return items
+
         answerable = [q for q in work.questions if not q.unsupported]
         answers: dict[str, Answer] = {}
         if self.answerer is not None and answerable:
-            cores: list[CoreQuestion] = []
-            for question in answerable:
-                core: CoreQuestion | None = None
-                if frame is not None and self._ocr_supported() and question.qid:
-                    core = await self._ocr_core_question(
-                        frame,
-                        f"#question{question.qid}",
-                        type_name=question.type_name,
-                        number=question.number,
-                        letters=[opt.letter for opt in question.options],
-                        option_texts=[opt.text for opt in question.options],
-                    )
-                cores.append(core or self._core_question(question))
-            produced = await self.answerer.answer(cores)
-            for question, answer in zip(answerable, produced, strict=True):
+            produced_answers = await self.answerer.answer(
+                [self._core_question(question) for question in answerable]
+            )
+            for question, answer in zip(answerable, produced_answers, strict=True):
                 answers[question.qid] = answer
         for question in work.questions:
             if question.unsupported:
@@ -904,21 +978,9 @@ class ChaoxingQuiz:
                     )
                 )
                 continue
-            answer = answers.get(question.qid)
-            letters, text_answer, confidence, source = self._answer_to_letters(question, answer)
-            items.append(
-                PlanItem(
-                    number=question.number,
-                    qid=question.qid,
-                    type_name=question.type_name,
-                    text=question.text,
-                    options=[opt.letter for opt in question.options],
-                    images=len(question.images),
-                    answer=letters or text_answer,
-                    confidence=confidence,
-                    source=source,
-                )
-            )
+            remember(question, answers.get(question.qid))
+        if on_items is not None:
+            on_items(self.items_payload(items))
         return items
 
     @staticmethod
@@ -1095,6 +1157,7 @@ class ChaoxingQuiz:
         *,
         confirm: bool = False,
         num: int = 1,
+        on_items: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> QuizReport:
         """章节测验全链路：打开 → 解析 → 作答计划 → 填 → 核验 →（可选）交卷。"""
         report = QuizReport()
@@ -1107,9 +1170,13 @@ class ChaoxingQuiz:
             f"章节测验「{work.title or chapter_id}」：{len(work.questions)} 题"
             f"（字体解码{'已启用' if work.deobfuscated else '未启用'}）",
         )
-        report.items = await self.plan(work, frame=frame)
+        report.items = await self.plan(work, frame=frame, on_items=on_items)
+        if on_items is not None and not (frame is not None and self._ocr_supported()):
+            on_items(self.items_payload(report.items))
         filled = await self.fill(frame, report.items)
         await self.verify(frame, report.items)
+        if on_items is not None:
+            on_items(self.items_payload(report.items))
         if confirm and filled == 0:
             report.submit_note = "一题都没填上，拒绝交卷（避免交白卷）"
             self.emit("warn", report.submit_note)

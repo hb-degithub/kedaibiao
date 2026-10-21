@@ -404,6 +404,34 @@ class ChaoxingAdapter(PlatformAdapter):
                 )
             )
         self.log.info("学习通考试列表：%s 共 %d 条", course.name, len(out))
+        out.extend(await self._assignments_from_section_quizzes(course))
+        return out
+
+    async def _assignments_from_section_quizzes(self, course: Course) -> list[Assignment]:
+        """把「章节测验」任务点也列进作业页，控制台里就能直接作答。
+
+        学习通的章节测验挂在每个小节的第二个 tab（课件页 ``num=1``），和课程级
+        考试不是一回事；但用户眼里它们都是「要做的测验」，所以并排显示。
+        """
+        try:
+            points = await self.automation.task_points(course, only_pending=False)
+        except Exception as exc:  # noqa: BLE001 - 章节探测失败不影响考试列表
+            self.log.warning("学习通章节测验枚举失败：%s", exc)
+            return []
+        out: list[Assignment] = []
+        for point in points:
+            if point.kind != "quiz":
+                continue
+            out.append(
+                Assignment(
+                    remote_id=f"quiz:{point.chapter_id}",
+                    title=f"{point.index_text} {point.section_title}（章节测验）".strip(),
+                    kind=TaskKind.PRACTICE,
+                    course_name=course.name,
+                    finished=False,
+                    raw={"status": "quiz", "chapter_id": point.chapter_id},
+                )
+            )
         return out
 
 
@@ -493,6 +521,7 @@ class ChaoxingAutomation:
         rate: float = 2.0,
         doc_seconds: float = 0.0,
         emit: Any | None = None,
+        cancel: Any | None = None,
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.study import ChaoxingStudy  # noqa: PLC0415
@@ -513,6 +542,7 @@ class ChaoxingAutomation:
                 limit=limit,
                 only_pending=only_pending,
                 doc_seconds=doc_seconds,
+                cancel=cancel,
             )
         return {
             "course": course.name,
@@ -551,6 +581,7 @@ class ChaoxingAutomation:
         relation_id: str = "",
         confirm: bool = False,
         emit: Any | None = None,
+        on_items: Any | None = None,
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.quiz import ExamItem  # noqa: PLC0415
@@ -574,7 +605,7 @@ class ChaoxingAutomation:
                 answerer=self.adapter.answerer(),
                 emit=emit,
             )
-            report = await runner.run_exam(item, confirm=confirm)
+            report = await runner.run_exam(item, confirm=confirm, on_items=on_items)
         return _report_dict(report)
 
     async def run_section_quiz(
@@ -584,6 +615,7 @@ class ChaoxingAutomation:
         chapter_id: str,
         confirm: bool = False,
         emit: Any | None = None,
+        on_items: Any | None = None,
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.quizrun import ChaoxingQuiz  # noqa: PLC0415
@@ -599,7 +631,9 @@ class ChaoxingAutomation:
                 answerer=self.adapter.answerer(),
                 emit=emit,
             )
-            report = await runner.run_section_quiz(chapter_id, confirm=confirm)
+            report = await runner.run_section_quiz(
+                chapter_id, confirm=confirm, on_items=on_items
+            )
         return _report_dict(report)
 
 

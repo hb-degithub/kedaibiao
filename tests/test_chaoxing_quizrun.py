@@ -194,3 +194,53 @@ def test_use_ocr_defaults_on_and_can_be_disabled(monkeypatch) -> None:
     assert _runner().use_ocr is True
     monkeypatch.setenv("KEDAIBIAO_CHAXING_OCR", "0")
     assert _runner().use_ocr is False
+
+
+def test_chain_reports_image_capability() -> None:
+    """链里有视觉答题器时，整条链必须声明 supports_images（否则 OCR 白截）。"""
+    from kedaibiao.tasks.answerer import ChainAnswerer, RuleAnswerer
+
+    class _Vision(RuleAnswerer):
+        supports_images = True
+
+    assert ChainAnswerer([_Vision()], min_confidence=0.0).supports_images is True
+    assert ChainAnswerer([RuleAnswerer()], min_confidence=0.0).supports_images is False
+
+
+def test_ocr_plan_streams_items_one_by_one() -> None:
+    """OCR 模式下一题一答、逐条推送（界面能看着题目信息出现）。"""
+    from kedaibiao.platforms.chaoxing import quiz as quiz_mod
+
+    class _Frame(_FakeFrame):
+        pass
+
+    class _Answerer:
+        supports_images = True
+
+        async def answer(self, questions):
+            from kedaibiao.core.models import Answer, AnswerSource
+
+            return [
+                Answer(question=q, choices=[0], source=AnswerSource.LLM, confidence=0.9)
+                for q in questions
+            ]
+
+    work = quiz_mod.Work(
+        questions=[
+            quiz_mod.Question(
+                qid="1", number=1, qtype=0, type_name="单选题", text="题1",
+                options=[quiz_mod.Option("A", "甲"), quiz_mod.Option("B", "乙")],
+            ),
+            quiz_mod.Question(
+                qid="2", number=2, qtype=0, type_name="单选题", text="题2",
+                options=[quiz_mod.Option("A", "甲"), quiz_mod.Option("B", "乙")],
+            ),
+        ]
+    )
+    snaps: list[int] = []
+    runner = _runner(_Answerer(), use_ocr=True)
+    items = asyncio.run(
+        runner.plan(work, frame=_Frame(), on_items=lambda rows: snaps.append(len(rows)))
+    )
+    assert [item.answer for item in items] == ["A", "A"]
+    assert snaps == [1, 2]  # 一题推一次，不是最后一次性推

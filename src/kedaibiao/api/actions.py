@@ -2691,7 +2691,12 @@ def _assignment_state(item: Any, *, with_state: bool) -> str:
     status = str(raw.get("status") or "").strip()
     if status:
         # 平台自己给了状态（学习通：考试 tab 的待做/已完成/已过期）
-        return {"done": "已完成", "expired": "已过期", "todo": "未完成"}.get(
+        return {
+            "done": "已完成",
+            "expired": "已过期",
+            "todo": "未完成",
+            "quiz": "章节测验",
+        }.get(
             status, "未完成" if not item.finished else "已完成"
         )
     if with_state:

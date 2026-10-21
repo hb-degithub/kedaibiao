@@ -427,12 +427,14 @@ PYTHONPATH=src python3 -m kedaibiao action unipus answers \
 - **课程**：6 门课，只读；
 - **作业页 · 刷课**：按任务点播放视频 / 阅读文档，默认干跑先看计划，
   勾选确认后才真播；完成判定回读平台记录；
-- **工具页**：`任务点`、`考试/作业`、`做考试`、`章节测验` 四个平台动作
-  （做考试/章节测验默认干跑，`confirm=true` 才交卷，交完显示平台回显的分数）。
+- **作业页 · 就地作答**：每一行都有「做考试 / 做测验」按钮，**不跳工具页** ——
+  点开就在本页展开面板：逐题题目信息（题号/题型/答案/置信度/来源/题目）、
+  实时日志、交卷后的分数横幅。默认干跑，点「交卷」才真交；
+- **工具页**：同样的能力也以平台动作形式提供（脚本/自动化用）。
 
 ![控制台里的学习通](docs/screenshots/chaoxing/console-tab.png)
 
-![控制台里的学习通工具页](docs/screenshots/chaoxing/console-tools.png)
+![作业页里就地作答（题目信息 + 日志）](docs/screenshots/chaoxing/console-chaoxing-done.png)
 
 ##### 自动化台（本地网页，推荐）
 

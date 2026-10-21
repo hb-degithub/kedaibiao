@@ -101,6 +101,15 @@ class ChainAnswerer(Answerer):
         self.answerers = answerers
         self.min_confidence = min_confidence
 
+    @property
+    def supports_images(self) -> bool:
+        """链里只要有一个能读图，整条链就「能读图」。
+
+        学习通走 OCR 时靠这个判断要不要截图：视觉答题器通常在链首、规则兜底在链尾，
+        没有这个属性的话上层会以为整条链只会读文本，截图就白截了。
+        """
+        return any(getattr(item, "supports_images", False) for item in self.answerers)
+
     async def answer(self, questions: list[Question]) -> list[Answer]:
         remaining = list(range(len(questions)))
         results: dict[int, Answer] = {}

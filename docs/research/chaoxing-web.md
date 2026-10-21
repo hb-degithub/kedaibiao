@@ -175,6 +175,10 @@ User-Agent**，否则被 Cloudflare 挡成 403（error 1010）。
   控制台动作 `tasks`、`study`、`exams`、`exam`、`quiz` 全部走它；
 - 登录：控制台「账号」页填**手机号 + 密码**即可（无头浏览器走登录页 → 存
   `data/sessions/chaoxing.storage_state.json`），不再强制贴 Cookie；
+- 作业/测验**就地作答**：作业页每行「做考试 / 做测验」→ 后台任务
+  （`POST /api/platforms/chaoxing/jobs` + `/api/jobs/{id}` 轮询）→ 面板里实时显示
+  题目信息、日志、分数；题目信息一题一推，不用等整份跑完；
+- 章节测验也会并进作业列表（`remote_id = quiz:<chapterId>`），点「做测验」即可；
 - **踩到的坑**：学习通前置 tengine 对非浏览器 UA 直接 403（httpx/urllib 默认 UA
   一律 403，带 Chrome UA 就 200）。只读请求的 `_HTML_HEADERS` 必须带 UA，
   否则控制台会一路报「会话已失效」。

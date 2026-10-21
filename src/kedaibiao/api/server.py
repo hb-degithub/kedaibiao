@@ -532,6 +532,22 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 return self._error(404, f"没有这个路由: {path}", "not_found")
             return self._json(200, self.service.cancel_job(job_id))
 
+        if path.startswith("/api/platforms/") and path.endswith("/jobs"):
+            name = path[len("/api/platforms/") : -len("/jobs")].strip("/")
+            if not name or "/" in name:
+                return self._error(404, f"没有这个路由: {path}", "not_found")
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            action = str(payload.pop("action", "") or "")
+            if name != "chaoxing":
+                raise ConsoleError(
+                    f"{name} 没有后台任务入口", kind="not_supported", status=501
+                )
+            return self._json(202, self.service.start_chaoxing_job(
+                action, payload, viewer=viewer
+            ))
+
         if path.startswith("/api/platforms/") and path.endswith("/brush"):
             name = path[len("/api/platforms/") : -len("/brush")].strip("/")
             if not name or "/" in name:

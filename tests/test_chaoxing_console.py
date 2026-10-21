@@ -40,3 +40,30 @@ def test_confirm_gate_words() -> None:
     assert action_mod._chaoxing_confirm({"confirm": "确认"})
     assert not action_mod._chaoxing_confirm({})
     assert not action_mod._chaoxing_confirm({"confirm": "no"})
+
+
+def test_service_truthy_and_course_pick() -> None:
+    """控制台任务参数解析：确认串与课程匹配（纯函数，离线）。"""
+    from kedaibiao.api.service import ConsoleService
+
+    assert ConsoleService._chaoxing_pick_course  # 存在即可（构造实例太重）
+    from kedaibiao.api.service import _truthy
+
+    assert _truthy("true") and _truthy("1") and _truthy("确认")
+    assert not _truthy("") and not _truthy("no")
+
+
+def test_chaoxing_pick_course_matches_prefix_and_name() -> None:
+    from types import SimpleNamespace
+
+    from kedaibiao.api.service import ConsoleService
+
+    courses = [
+        SimpleNamespace(remote_id="219456814:151567344", name="概率论与数理统计"),
+        SimpleNamespace(remote_id="205643380:151631873", name="大学物理"),
+    ]
+    pick = ConsoleService._chaoxing_pick_course
+    assert pick(courses, "205643380").name == "大学物理"
+    assert pick(courses, "219456814:151567344").name == "概率论与数理统计"
+    assert pick(courses, "大学物").name == "大学物理"
+    assert pick(courses, "nope") is None

@@ -2384,6 +2384,199 @@
     };
   }
 
+  /* 学习通作答面板：就在作业页里展开 —— 逐题信息 + 实时日志 + 交卷分数。
+     不跳工具页：用户点一行就能「做考试 / 做测验」，跑的是后台任务（/jobs 轮询）。 */
+  function chaoxingWorkspace(platName, host, target) {
+    clear(host);
+    host.hidden = false;
+    var box = el('section', 'panel workspace');
+
+    var head = el('div', 'workspace-head');
+    head.appendChild(el('h2', '', target.title || '作答'));
+    head.appendChild(pill('写操作', 'pill-danger'));
+    head.appendChild(el('span', 'hint-text',
+      target.action === 'quiz' ? '章节测验：先干跑填卷并核验，确认后再交卷'
+                               : '考试：先干跑作答，确认后再交卷（进入考试后计时不停）'));
+    head.appendChild(el('span', 'spacer'));
+    head.appendChild(btn('收起', 'btn-sm btn-ghost', function () {
+      host.hidden = true;
+      clear(host);
+    }));
+    box.appendChild(head);
+
+    var body = el('div', 'panel-body');
+    box.appendChild(body);
+
+    /* 分数横幅（交卷后才出现） */
+    var scoreBox = el('div', 'score-banner');
+    scoreBox.hidden = true;
+    body.appendChild(scoreBox);
+
+    /* 状态 + 操作 */
+    var stateText = el('span', 'pill pill-mute', '未开始');
+    var summaryText = el('span', 'hint-text', '');
+    var statusRow = el('div', 'pills');
+    statusRow.appendChild(stateText);
+    statusRow.appendChild(summaryText);
+    var secStatus = el('div', 'section');
+    secStatus.appendChild(el('div', 'section-title', '状态'));
+    secStatus.appendChild(statusRow);
+    body.appendChild(secStatus);
+
+    var actions = el('div', 'auto-foot');
+    var dryBtn = btn('干跑作答', 'btn-primary btn-sm', function () { start(false); });
+    var liveBtn = btnArmored('交卷', '确认：交卷不可逆', 'btn-danger btn-sm', function () {
+      return start(true);
+    });
+    var stopBtn = btn('停止任务', 'btn-sm btn-danger', function () {
+      if (!currentJobId) { return; }
+      post('/api/jobs/' + encodeURIComponent(currentJobId) + '/cancel', {})
+        .then(function () { toast('已请求停止 ' + currentJobId); })
+        .catch(function (e) { toast(describe(e)); });
+    });
+    stopBtn.hidden = true;
+    [dryBtn, liveBtn, stopBtn].forEach(function (node) { actions.appendChild(node); });
+    body.appendChild(actions);
+
+    /* 题目信息 */
+    var tableHost = el('div', '');
+    var secQuestions = el('div', 'section');
+    secQuestions.appendChild(el('div', 'section-title', '题目信息'));
+    secQuestions.appendChild(tableHost);
+    body.appendChild(secQuestions);
+
+    /* 日志 */
+    var logView = el('pre', 'log-view');
+    logView.textContent = '作答日志会出现在这里。';
+    var secLog = el('div', 'section');
+    secLog.appendChild(el('div', 'section-title', '日志'));
+    secLog.appendChild(logView);
+    body.appendChild(secLog);
+
+    host.appendChild(box);
+    host.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+    var currentJobId = '';
+    var watcher = null;
+
+    function appendLog(line) {
+      var row = el('div');
+      row.appendChild(el('span', 't', time(line.at).slice(11) + '  '));
+      row.appendChild(el('span', line.level || 'info', line.text || ''));
+      logView.appendChild(row);
+      logView.scrollTop = logView.scrollHeight;
+    }
+
+    function renderItems(items) {
+      clear(tableHost);
+      if (!items || !items.length) {
+        tableHost.appendChild(el('div', 'hint-text', '还没有题目信息。'));
+        return;
+      }
+      var wrap = el('div', 'table-wrap');
+      var table = el('table', 'table');
+      var thead = el('thead');
+      var hr = el('tr');
+      ['题号', '题型', '答案', '置信度', '来源', '题目'].forEach(function (name) {
+        hr.appendChild(el('th', '', name));
+      });
+      thead.appendChild(hr);
+      table.appendChild(thead);
+      var tbody = el('tbody');
+      items.forEach(function (item) {
+        var tr = el('tr');
+        tr.appendChild(el('td', 'mono', String(item.number || '—')));
+        tr.appendChild(el('td', '', item.type || '—'));
+        tr.appendChild(el('td', 'mono', item.answer || '（未答）'));
+        var conf = typeof item.confidence === 'number' ? item.confidence.toFixed(2) : '—';
+        tr.appendChild(el('td', 'mono', conf));
+        tr.appendChild(el('td', '', item.source || '—'));
+        var stem = String(item.text || '').replace(/\s+/g, ' ').trim();
+        var stemCell = el('td', '', truncate(stem || '（题面是图片）', 90));
+        tr.appendChild(stemCell);
+        if (item.unsupported) { tr.title = item.unsupported; }
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      tableHost.appendChild(wrap);
+    }
+    renderItems([]);
+
+    function setBusy(busy) {
+      dryBtn.disabled = busy;
+      liveBtn.disabled = busy;
+      stopBtn.hidden = !busy;
+    }
+
+    function start(confirm) {
+      currentJobId = '';
+      clear(logView);
+      logView.textContent = '';
+      scoreBox.hidden = true;
+      stateText.textContent = confirm ? '交卷中…' : '干跑中…';
+      stateText.className = 'pill pill-warn';
+      summaryText.textContent = '';
+      setBusy(true);
+      var payload = {
+        action: target.action,
+        course: target.course,
+        title: target.title,
+        confirm: !!confirm
+      };
+      if (target.action === 'quiz') {
+        payload.chapter = String(target.id || '').replace(/^quiz:/, '');
+      } else {
+        payload.exam_id = String(target.id || '');
+      }
+      appendLog({ level: 'info', text: '$ POST /api/platforms/' + platName + '/jobs ' +
+        truncate(JSON.stringify(payload), 180) });
+      post('/api/platforms/' + encodeURIComponent(platName) + '/jobs', payload)
+        .then(function (job) {
+          currentJobId = job.job_id;
+          stateText.textContent = '任务 ' + currentJobId + ' 运行中…';
+          setBusy(true);
+          if (watcher) { watcher.stop(); }
+          watcher = watchJob(job.job_id, {
+            intervalMs: 1200,
+            guard: function () { return host.isConnected && !host.hidden; },
+            onLog: appendLog,
+            onJob: function (state) {
+              if (state.items && state.items.length) { renderItems(state.items); }
+              if (state.summary) { summaryText.textContent = state.summary; }
+              if (state.score_text) {
+                scoreBox.hidden = false;
+                scoreBox.textContent = '交卷结果：' + state.score_text;
+              }
+            },
+            onDone: function (state) {
+              setBusy(false);
+              if (state.status === 'failed') {
+                stateText.textContent = '失败：' + (state.error || '未知错误');
+                stateText.className = 'pill pill-danger';
+              } else {
+                stateText.textContent = state.submitted ? '已交卷' : '干跑完成';
+                stateText.className = state.submitted ? 'pill pill-ok' : 'pill pill-mute';
+                if (!state.submitted) {
+                  appendLog({ level: 'info', text: '→ 干跑完成：题目已填好并核验。确认无误后点「交卷」。' });
+                }
+                if (typeof assignmentsReload === 'function') { assignmentsReload(); }
+              }
+            },
+            onError: function (e) {
+              stateText.textContent = '轮询失败：' + describe(e);
+            }
+          });
+        })
+        .catch(function (e) {
+          setBusy(false);
+          stateText.textContent = '启动失败：' + describe(e);
+          stateText.className = 'pill pill-danger';
+          appendLog({ level: 'error', text: '✗ ' + describe(e) });
+        });
+    }
+  }
+
   /* 刷课（平台动作版）：东软的 study 动作 —— 按资源刷，写操作，跑完才算。 */
   function studyWorkspace(platName, host) {
     clear(host);
@@ -2863,6 +3056,8 @@
     }
     var brushHost = el('div', '');
     var autoHost = el('div', '');
+    var chaoxingHost = el('div', '');
+    chaoxingHost.hidden = true;
     /* 刷课入口按后端真实能力给：
        - unipus 有原生刷课链路（course-tree + brush）；
        - neusoft 的刷课是平台动作 study；
@@ -2940,6 +3135,7 @@
     page.appendChild(panel('筛选', bar));
     page.appendChild(brushHost);
     page.appendChild(autoHost);
+    page.appendChild(chaoxingHost);
 
     var host = el('div', '');
     page.appendChild(host);
@@ -2986,10 +3182,16 @@
               if (!id) { return el('span', 'hint-text', '—'); }
               if (!canSubmit) {
                 if (platName === 'chaoxing') {
-                  var own = el('span', 'hint-text', '用「工具 · 做考试」');
-                  own.title = '学习通的作业/测验/考试在「工具」页用「做考试」「章节测验」动作'
-                    + '作答并交卷（默认干跑，确认后才交）';
-                  return own;
+                  /* 不跳工具页：就地展开作答面板（题目信息 + 日志 + 分数） */
+                  var isQuiz = String(id).indexOf('quiz:') === 0;
+                  return btn(isQuiz ? '做测验' : '做考试', 'btn-sm', function () {
+                    chaoxingWorkspace(platName, chaoxingHost, {
+                      action: isQuiz ? 'quiz' : 'exam',
+                      id: id,
+                      title: row.title || id,
+                      course: String(courseField.value || '').trim() || (row.course || '')
+                    });
+                  });
                 }
                 var why = caps.submit !== true
                   ? '该平台未声明提交能力'

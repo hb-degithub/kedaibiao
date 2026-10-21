@@ -36,7 +36,7 @@ from kedaibiao.api.actions import (
     register_platform,
     table,
 )
-from kedaibiao.bank.store import ProgressStore, QuestionBank, record_to_dict
+from kedaibiao.bank.store import ProgressStore, QuestionBank
 from kedaibiao.config.overrides import OverrideStore
 from kedaibiao.config.settings import (
     ENV_PREFIX,
@@ -50,13 +50,12 @@ from kedaibiao.platforms.base import NotSupportedError
 from kedaibiao.runtime import (
     build_runtime,
     persist_http_cookies,
-    session_path,
     restore_adapter_session,
     save_adapter_session,
+    session_path,
 )
 from kedaibiao.security.accounts import AccountError, AccountStore, PlatformAccount
 from kedaibiao.security.auth import (
-    ROLE_SUPERADMIN,
     ROLE_USER,
     AuthError,
     AuthStore,
@@ -186,6 +185,13 @@ def _clean_essay(text: str) -> str:
     lines = [ln for ln in body.splitlines() if not ln.strip().startswith("#")]
     body = "\n".join(lines).strip().strip('"').strip("“”").strip()
     return body
+
+
+def _truthy(value: Any) -> bool:
+    """把界面传来的确认串解释成布尔：``true/1/yes/确认`` 都算真。"""
+    return str(value or "").strip().lower() in {
+        "1", "true", "yes", "y", "on", "确认", "我确认",
+    }
 
 
 def _now() -> str:
@@ -1097,9 +1103,7 @@ class ConsoleService:
         """账号列表。普通用户只看自己；超管可用 ``owner_id`` 指定某人。"""
         if platform:
             self._check_platform(platform)
-        if not viewer.authenticated:
-            target = owner_id
-        elif viewer.is_superadmin:
+        if not viewer.authenticated or viewer.is_superadmin:
             target = owner_id
         else:
             if owner_id is not None and int(owner_id) != viewer.user_id:
@@ -1324,6 +1328,225 @@ class ConsoleService:
             name=f"kedaibiao-grade-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
+
+    # -- 学习通：作业页里就地跑「做考试 / 章节测验 / 刷课」的后台任务 ----------
+
+    def start_chaoxing_job(
+        self, action: str, params: dict[str, Any], *, viewer: Viewer | None = None
+    ) -> dict[str, Any]:
+        """启一个学习通后台任务，返回 job（logs/items 供控制台实时渲染）。
+
+        为什么做成后台任务而不是同步动作：做一场考试要几十秒到几分钟，HTTP
+        同步等待会被浏览器超时掐断，而且用户看不到过程。这里沿用刷课那套
+        ``/api/jobs/{id}`` 轮询，作业页里就能看到逐题结果与日志。
+        """
+        scope = self._check_platform("chaoxing")
+        assert scope is not None
+        action = str(action or "").strip().lower()
+        if action not in {"exam", "quiz", "study"}:
+            raise ConsoleError("action 只能是 exam / quiz / study", kind="bad_request", status=400)
+        course = str(params.get("course") or "").strip()
+        if not course:
+            raise ConsoleError("缺少课程（course）", kind="bad_request", status=400)
+        if action == "exam" and not str(params.get("exam_id") or "").strip():
+            if not str(params.get("assignment_id") or "").strip():
+                raise ConsoleError("缺少考试号（exam_id）", kind="bad_request", status=400)
+        if action == "quiz" and not str(params.get("chapter") or "").strip():
+            raise ConsoleError("缺少小节 id（chapter）", kind="bad_request", status=400)
+
+        with self._lock:
+            self._seq += 1
+            job_id = f"x-{self._seq}"
+            job: dict[str, Any] = {
+                "job_id": job_id,
+                "kind": f"chaoxing-{action}",
+                "platform": scope,
+                "action": action,
+                "params": dict(params),
+                "status": "running",
+                "started_at": _now(),
+                "finished_at": None,
+                "logs": [],
+                "items": [],
+                "score": None,
+                "score_text": "",
+                "submitted": False,
+                "summary": "",
+                "error": "",
+                "owner_id": viewer.user_id if (viewer and viewer.authenticated) else 0,
+            }
+            self._jobs.append(job)
+            self._jobs_by_id[job_id] = job
+            del self._jobs[:-JOB_HISTORY]
+            for stale in list(self._jobs_by_id):
+                if stale not in {j["job_id"] for j in self._jobs}:
+                    del self._jobs_by_id[stale]
+
+        self._plog(scope, "info", f"$ 学习通任务 {job_id}（{action}，course={course}）")
+        threading.Thread(
+            target=self._run_chaoxing_job,
+            args=(job_id, action, dict(params), viewer),
+            name=f"kedaibiao-chaoxing-{job_id}",
+            daemon=True,
+        ).start()
+        return _jsonable(job)
+
+    @staticmethod
+    def _chaoxing_pick_course(courses: list[Any], ref: str) -> Any:
+        ref = str(ref or "").strip()
+        for course in courses:
+            if course.remote_id == ref:
+                return course
+        for course in courses:
+            if course.remote_id.split(":")[0] == ref or ref in course.remote_id:
+                return course
+        for course in courses:
+            if ref and ref in (course.name or ""):
+                return course
+        return None
+
+    def _run_chaoxing_job(
+        self, job_id: str, action: str, params: dict[str, Any], viewer: Viewer | None
+    ) -> None:
+        runtime: Any = None
+        adapter: Any = None
+        try:
+            creds, cookie_file = self._resolve_login("chaoxing", viewer)
+            runtime = build_runtime(
+                root=self.root,
+                environ=self._llm_environ(),
+                cookie_file=cookie_file,
+                owner_id=viewer.user_id if (viewer and viewer.authenticated) else 0,
+            )
+            adapter = runtime.make_adapter("chaoxing")
+            restore_adapter_session(adapter, cookie_file)
+            if not asyncio.run(adapter.refresh_session(creds)):
+                raise RuntimeError(
+                    "学习通登录失败（会话可能已失效，请到「账号」页重新登录一次）"
+                )
+            courses = asyncio.run(adapter.list_courses())
+            course = self._chaoxing_pick_course(courses, params.get("course", ""))
+            if course is None:
+                raise RuntimeError(f"没有找到课程 {params.get('course')!r}")
+            self._job_log(job_id, "info", f"课程：{course.name}（{course.remote_id}）")
+
+            def emit(level: str, message: str) -> None:
+                self._job_log(job_id, level if level in {"ok", "warn", "error"} else "info", message)
+
+            confirm = _truthy(params.get("confirm"))
+            if action == "study":
+                kinds = tuple(
+                    item.strip()
+                    for item in str(params.get("kinds") or "video,document").split(",")
+                    if item.strip()
+                )
+                result = asyncio.run(
+                    adapter.automation.play_course(
+                        course,
+                        only_pending=True,
+                        limit=int(params.get("limit") or 0),
+                        kinds=kinds,
+                        rate=float(params.get("rate") or 2.0),
+                        doc_seconds=float(params.get("doc_seconds") or 0),
+                        emit=emit,
+                        cancel=lambda: self._cancelled(job_id),
+                    )
+                )
+                self._job_update(job_id, steps=result.get("steps") or [], summary=result.get("summary", ""))
+                self._job_log(job_id, "ok", f"■ {result.get('summary', '')}")
+            elif action == "exam":
+                result = asyncio.run(
+                    adapter.automation.run_exam(
+                        course,
+                        exam_id=str(params.get("exam_id") or ""),
+                        title=str(params.get("title") or ""),
+                        relation_id=str(params.get("relation_id") or ""),
+                        confirm=confirm,
+                        emit=emit,
+                        on_items=lambda items: self._job_update(job_id, items=items),
+                    )
+                )
+                self._chaoxing_finish(job_id, result, confirm=confirm)
+            else:
+                result = asyncio.run(
+                    adapter.automation.run_section_quiz(
+                        course,
+                        chapter_id=str(params.get("chapter") or ""),
+                        confirm=confirm,
+                        emit=emit,
+                        on_items=lambda items: self._job_update(job_id, items=items),
+                    )
+                )
+                self._chaoxing_finish(job_id, result, confirm=confirm)
+            self._finish_batch_job(job_id, "done", summary=self._chaoxing_summary(job_id))
+        except Exception as exc:  # noqa: BLE001 - 失败要落在任务里，而不是吞掉
+            message = f"{type(exc).__name__}: {exc}"
+            self._job_log(job_id, "error", f"✗ {message}")
+            self._plog("chaoxing", "error", f"✗ 学习通任务 {job_id}：{message}")
+            log.exception("学习通任务失败: %s", job_id)
+            self._finish_batch_job(job_id, "failed", error=message)
+        finally:
+            if adapter is not None:
+                with contextlib.suppress(Exception):
+                    persist_http_cookies(adapter, runtime.settings if runtime else None)
+                with contextlib.suppress(Exception):
+                    asyncio.run(adapter.close())
+            if runtime is not None:
+                with contextlib.suppress(Exception):
+                    runtime.close()
+
+    def _chaoxing_finish(self, job_id: str, result: dict[str, Any], *, confirm: bool) -> None:
+        """把作答结果写进 job：逐题信息、分数、是否交卷。"""
+        items = result.get("items") or []
+        self._job_update(
+            job_id,
+            items=items,
+            score=result.get("score"),
+            score_text=result.get("score_text") or "",
+            submitted=bool(result.get("submitted")),
+            summary=result.get("summary", ""),
+            submit_note=result.get("submit_note") or "",
+        )
+        for item in items:
+            mark = "ok" if item.get("answer") else "warn"
+            self._job_log(
+                job_id,
+                mark,
+                f"第 {item.get('number')} 题 {item.get('type')} → "
+                f"{item.get('answer') or '（未答）'}"
+                f"（置信度 {item.get('confidence', 0):.2f}，来源 {item.get('source')}）",
+            )
+        if result.get("submitted"):
+            score_text = result.get("score_text") or "平台未回显分数"
+            self._job_log(job_id, "ok", f"✓ 已交卷：{score_text}")
+        elif confirm:
+            self._job_log(job_id, "warn", f"交卷未完成：{result.get('submit_note') or '未知原因'}")
+        else:
+            self._job_log(job_id, "info", "干跑：已填卷并核验，未交卷")
+
+    def _chaoxing_summary(self, job_id: str) -> str:
+        with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            if job is None:
+                return ""
+            items = job.get("items") or []
+            answered = sum(1 for item in items if item.get("answer"))
+            parts = [f"共 {len(items)} 题", f"作答 {answered}"]
+            if job.get("submitted"):
+                parts.append("已交卷")
+                if job.get("score_text"):
+                    parts.append(f"分数 {job['score_text']}")
+            else:
+                parts.append("未交卷")
+            if job.get("steps"):
+                parts.insert(0, f"任务点 {len(job['steps'])} 个")
+            return "，".join(parts)
+
+    def _job_update(self, job_id: str, **fields: Any) -> None:
+        with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            if job is not None:
+                job.update(fields)
 
     # -- iTEST：一键自动化（取卷 → 转写答题 → 填 → 核验 → 复核 → 待人工/交卷）--
 
@@ -1697,7 +1920,7 @@ class ConsoleService:
                         viewer: Viewer | None, analysis_timeout: float = 180.0,
                         resubmit_without_score: bool = False) -> None:
         from kedaibiao.platforms.pigai.grade_loop import GradeLoop
-        from kedaibiao.tasks.llm import LLMConfig, LLMAnswerer
+        from kedaibiao.tasks.llm import LLMAnswerer, LLMConfig
 
         runtime = None
         adapter = None
@@ -1727,7 +1950,10 @@ class ConsoleService:
             cfg = LLMConfig.from_env(runtime.environ)
             if cfg.enabled:
                 llm = LLMAnswerer(cfg)
-                from kedaibiao.platforms.pigai.grade_loop import REWRITE_SYSTEM, build_rewrite_prompt
+                from kedaibiao.platforms.pigai.grade_loop import (
+                    REWRITE_SYSTEM,
+                    build_rewrite_prompt,
+                )
 
                 async def rewrite(snapshot, current, next_attempt):  # noqa: ANN001
                     prompt = build_rewrite_prompt(
