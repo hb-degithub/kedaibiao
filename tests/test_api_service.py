@@ -83,9 +83,15 @@ class SlowAdapter(FakeAdapter):
         return await super().list_courses()
 
 
+#: 凭据值故意取「有辨识度」的字面量：既方便断言「没有泄漏」，
+#: 也避免像 "pw" 这种两字符值被路径 / 键名误命中（曾经让这条测试间歇性假红）。
+CRED_USER = "user-under-test"
+CRED_PASS = "pass-under-test-should-never-leak"
+
+
 def _creds(platform: str) -> dict[str, str]:
     up = platform.upper()
-    return {f"KEDAIBIAO_{up}_USER": "stu", f"KEDAIBIAO_{up}_PASS": "pw"}
+    return {f"KEDAIBIAO_{up}_USER": CRED_USER, f"KEDAIBIAO_{up}_PASS": CRED_PASS}
 
 
 class NativeBatchAdapter(FakeAdapter):
@@ -237,8 +243,10 @@ class TestOverview(ServiceTestBase):
             self.assertIsInstance(value, bool)
 
     def test_no_credentials_leaked(self) -> None:
+        """overview 里不能出现凭据值（键名可以，值不行）。"""
         blob = repr(self.service.overview())
-        self.assertNotIn("pw", blob)
+        self.assertNotIn(CRED_PASS, blob)
+        self.assertNotIn(CRED_USER, blob)
 
     def test_after_a_run_counts_appear(self) -> None:
         self.seed_bank()

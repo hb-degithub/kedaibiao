@@ -1235,6 +1235,9 @@ async def _pinco_learning(adapter: Any, params: dict[str, Any]) -> dict[str, Any
             rows.append(
                 {
                     "course": course.name or course.remote_id,
+                    # 补课程号：material 动作要的是 course 号，只有课程名的话
+                    # 用户还得回「课程列表」对一遍才能查材料详情
+                    "course_id": course.remote_id,
                     "material_id": item.remote_id,
                     "name": item.title,
                     "size_mb": _pinco_size_mb(item.raw),
@@ -1257,6 +1260,7 @@ async def _pinco_learning(adapter: Any, params: dict[str, Any]) -> dict[str, Any
         ),
         columns=[
             column("course", "课程"),
+            column("course_id", "课程号", mono=True),
             column("material_id", "材料号", mono=True),
             column("name", "名称"),
             column("size_mb", "大小(MB)"),

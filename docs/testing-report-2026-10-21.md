@@ -185,6 +185,48 @@ neusoft 登录失败: 您权限不足或者非法访问
 
 ---
 
+## 6.5 全平台只读遍历（真机 · 19 个动作）
+
+对五个平台的所有 `mutates=False` 动作逐个跑（**一个写操作都没碰**）：
+
+| 平台 | 动作 | 结果 |
+| --- | --- | --- |
+| U校园 | courses / assignments / answers / detail | ✅ 10 门课、单课 261 项、题目与答案、详情 |
+| 批改网 | pending / finished / essay / lookup / assignments | ✅ 历史作文 10 篇、作文详情（总分 83.5 + 正文 + 批注） |
+| 希沃品课 | courses / connection / learning / material / assignments | ✅ 24 门课、15 份材料、材料详情、13 个作业 |
+| iTEST | exams / courses / assignments | ✅ 1 场考试、1 门课、1 个作业（kind=考试） |
+| iTEST | detail | ⚠️ 501 not_supported —— **正确拒绝**：取卷要进考场、会开始计时 |
+| 东软 | courses / attendance | ❌ 502 —— 真实会话过期，需重登 |
+
+### 又修掉两个
+
+**⑥ 平台「不支持」被当成平台故障（502 → 501）**
+
+`itest` 的通用 `detail` 动作会去取卷，而 iTEST 自己拒绝（「取卷要在作答页里做，会开始计时」）。
+这个 `NotSupportedError` 被统一裹成 502 `platform_error` —— 用户看到的是「平台故障」，
+实际是「这个入口对平台没有意义」。
+
+修法：`_execute_action` 单独接住 `NotSupportedError` → 501 `not_supported`，
+文案写明「这是平台能力限制，不是故障」。现在返回：
+
+```
+itest 不支持这个操作：iTEST 的取卷要在作答页里做（会开始计时），请用控制台「进考场取卷」动作
+（这是平台能力限制，不是故障；换用该平台自己的动作）
+```
+
+**⑦ 品课材料列表缺课程号**
+
+`learning` 返回「课程名」，而 `material` 动作要的是「课程号」—— 用户看完材料列表想查详情，
+还得回课程列表对一遍名称。已在行里补 `course_id` 列。
+
+**⑧ 一条间歇性假红的测试**
+
+`test_no_credentials_leaked` 断言 `assertNotIn("pw")` —— 两个字符的子串，任何含 `pw` 的
+路径或键名都会命中，全量跑时偶发失败。改成断言具体的凭据字面量
+（`pass-under-test-should-never-leak`），并把测试凭据换成有辨识度的值。
+
+---
+
 ## 7. 真机验证（用户控制台 8765，只读 / 干跑）
 
 用真实账号在你的控制台上跑了一遍，**全程没有触发任何写操作**：

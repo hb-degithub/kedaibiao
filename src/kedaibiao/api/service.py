@@ -46,6 +46,7 @@ from kedaibiao.config.settings import (
 )
 from kedaibiao.core.models import Credentials, TaskKind
 from kedaibiao.platforms import load_builtin_adapters
+from kedaibiao.platforms.base import NotSupportedError
 from kedaibiao.runtime import (
     build_runtime,
     persist_http_cookies,
@@ -891,6 +892,15 @@ class ConsoleService:
             except ActionInputError as exc:
                 # 参数不合法是 400，不是 502 —— 别把用户的输入错误说成平台故障
                 raise ConsoleError(str(exc), kind="bad_request", status=400) from exc
+            except NotSupportedError as exc:
+                # 平台明确说「这个能力我没有」→ 501，不是 502。
+                # 502 会让用户以为是平台故障/网络问题，实际是入口不该存在：
+                # 例如 iTEST 的通用 detail 要进考场取卷（会开始计时），它自己就拒绝了。
+                raise ConsoleError(
+                    f"{platform} 不支持这个操作：{exc}"
+                    f"（这是平台能力限制，不是故障；换用该平台自己的动作）",
+                    kind="not_supported", status=501,
+                ) from exc
             except Exception as exc:  # noqa: BLE001
                 log.exception("平台动作失败: %s/%s", platform, action)
                 raise ConsoleError(

@@ -305,7 +305,7 @@ class TestLearningAction(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["kind"], "table")
         self.assertEqual(
             [c["label"] for c in out["columns"]],
-            ["课程", "材料号", "名称", "大小(MB)", "学习进度(%)", "来源"],
+            ["课程", "课程号", "材料号", "名称", "大小(MB)", "学习进度(%)", "来源"],
         )
         self.assertEqual(len(out["rows"]), len(MATERIALS))
         first = out["rows"][0]
