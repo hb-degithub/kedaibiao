@@ -639,3 +639,14 @@ def test_question_helpers() -> None:
     question.options.append(Option(letter="A", text="甲"))
     assert question.option_text("a") == "甲"
     assert question.option_text("Z") == ""
+
+
+def test_real_exam_list_scores() -> None:
+    items = parse_exam_list(_html(EXAMS_PHYSICS))
+    done = [item for item in items if item.score is not None]
+    assert done
+    scores = {item.title: item.score for item in done}
+    assert scores["力学测试"] == 95.0
+    # 待做行里的「剩余28分钟」不能被当成「28 分」
+    todo = [item for item in items if item.status == "todo"]
+    assert todo and all(item.score is None for item in todo)

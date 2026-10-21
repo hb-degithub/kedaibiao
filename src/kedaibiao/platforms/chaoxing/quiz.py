@@ -352,6 +352,9 @@ class ExamItem:
     mobile_only: bool = False
     action: str = "unknown"  # goTest | viewExamAnswer | unknown
     raw_onclick: str = ""
+    #: 已完成条目列表里回显的分数（「重考 100 分」里的 100）
+    score: float | None = None
+    score_text: str = ""
 
 
 @dataclass(slots=True)
@@ -784,6 +787,7 @@ def _exam_item(li: _Node) -> ExamItem | None:
         elif action == "viewExamAnswer":
             status = "done"
 
+    score, score_text = _exam_score(li)
     return ExamItem(
         title=title,
         status=status,
@@ -793,7 +797,28 @@ def _exam_item(li: _Node) -> ExamItem | None:
         mobile_only=_is_mobile_only(li),
         action=action,
         raw_onclick=raw_onclick,
+        score=score,
+        score_text=score_text,
     )
+
+
+_EXAM_SCORE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*分(?!钟)")
+
+
+def _exam_score(li: _Node) -> tuple[float | None, str]:
+    """从考试行里取回显分数。
+
+    已完成行会写成「（重考）100 分  剩余19小时…」；「满分」字样在列表里没有，
+    所以只认「数字 + 分」。取不到就返回 ``(None, "")``，不猜。
+    """
+    text = _node_text(li)
+    match = _EXAM_SCORE_RE.search(text)
+    if not match:
+        return None, ""
+    try:
+        return float(match.group(1)), match.group(0).strip()
+    except ValueError:  # pragma: no cover - 正则已限制数字
+        return None, ""
 
 
 def _end_time_text(li: _Node) -> str:

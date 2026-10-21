@@ -34,6 +34,7 @@ from urllib.parse import quote
 from kedaibiao.browser.pw import PwError, PwPage
 from kedaibiao.core.models import Answer, QuestionType
 from kedaibiao.core.models import Question as CoreQuestion
+from kedaibiao.platforms.chaoxing import captcha as captcha_mod
 from kedaibiao.platforms.chaoxing import quiz as quiz_mod
 
 log = logging.getLogger(__name__)
@@ -351,16 +352,24 @@ class ChaoxingQuiz:
                 continue
             await self._confirm_enter_dialog()
             if await self._page_has_captcha():
-                handled = await self._wait_human(
-                    "captcha",
-                    "进入考试触发了「安全验证」滑块：请在可见的浏览器窗口里完成拖动",
-                )
-                if not handled:
-                    raise PwError(
-                        "进入考试需要滑块安全验证，未完成（用 --show 打开窗口人工拖动）"
+                self.emit("info", "检测到「安全验证」滑块，尝试自动求解…")
+                solved = False
+                with contextlib.suppress(Exception):
+                    solved = await captcha_mod.solve_slide_captcha(self.page)
+                if solved:
+                    self.emit("ok", "滑块验证已自动通过")
+                else:
+                    handled = await self._wait_human(
+                        "captcha",
+                        "自动解滑块失败：请在可见的浏览器窗口里手动拖动完成后继续",
                     )
-                if not await self._wait_captcha_done():
-                    raise PwError("滑块安全验证没有通过，请重试")
+                    if not handled:
+                        raise PwError(
+                            "进入考试需要滑块安全验证（自动求解失败），"
+                            "可用 --show 打开窗口人工拖动"
+                        )
+                    if not await self._wait_captcha_done():
+                        raise PwError("滑块安全验证没有通过，请重试")
                 await asyncio.sleep(2)
             answer_page = await self._pick_answer_page()
             if answer_page is not None:
@@ -429,53 +438,261 @@ class ChaoxingQuiz:
             await asyncio.sleep(1.5)
         return None
 
+    #: 考试答题页是「一题一屏」：读当前题 → 填 → 下一题。
+    #: 题干/选项里的公式都是图片，一并交给视觉作答器。
+    _EXAM_READ_JS = """(() => {
+        const q = document.querySelector('.questionLi');
+        if (!q) return {done: true};
+        const head = q.querySelector('h3.mark_name');
+        const titleNode = head || q;
+        const text = (titleNode.innerText || '').replace(/\\s+/g, ' ').trim();
+        const images = Array.from(titleNode.querySelectorAll('img'))
+            .map(i => i.getAttribute('data-original') || i.src).filter(Boolean);
+        const options = Array.from(q.querySelectorAll('.answerBg')).map((el, index) => {
+            const span = el.querySelector('span.num_option');
+            const label = span ? (span.innerText || '').trim() : String(index);
+            const data = span ? (span.getAttribute('data') || '').trim() : '';
+            const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+            const imgs = Array.from(el.querySelectorAll('img'))
+                .map(i => i.getAttribute('data-original') || i.src).filter(Boolean);
+            const cls = (el.className || '').toString();
+            const on = /(^|\\s)(check_answer|check_answer_dx|cur)(\\s|$)/.test(cls);
+            return {label: label, data: data, text: text, images: imgs, on: on};
+        });
+        const typeEl = q.querySelector('input[type=hidden][id^=typeName]');
+        const inputs = Array.from(q.querySelectorAll('input[type=text], textarea'))
+            .map(el => ({id: el.id, name: el.name}));
+        return {
+            qid: q.getAttribute('data') || '',
+            type: typeEl ? typeEl.value : '',
+            text: text,
+            images: images,
+            options: options,
+            inputs: inputs,
+            number: (text.match(/^(\\d+)\\./) || [])[1] || '',
+        };
+    })()"""
+
+    async def _exam_read(self, page: Any) -> dict[str, Any]:
+        info = await page.eval(self._EXAM_READ_JS)
+        return info if isinstance(info, dict) else {"done": True}
+
+    async def _exam_next(self, page: Any) -> str:
+        """点「下一题/下一步」；没有下一题返回空串。"""
+        label = await page.eval(
+            """(() => {
+                const nodes = Array.from(document.querySelectorAll('a,button'));
+                const hit = nodes.find(el =>
+                    ['下一题', '下一步'].includes((el.innerText || '').trim())
+                    && (el.offsetWidth || 0) > 0);
+                if (hit) { hit.click(); return hit.innerText.trim(); }
+                return '';
+            })()"""
+        )
+        return str(label or "")
+
+    async def _exam_answer(self, page: Any, info: dict[str, Any]) -> PlanItem:
+        """答当前这一题并填进页面，返回计划项。"""
+        qtype_name = str(info.get("type") or "")
+        qid = str(info.get("qid") or "")
+        options = info.get("options") or []
+        number = int(info["number"]) if str(info.get("number") or "").isdigit() else 0
+        plan = PlanItem(
+            number=number or len(self._questions) + 1,
+            qid=qid,
+            type_name=qtype_name,
+            text=str(info.get("text") or ""),
+            options=[str(opt.get("label") or "") for opt in options],
+            images=len(info.get("images") or []),
+            answer="",
+            confidence=0.0,
+            source="",
+        )
+        type_map = {
+            "单选题": QuestionType.SINGLE,
+            "多选题": QuestionType.MULTIPLE,
+            "判断题": QuestionType.JUDGE,
+            "填空题": QuestionType.FILL,
+        }
+        question_type = type_map.get(qtype_name)
+        if question_type is None:
+            plan.unsupported = f"暂不支持的考试题型：{qtype_name or '未知'}"
+            return plan
+        raw: dict[str, Any] = {"images": list(info.get("images") or [])}
+        option_images = {
+            index: opt.get("images") or []
+            for index, opt in enumerate(options)
+            if opt.get("images")
+        }
+        if option_images:
+            raw["option_images"] = option_images
+        core_question = CoreQuestion(
+            stem=plan.text or "（题面是图片）",
+            type=question_type,
+            options=[(opt.get("text") or opt.get("label") or "") for opt in options],
+            remote_id=qid,
+            raw=raw,
+        )
+        answer: Answer | None = None
+        if self.answerer is not None:
+            produced = await self.answerer.answer([core_question])
+            answer = produced[0] if produced else None
+        if question_type is QuestionType.FILL:
+            text_answer = (answer.text if answer else "") or ""
+            plan.answer = text_answer
+            plan.confidence = float(getattr(answer, "confidence", 0.0) or 0.0)
+            plan.source = getattr(getattr(answer, "source", None), "value", "unknown")
+            if text_answer:
+                result = await page.eval(self._exam_fill_call([], [text_answer]))
+                plan.verified = bool((result or {}).get("filled"))
+            return plan
+        choices = list(answer.choices) if answer and answer.choices else []
+        letters = [
+            str(options[index].get("label") or "")
+            for index in choices
+            if 0 <= index < len(options)
+        ]
+        plan.answer = "".join(letters)
+        plan.confidence = float(getattr(answer, "confidence", 0.0) or 0.0)
+        plan.source = getattr(getattr(answer, "source", None), "value", "unknown")
+        if choices:
+            await page.eval(self._exam_fill_call(choices, []))
+            plan.verified = bool(letters)
+        return plan
+
+    @staticmethod
+    def _exam_fill_call(choices: list[int], texts: list[str]) -> str:
+        return (
+            "((choices, texts) => {"
+            " const q = document.querySelector('.questionLi');"
+            " const out = {clicked: [], filled: 0};"
+            " if (!q) return out;"
+            " if (choices && choices.length) {"
+            "   const boxes = Array.from(q.querySelectorAll('.answerBg'));"
+            "   for (let index = 0; index < boxes.length; index++) {"
+            "     if (!choices.includes(index)) continue;"
+            "     const el = boxes[index];"
+            "     const cls = (el.className || '').toString();"
+            "     const on = /(^|\\s)(check_answer|check_answer_dx|cur)(\\s|$)/.test(cls);"
+            "     if (!on) { el.click(); out.clicked.push(index); }"
+            "   }"
+            " }"
+            " if (texts && texts.length) {"
+            "   const fields = Array.from(q.querySelectorAll('input[type=text], textarea'));"
+            "   for (let i = 0; i < fields.length && i < texts.length; i++) {"
+            "     const el = fields[i]; el.value = texts[i];"
+            "     el.dispatchEvent(new Event('input', {bubbles: true}));"
+            "     el.dispatchEvent(new Event('change', {bubbles: true}));"
+            "     el.dispatchEvent(new Event('blur', {bubbles: true}));"
+            "     out.filled += 1;"
+            "   }"
+            " }"
+            " return out;"
+            "})(" + json.dumps(choices) + "," + json.dumps(texts) + ")"
+        )
+
+    async def _exam_submit_form(self, page: Any) -> dict[str, Any]:
+        """提交试卷：直接提交页面自带的 ``#submitTest`` 表单（页面自己的载荷）。"""
+        result = await page.eval(
+            """(() => {
+                const form = document.getElementById('submitTest');
+                if (!form) return {ok: false, error: '找不到交卷表单 #submitTest'};
+                form.submit();
+                return {ok: true};
+            })()"""
+        )
+        if not isinstance(result, dict) or not result.get("ok"):
+            return result if isinstance(result, dict) else {"ok": False}
+        await asyncio.sleep(5)
+        body = ""
+        with contextlib.suppress(PwError):
+            body = await page.text("body")
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            result["response"] = parsed
+            result["ok"] = parsed.get("status") == "success" or "成功" in str(
+                parsed.get("msg", "")
+            )
+        return result
+
+    async def _read_exam_score(self, exam_id: str) -> tuple[float | None, str]:
+        """交卷后从考试列表回读分数（已完成行会回显「xx 分」）。"""
+        try:
+            items = await self.list_exams()
+        except PwError as exc:
+            log.debug("回读考试列表失败: %s", exc)
+            return None, ""
+        for item in items:
+            if item.exam_id == exam_id and item.score is not None:
+                return item.score, item.score_text
+        return None, ""
+
     async def run_exam(
         self,
         item: quiz_mod.ExamItem,
         *,
         confirm: bool = False,
-        max_seconds: float = 0.0,
+        max_questions: int = 60,
     ) -> QuizReport:
-        """作业/考试全链路：进入 → 解析 → 作答 → 填卷 → 核验 →（可选）交卷 → 回读分数。"""
+        """作业/考试全链路：进入（含自动解滑块）→ 逐题作答 → 交卷 → 回读分数。"""
         report = QuizReport(title=item.title)
         page: Any = None
         try:
             page = await self.open_exam_item(item)
             self.emit("info", f"已进入答题页：{page.url[:120]}")
-            html = await page.html()
-            work = quiz_mod.parse_work(html)
-            if not work.questions:
-                # 题目可能在 iframe 里
-                for frame in await page.frames():
-                    with contextlib.suppress(PwError):
-                        work = quiz_mod.parse_work(await frame.html())
-                    if work.questions:
-                        page = frame
-                        break
-            await self.set_questions(work)
-            report.title = work.title or item.title
-            self.emit(
-                "info",
-                f"「{report.title}」：{len(work.questions)} 题"
-                f"（字体解码{'已启用' if work.deobfuscated else '未启用'}）",
-            )
-            report.items = await self.plan(work)
-            filled = await self.fill(page, report.items)
-            await self.verify(page, report.items)
-            if confirm and filled == 0:
-                report.submit_note = "一题都没填上，拒绝交卷（避免交白卷）"
+            seen: set[str] = set()
+            for _step in range(max_questions):
+                info = await self._exam_read(page)
+                if info.get("done"):
+                    break
+                # 「下一题」在最后一题后可能绕回第一题：按 qid 去重，别把已答的再答一遍
+                qid = str(info.get("qid") or "")
+                if qid and qid in seen:
+                    break
+                if qid:
+                    seen.add(qid)
+                plan_item = await self._exam_answer(page, info)
+                report.items.append(plan_item)
+                mark = "ok" if plan_item.answer else "warn"
+                self.emit(
+                    mark,
+                    f"第 {plan_item.number} 题 {plan_item.type_name} → "
+                    f"{plan_item.answer or '（未答）'}"
+                    f"（{plan_item.confidence:.2f} {plan_item.source}）",
+                )
+                if not await self._exam_next(page):
+                    break
+                await asyncio.sleep(1.2)
+            answered = sum(1 for item in report.items if item.answer)
+            self.emit("info", f"共 {len(report.items)} 题，作答 {answered} 题")
+            if not confirm:
+                self.emit("info", "干跑：未交卷（注意：进入考试后计时不会停）")
+                return report
+            if answered == 0:
+                report.submit_note = "一题都没答上，拒绝交卷（避免交白卷）"
                 self.emit("warn", report.submit_note)
-                confirm = False
-            if confirm:
-                result = await self._exam_submit(page, confirm=True)
-                report.submitted = bool(result.get("submitted"))
-                if report.submitted:
-                    outcome = await self.wait_result(timeout=max(max_seconds, 90.0))
-                    report.score = outcome.get("score")
-                    report.score_text = str(outcome.get("score_text") or "")
-                    report.submit_note = str(outcome.get("submit_note") or "")
+                return report
+            self.emit("info", "提交试卷…")
+            result = await self._exam_submit_form(page)
+            report.submitted = bool(result.get("ok"))
+            report.submit_detail = json.dumps(
+                {k: v for k, v in result.items() if k != "page_text"},
+                ensure_ascii=False,
+            )[:300]
+            if not report.submitted:
+                report.submit_note = f"交卷失败：{result.get('error') or result.get('response')}"
+                return report
+            await asyncio.sleep(5)
+            score, score_text = await self._read_exam_score(item.exam_id)
+            report.score = score
+            report.score_text = score_text
+            if score is not None:
+                self.emit("ok", f"交卷成功，平台回显：{score_text}")
             else:
-                await self._exam_submit(page, confirm=False)
+                self.emit("warn", "交卷成功，但列表里还没看到分数（可能延迟）")
         finally:
             if page is not None and page is not self.page:
                 with contextlib.suppress(Exception):
