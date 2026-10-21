@@ -2598,6 +2598,8 @@
         confirm: !!confirm
       };
       if (confirm && blocked) { payload.force = true; }
+      if (target.retake) { payload.retake = true; }
+      if (target.relation_id) { payload.relation_id = String(target.relation_id); }
       if (target.action === 'quiz') {
         payload.chapter = String(target.id || '').replace(/^quiz:/, '');
       } else {
@@ -3284,6 +3286,7 @@
                         id: retakeId,
                         title: (row.title || retakeId) + (rowState === '已完成' ? '（重考）' : ''),
                         relation_id: String(row.retake_relation_id || ''),
+                        retake: true,
                         deadline: String(row.deadline || ''),
                         course: String(courseField.value || '').trim() || (row.course || '')
                       });

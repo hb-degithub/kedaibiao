@@ -1572,6 +1572,7 @@ class ConsoleService:
                         emit=emit,
                         on_items=lambda items: self._job_update(job_id, items=items),
                         force=force,
+                        retake=_truthy(params.get("retake")),
                     )
                 )
                 self._chaoxing_finish(job_id, result, confirm=confirm)
@@ -1584,6 +1585,7 @@ class ConsoleService:
                         emit=emit,
                         on_items=lambda items: self._job_update(job_id, items=items),
                         force=force,
+                        retake=_truthy(params.get("retake")),
                     )
                 )
                 self._chaoxing_finish(job_id, result, confirm=confirm)

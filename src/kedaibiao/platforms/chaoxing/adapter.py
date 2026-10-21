@@ -711,6 +711,7 @@ class ChaoxingAutomation:
         emit: Any | None = None,
         on_items: Any | None = None,
         force: bool = False,
+        retake: bool = False,
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.quiz import ExamItem  # noqa: PLC0415
@@ -723,6 +724,9 @@ class ChaoxingAutomation:
             exam_id=exam_id,
             relation_id=relation_id,
             action="goTest",
+            retake=bool(retake),
+            retake_exam_id=exam_id if retake else "",
+            retake_relation_id=relation_id if retake else "",
         )
         async with PwBrowser(self._config()) as browser:
             page = await self._page(browser)

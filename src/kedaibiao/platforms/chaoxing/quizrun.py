@@ -235,6 +235,8 @@ class ChaoxingQuiz:
             }
         self.use_ocr = bool(use_ocr)
         self._questions: dict[str, quiz_mod.Question] = {}
+        #: 已经点过「我已阅读并同意」的页面 URL（同一个页面不能点第二次，会取消勾选）
+        self._agreed: set[str] = set()
 
     def emit(self, level: str, message: str) -> None:
         try:
@@ -376,67 +378,177 @@ class ChaoxingQuiz:
         """
         if item.mobile_only:
             raise PwError(f"「{item.title}」只允许手机 APP 作答，网页端做不了")
-        url = EXAM_NOTES_URL.format(
-            courseid=self.course_id,
-            clazzid=self.clazz_id,
-            exam=item.exam_id,
-            cpi=self.cpi,
-        )
-        await self.page.goto(url, timeout=90000)
+        notes_page = None
+        if item.retake:
+            # 重考入口是行里那个嵌套的「重考」goTest（带自己的参数）。
+            # 直接拼 examnotes URL 会落到「查看答案」页（0 题），所以照平台的做法点它。
+            notes_page = await self._open_notes_via_list(item)
+            if notes_page is not None:
+                self.emit("info", f"已通过列表里的「重考」入口打开：{item.title}")
+        if notes_page is None:
+            url = EXAM_NOTES_URL.format(
+                courseid=self.course_id,
+                clazzid=self.clazz_id,
+                exam=item.exam_id,
+                cpi=self.cpi,
+            )
+            await self.page.goto(url, timeout=90000)
+            notes_page = self.page
+        else:
+            self.page = notes_page
         self.emit("info", f"考试须知：{item.title}（{item.status}）")
-        for _attempt in range(3):
+        # 重考 / 首次进入都走同一套：同意 → 开始 →（可能先弹安全验证）→ 确认进入 → 答题页。
+        # 注意别在滑块还挂着的时候反复点「开始」——每点一次就是一张新验证码，
+        # 连续几次就会被风控盯上，越点越出不来。
+        captcha_solves = 0
+        for attempt in range(3):
             await self._ensure_agreement()
-            with contextlib.suppress(PwError):
-                await self.page.click("#startBtn", timeout=8000)
-            await asyncio.sleep(2)
+            if not await self._start_clicked() and not await self._page_has_captcha():
+                with contextlib.suppress(PwError):
+                    await self.page.click("#startBtn", timeout=8000)
+                await asyncio.sleep(2.5)
             if await self._page_has_face_capture():
                 handled = await self._wait_human(
-                    "face",
-                    "考试要求人脸识别：请完成认证后再继续",
+                    "face", "考试要求人脸识别：请完成认证后再继续"
                 )
                 if not handled:
                     raise PwError(
                         "考试要求人脸识别，未完成认证（可用 --show 在有摄像头的机器上跑）"
                     )
-                continue
-            await self._confirm_enter_dialog()
             if await self._page_has_captcha():
-                self.emit("info", "检测到「安全验证」滑块，尝试自动求解…")
-                solved = False
-                with contextlib.suppress(Exception):
-                    solved = await captcha_mod.solve_slide_captcha(self.page)
-                if solved:
-                    self.emit("ok", "滑块验证已自动通过")
-                else:
+                if captcha_solves >= 2:
                     handled = await self._wait_human(
                         "captcha",
-                        "自动解滑块失败：请在可见的浏览器窗口里手动拖动完成后继续",
+                        "安全验证连续失败（可能触发风控）：请在可见窗口里手动完成滑块后继续",
                     )
                     if not handled:
                         raise PwError(
-                            "进入考试需要滑块安全验证（自动求解失败），"
-                            "可用 --show 打开窗口人工拖动"
+                            "安全验证连续两次未通过，已停止（避免风控升级）。"
+                            "请用 --show 打开窗口人工完成，或过一会儿再试。"
                         )
-                    if not await self._wait_captcha_done():
-                        raise PwError("滑块安全验证没有通过，请重试")
+                    await self._wait_captcha_done()
+                else:
+                    captcha_solves += 1
+                    await self._solve_captcha()
                 await asyncio.sleep(2)
+            if await self._confirm_enter_dialog():
+                answer_page = await self._pick_answer_page()
+                if answer_page is not None:
+                    return answer_page
+                await asyncio.sleep(3)
+                answer_page = await self._pick_answer_page()
+                if answer_page is not None:
+                    return answer_page
             answer_page = await self._pick_answer_page()
             if answer_page is not None:
                 return answer_page
+            self.emit("info", f"还没进到答题页（第 {attempt + 1} 次尝试），继续…")
+            await asyncio.sleep(2)
         raise PwError("进入考试后没有找到答题页（可能被风控/需要人脸）")
 
-    async def _ensure_agreement(self) -> None:
-        """勾选「我已阅读并同意」——已经勾上时不要再点（再点会取消）。"""
-        disabled = await self.page.eval(
-            "(() => { const b = document.getElementById('startBtn');"
-            " return !!b && /disble|opa40/.test(b.className); })()"
-        )
-        if disabled:
-            with contextlib.suppress(PwError):
-                await self.page.click(".face_agreement", timeout=8000)
-            await asyncio.sleep(0.5)
+    async def _open_notes_via_list(self, item: quiz_mod.ExamItem) -> PwPage | None:
+        """在课程页「考试」tab 里点这一行的 goTest，返回打开的须知页。
 
-    async def _confirm_enter_dialog(self) -> None:
+        为什么要绕这一圈：可重考的场次，`examnotes?examId=` 只会给「查看答案」页；
+        平台自己的 `重考` 按钮走的是带额外参数的 goTest。照它点最省事也最正确。
+        """
+        from kedaibiao.platforms.chaoxing.study import COURSE_URL  # noqa: PLC0415
+
+        await self.page.goto(
+            COURSE_URL.format(
+                courseid=self.course_id, clazzid=self.clazz_id, cpi=self.cpi
+            ),
+            timeout=60000,
+        )
+        await self.page.wait_for("span.nav_content", timeout=30000)
+        await self.page.click_text("考试", timeout=15000)
+        frame = None
+        for _ in range(20):
+            frame = await self.page.frame("exam-list")
+            if frame is not None:
+                break
+            await asyncio.sleep(1.5)
+        if frame is None:
+            return None
+        code = await frame.eval(
+            "((examId) => {"
+            " const calls = Array.from(document.querySelectorAll('[onclick]'))"
+            "   .map((node) => node.getAttribute('onclick') || '')"
+            "   .filter((text) => text.indexOf('goTest(') >= 0);"
+            " const matched = calls.filter((text) => text.indexOf(examId) >= 0);"
+            " if (!matched.length) return '';"
+            " return matched[matched.length - 1];"
+            "})(" + json.dumps(item.exam_id) + ")"
+        )
+        if not code:
+            self.emit("warn", "考试列表里没找到这一行的 goTest，退回直接打开须知页")
+            return None
+        self.emit("info", f"执行列表里的入口：{code[:120]}")
+        context = getattr(self.page.raw, "context", None)
+        before = {id(page) for page in (getattr(context, "pages", []) or [])}
+        with contextlib.suppress(PwError):
+            await frame.eval("(() => { " + code + " })()")
+        for _ in range(20):
+            await asyncio.sleep(1.5)
+            pages = list(getattr(context, "pages", []) or [])
+            for raw_page in pages:
+                url = str(getattr(raw_page, "url", "") or "")
+                if id(raw_page) in before:
+                    continue
+                if "examnotes" in url or "/exam-ans/exam/test/" in url:
+                    return PwPage(raw_page)
+            current = str(self.page.url or "")
+            if "examnotes" in current:
+                return self.page
+        return None
+
+    async def _start_clicked(self) -> bool:
+        """确认层已经弹出来了吗（弹了就不用再点开始）。"""
+        return bool(
+            await self.page.eval(
+                "(() => { const el = document.getElementById('tabIntoexam2');"
+                " return !!(el && (el.offsetWidth || 0) > 0); })()"
+            )
+        )
+
+    async def _solve_captcha(self) -> None:
+        """解超星风控滑块；自动解不开就交人工。"""
+        self.emit("info", "检测到「安全验证」滑块，尝试自动求解…")
+        solved = False
+        with contextlib.suppress(Exception):
+            solved = await captcha_mod.solve_slide_captcha(self.page)
+        if solved:
+            self.emit("ok", "滑块验证已自动通过")
+            await asyncio.sleep(1.5)
+            return
+        handled = await self._wait_human(
+            "captcha",
+            "自动解滑块失败：请在可见的浏览器窗口里手动拖动完成后继续",
+        )
+        if not handled:
+            raise PwError(
+                "进入考试需要滑块安全验证（自动求解失败），"
+                "可用 --show 打开窗口人工拖动"
+            )
+        if not await self._wait_captcha_done():
+            raise PwError("滑块安全验证没有通过，请重试")
+        await asyncio.sleep(1.5)
+
+    async def _ensure_agreement(self) -> None:
+        """勾选「我已阅读并同意」。
+
+        同一个页面**只能点一次**（再点会取消勾选，按钮变灰）。重考流程会先跳到
+        ``&reset=true`` 的另一个须知页，那里要重新勾一次 —— 所以按页面 URL 记账。
+        """
+        url = str(self.page.url or "")
+        if url in self._agreed:
+            return
+        with contextlib.suppress(PwError):
+            await self.page.click(".face_agreement", timeout=8000)
+            self._agreed.add(url)
+        await asyncio.sleep(0.6)
+
+    async def _confirm_enter_dialog(self) -> bool:
         """点掉「本次考试答题时长…」确认层里的「进入考试/继续考试」。"""
         script = (
             "(() => {"
@@ -459,8 +571,9 @@ class ChaoxingQuiz:
             with contextlib.suppress(PwError):
                 if await self.page.eval(script):
                     self.emit("info", "已确认进入考试，等待答题页…")
-                    return
+                    return True
             await asyncio.sleep(1.5)
+        return False
 
     async def _pick_answer_page(self) -> PwPage | None:
         """在已打开的页面里找答题页（新标签或当前页跳转两种都可能）。"""
@@ -469,6 +582,9 @@ class ChaoxingQuiz:
         for raw_page in pages:
             url = str(getattr(raw_page, "url", "") or "")
             if "examnotes" in url:
+                continue
+            if "/test/look" in url:
+                # 已交卷的「查看答案」页：不是答题页，进去也只会有 0 题
                 continue
             if "reVersionTestStartNew" in url or "/test/" in url:
                 return PwPage(raw_page)
@@ -802,6 +918,11 @@ class ChaoxingQuiz:
                 if not await self._exam_next(page):
                     break
                 await asyncio.sleep(1.2)
+            if not report.items:
+                raise PwError(
+                    "答题页上没解析到题目（可能落到了「查看答案」页，或平台改版）。"
+                    f"当前页面：{page.url[:120]}"
+                )
             answered = sum(1 for item in report.items if item.answer)
             self.emit("info", f"共 {len(report.items)} 题，作答 {answered} 题")
             if not confirm:
