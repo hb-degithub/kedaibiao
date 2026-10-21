@@ -2460,6 +2460,8 @@
 
     var currentJobId = '';
     var watcher = null;
+    /* 交卷保险：题太少/置信度低时后端会停在「待确认」，这里把按钮切成「强制交卷」 */
+    var blocked = false;
 
     function appendLog(line) {
       var row = el('div');
@@ -2512,12 +2514,13 @@
       if (!busy) {
         /* btnArmored 点击后会把标签改成「执行中…」，跑完必须自己复位 */
         dryBtn.textContent = '干跑作答';
-        liveBtn.textContent = '交卷';
+        liveBtn.textContent = blocked ? '强制交卷' : '交卷';
         liveBtn.classList.remove('btn-primary');
       }
     }
 
     function start(confirm) {
+      if (!confirm) { blocked = false; }
       currentJobId = '';
       clear(logView);
       logView.textContent = '';
@@ -2532,6 +2535,7 @@
         title: target.title,
         confirm: !!confirm
       };
+      if (confirm && blocked) { payload.force = true; }
       if (target.action === 'quiz') {
         payload.chapter = String(target.id || '').replace(/^quiz:/, '');
       } else {
@@ -2566,14 +2570,26 @@
               if (state.status === 'failed') {
                 stateText.textContent = '失败：' + (state.error || '未知错误');
                 stateText.className = 'pill pill-danger';
+              } else if (state.submitted) {
+                blocked = false;
+                stateText.textContent = '已交卷 · ' + (state.score_text || '平台未回显分数');
+                stateText.className = 'pill pill-ok';
+                liveBtn.textContent = '交卷';
+                if (typeof assignmentsReload === 'function') { assignmentsReload(); }
+              } else if (state.submit_note) {
+                /* 被交卷保险拦下：题少或置信度低，等人工确认 */
+                blocked = true;
+                stateText.textContent = '待人工确认 · 未交卷';
+                stateText.className = 'pill pill-warn';
+                liveBtn.textContent = '强制交卷';
+                liveBtn.classList.remove('btn-primary');
+                appendLog({ level: 'warn', text: '⚠ ' + state.submit_note });
+                appendLog({ level: 'info',
+                  text: '→ 题目已填好并核验。确认无误后点「强制交卷」；要改答案请先在页面上改。' });
               } else {
-                stateText.textContent = state.submitted
-                  ? '已交卷 · ' + (state.score_text || '平台未回显分数')
-                  : '干跑完成';
-                stateText.className = state.submitted ? 'pill pill-ok' : 'pill pill-mute';
-                if (!state.submitted) {
-                  appendLog({ level: 'info', text: '→ 干跑完成：题目已填好并核验。确认无误后点「交卷」。' });
-                }
+                stateText.textContent = '干跑完成';
+                stateText.className = 'pill pill-mute';
+                appendLog({ level: 'info', text: '→ 干跑完成：题目已填好并核验。确认无误后点「交卷」。' });
                 if (typeof assignmentsReload === 'function') { assignmentsReload(); }
               }
             },

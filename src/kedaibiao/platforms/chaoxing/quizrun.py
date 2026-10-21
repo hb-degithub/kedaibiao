@@ -98,6 +98,44 @@ def parse_score_text(text: str) -> tuple[float | None, str]:
     return None, ""
 
 
+#: 交卷保险的默认阈值：题数这么少、或置信度低于这个值，就先停在人工确认
+SAFE_MIN_QUESTIONS = 3
+SAFE_MIN_CONFIDENCE = 0.6
+
+
+def submit_block_reason(
+    items: list[Any],
+    *,
+    force: bool = False,
+    min_questions: int = SAFE_MIN_QUESTIONS,
+    min_confidence: float = SAFE_MIN_CONFIDENCE,
+) -> str:
+    """要不要拦住这次「提交」：返回原因（空串 = 可以交）。
+
+    教训来自实测：2 题各 50 分的小测，模型两题都答得很自信（0.83）但错了一题，
+    直接交就是 50 分。题目少、或存在低置信度题时，先停在「已填好、待确认」，
+    让人扫一眼再决定 —— 交卷不可逆，慢一步比错一步好。
+    """
+    if force:
+        return ""
+    answered = [item for item in items if getattr(item, "answer", "")]
+    if not answered:
+        return "一题都没答上，拒绝交卷（避免交白卷）"
+    if len(items) <= min_questions:
+        return (
+            f"共 {len(items)} 题（≤{min_questions} 题的小测不自动交），"
+            "已填好，请人工确认后点「强制交卷」"
+        )
+    low = [item for item in answered if item.confidence < min_confidence]
+    if low:
+        numbers = "、".join(str(item.number) for item in low)
+        return (
+            f"有 {len(low)} 题置信度低于 {min_confidence:.0%}（第 {numbers} 题），"
+            "已填好，请人工确认后点「强制交卷」"
+        )
+    return ""
+
+
 @dataclass(slots=True)
 class PlanItem:
     """一道题的作答计划（填卷前先算好、可干跑预览）。"""
@@ -731,6 +769,7 @@ class ChaoxingQuiz:
         confirm: bool = False,
         max_questions: int = 60,
         on_items: Callable[[list[dict[str, Any]]], None] | None = None,
+        force: bool = False,
     ) -> QuizReport:
         """作业/考试全链路：进入（含自动解滑块）→ 逐题作答 → 交卷 → 回读分数。"""
         report = QuizReport(title=item.title)
@@ -768,9 +807,10 @@ class ChaoxingQuiz:
             if not confirm:
                 self.emit("info", "干跑：未交卷（注意：进入考试后计时不会停）")
                 return report
-            if answered == 0:
-                report.submit_note = "一题都没答上，拒绝交卷（避免交白卷）"
-                self.emit("warn", report.submit_note)
+            blocked = submit_block_reason(report.items, force=force)
+            if blocked:
+                report.submit_note = blocked
+                self.emit("warn", f"暂不交卷：{blocked}")
                 return report
             self.emit("info", "提交试卷…")
             result = await self._exam_submit_form(page)
@@ -1158,6 +1198,7 @@ class ChaoxingQuiz:
         confirm: bool = False,
         num: int = 1,
         on_items: Callable[[list[dict[str, Any]]], None] | None = None,
+        force: bool = False,
     ) -> QuizReport:
         """章节测验全链路：打开 → 解析 → 作答计划 → 填 → 核验 →（可选）交卷。"""
         report = QuizReport()
@@ -1173,14 +1214,16 @@ class ChaoxingQuiz:
         report.items = await self.plan(work, frame=frame, on_items=on_items)
         if on_items is not None and not (frame is not None and self._ocr_supported()):
             on_items(self.items_payload(report.items))
-        filled = await self.fill(frame, report.items)
+        await self.fill(frame, report.items)
         await self.verify(frame, report.items)
         if on_items is not None:
             on_items(self.items_payload(report.items))
-        if confirm and filled == 0:
-            report.submit_note = "一题都没填上，拒绝交卷（避免交白卷）"
-            self.emit("warn", report.submit_note)
-            confirm = False
+        if confirm:
+            blocked = submit_block_reason(report.items, force=force)
+            if blocked:
+                report.submit_note = blocked
+                self.emit("warn", f"暂不交卷：{blocked}")
+                confirm = False
         if confirm:
             result = await self.submit(frame, confirm=True)
             report.submitted = bool(result.get("submitted"))

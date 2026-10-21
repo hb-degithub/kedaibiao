@@ -244,3 +244,44 @@ def test_ocr_plan_streams_items_one_by_one() -> None:
     )
     assert [item.answer for item in items] == ["A", "A"]
     assert snaps == [1, 2]  # 一题推一次，不是最后一次性推
+
+
+def _item(number: int, answer: str = "A", confidence: float = 0.8, unsupported: str = ""):
+    return quizrun.PlanItem(
+        number=number,
+        qid=str(number),
+        type_name="单选题",
+        text="题",
+        options=["A", "B"],
+        images=0,
+        answer=answer,
+        confidence=confidence,
+        source="llm",
+        unsupported=unsupported,
+    )
+
+
+def test_submit_block_reason_small_quiz() -> None:
+    """2 题小测不自动交卷（实测：2 题各 50 分，错一题就是 50 分）。"""
+    reason = quizrun.submit_block_reason([_item(1), _item(2)])
+    assert "2 题" in reason and "强制交卷" in reason
+
+
+def test_submit_block_reason_low_confidence() -> None:
+    items = [_item(1), _item(2), _item(3), _item(4, confidence=0.3)]
+    reason = quizrun.submit_block_reason(items)
+    assert "置信度" in reason and "第 4 题" in reason
+
+
+def test_submit_block_reason_allows_normal_quiz() -> None:
+    items = [_item(index) for index in range(1, 6)]
+    assert quizrun.submit_block_reason(items) == ""
+
+
+def test_submit_block_reason_blocks_blank_submission() -> None:
+    items = [_item(1, answer=""), _item(2, answer=""), _item(3, answer=""), _item(4, answer="")]
+    assert "白卷" in quizrun.submit_block_reason(items)
+
+
+def test_submit_block_reason_force_bypasses() -> None:
+    assert quizrun.submit_block_reason([_item(1), _item(2)], force=True) == ""

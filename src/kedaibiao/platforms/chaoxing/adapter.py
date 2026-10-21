@@ -582,6 +582,7 @@ class ChaoxingAutomation:
         confirm: bool = False,
         emit: Any | None = None,
         on_items: Any | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.quiz import ExamItem  # noqa: PLC0415
@@ -605,7 +606,9 @@ class ChaoxingAutomation:
                 answerer=self.adapter.answerer(),
                 emit=emit,
             )
-            report = await runner.run_exam(item, confirm=confirm, on_items=on_items)
+            report = await runner.run_exam(
+                item, confirm=confirm, on_items=on_items, force=force
+            )
         return _report_dict(report)
 
     async def run_section_quiz(
@@ -616,6 +619,7 @@ class ChaoxingAutomation:
         confirm: bool = False,
         emit: Any | None = None,
         on_items: Any | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.quizrun import ChaoxingQuiz  # noqa: PLC0415
@@ -632,7 +636,7 @@ class ChaoxingAutomation:
                 emit=emit,
             )
             report = await runner.run_section_quiz(
-                chapter_id, confirm=confirm, on_items=on_items
+                chapter_id, confirm=confirm, on_items=on_items, force=force
             )
         return _report_dict(report)
 
