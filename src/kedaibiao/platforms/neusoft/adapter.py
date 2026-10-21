@@ -136,6 +136,9 @@ class NeusoftAdapter(PlatformAdapter):
     async def is_logged_in(self) -> bool:
         return await self.client.is_logged_in()
 
+    #: 上一次 :meth:`refresh_session` 失败的原因（服务层据此给出可操作的文案）
+    last_session_error: str = ""
+
     async def refresh_session(self, credentials: Credentials) -> bool:
         """会话失效时的统一入口：探测 → refresh_token 续期 → 密码重登。
 
@@ -148,12 +151,14 @@ class NeusoftAdapter(PlatformAdapter):
         if renewed:
             # 续期成功后要再确认一次：拿到 token ≠ 真能用
             if await self.is_logged_in():
+                self.last_session_error = ""
                 return True
+            self.last_session_error = "刷新令牌换到了 token，但仍无法访问"
         else:
-            self.log.info(
-                "东软会话已过期，且刷新令牌也失效（%s）—— 需要重新登录一次",
-                self.client.refresh_error or "平台拒绝刷新",
+            self.last_session_error = (
+                f"刷新令牌也失效（{self.client.refresh_error or '平台拒绝刷新'}）"
             )
+        self.log.info("东软会话已过期：%s —— 需要重新登录一次", self.last_session_error)
         return await self.login(credentials)
 
     def export_session(self) -> dict[str, Any] | None:

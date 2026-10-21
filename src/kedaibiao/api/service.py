@@ -880,8 +880,13 @@ class ConsoleService:
                         kind=PLATFORM_ERROR, status=502,
                     ) from exc
                 if not logged_in:
+                    # 平台自己知道为什么失效（例如东软：刷新令牌也过期）——
+                    # 带上原因，用户才知道该去「账号」页重登，而不是去改密码。
+                    note = str(getattr(adapter, "last_session_error", "") or "").strip()
                     raise ConsoleError(
-                        f"{platform} 登录失败（凭据可能不对，或会话已失效）",
+                        f"{platform} 登录失败"
+                        + (f"：{note}" if note else "（凭据可能不对，或会话已失效）")
+                        + "；请到「账号」页给这个平台重新登录一次",
                         kind=PLATFORM_ERROR, status=502,
                     )
 
