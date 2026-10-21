@@ -1331,6 +1331,112 @@ class ConsoleService:
 
     # -- 学习通：作业页里就地跑「做考试 / 章节测验 / 刷课」的后台任务 ----------
 
+    def chaoxing_meta(
+        self, params: dict[str, Any], *, viewer: Viewer | None = None
+    ) -> dict[str, Any]:
+        """考试 / 测验的元信息（时间窗口、时长、剩余提交次数）—— 只读，不进答题页。"""
+        action = str(params.get("action") or "").strip().lower()
+        if action not in {"exam", "quiz"}:
+            raise ConsoleError("action 只能是 exam / quiz", kind="bad_request", status=400)
+        course_ref = str(params.get("course") or "").strip()
+        if not course_ref:
+            raise ConsoleError("缺少课程（course）", kind="bad_request", status=400)
+        runtime: Any = None
+        adapter: Any = None
+        try:
+            creds, cookie_file = self._resolve_login("chaoxing", viewer)
+            runtime = build_runtime(
+                root=self.root,
+                environ=self._llm_environ(),
+                cookie_file=cookie_file,
+                owner_id=viewer.user_id if (viewer and viewer.authenticated) else 0,
+            )
+            adapter = runtime.make_adapter("chaoxing")
+            restore_adapter_session(adapter, cookie_file)
+            if not asyncio.run(adapter.refresh_session(creds)):
+                raise RuntimeError("学习通登录失败（会话可能已失效，请重新登录）")
+            course = self._chaoxing_pick_course(
+                asyncio.run(adapter.list_courses()), course_ref
+            )
+            if course is None:
+                raise RuntimeError(f"没有找到课程 {course_ref!r}")
+            result = asyncio.run(
+                adapter.automation.meta(
+                    course,
+                    action=action,
+                    exam_id=str(params.get("exam_id") or ""),
+                    chapter=str(params.get("chapter") or ""),
+                )
+            )
+            result["course"] = course.name
+            return _jsonable(result)
+        except ConsoleError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.exception("读取学习通考试元信息失败")
+            raise ConsoleError(
+                f"读取考试信息失败：{type(exc).__name__}: {exc}",
+                kind=PLATFORM_ERROR,
+                status=502,
+            ) from exc
+        finally:
+            if adapter is not None:
+                with contextlib.suppress(Exception):
+                    asyncio.run(adapter.close())
+            if runtime is not None:
+                with contextlib.suppress(Exception):
+                    runtime.close()
+
+    def chaoxing_meta_batch(
+        self, params: dict[str, Any], *, viewer: Viewer | None = None
+    ) -> dict[str, Any]:
+        """批量取考试/测验元信息（作业列表「补齐信息」按钮）—— 只读。"""
+        course_ref = str(params.get("course") or "").strip()
+        items = params.get("items")
+        if not course_ref:
+            raise ConsoleError("缺少课程（course）", kind="bad_request", status=400)
+        if not isinstance(items, list) or not items:
+            raise ConsoleError("items 不能为空", kind="bad_request", status=400)
+        if len(items) > 40:
+            raise ConsoleError("一次最多补 40 项", kind="bad_request", status=400)
+        runtime: Any = None
+        adapter: Any = None
+        try:
+            creds, cookie_file = self._resolve_login("chaoxing", viewer)
+            runtime = build_runtime(
+                root=self.root,
+                environ=self._llm_environ(),
+                cookie_file=cookie_file,
+                owner_id=viewer.user_id if (viewer and viewer.authenticated) else 0,
+            )
+            adapter = runtime.make_adapter("chaoxing")
+            restore_adapter_session(adapter, cookie_file)
+            if not asyncio.run(adapter.refresh_session(creds)):
+                raise RuntimeError("学习通登录失败（会话可能已失效，请重新登录）")
+            course = self._chaoxing_pick_course(
+                asyncio.run(adapter.list_courses()), course_ref
+            )
+            if course is None:
+                raise RuntimeError(f"没有找到课程 {course_ref!r}")
+            metas = asyncio.run(adapter.automation.meta_batch(course, items))
+            return {"course": course.name, "metas": _jsonable(metas)}
+        except ConsoleError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.exception("批量读取学习通考试信息失败")
+            raise ConsoleError(
+                f"批量读取考试信息失败：{type(exc).__name__}: {exc}",
+                kind=PLATFORM_ERROR,
+                status=502,
+            ) from exc
+        finally:
+            if adapter is not None:
+                with contextlib.suppress(Exception):
+                    asyncio.run(adapter.close())
+            if runtime is not None:
+                with contextlib.suppress(Exception):
+                    runtime.close()
+
     def start_chaoxing_job(
         self, action: str, params: dict[str, Any], *, viewer: Viewer | None = None
     ) -> dict[str, Any]:

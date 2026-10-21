@@ -29,8 +29,11 @@ from kedaibiao.platforms.chaoxing.quiz import (
     Question,
     Work,
     fill_script,
+    parse_answer_page_meta,
     parse_exam_list,
+    parse_exam_notes,
     parse_work,
+    parse_work_meta,
     submit_script,
     verify_script,
 )
@@ -650,3 +653,53 @@ def test_real_exam_list_scores() -> None:
     # 待做行里的「剩余28分钟」不能被当成「28 分」
     todo = [item for item in items if item.status == "todo"]
     assert todo and all(item.score is None for item in todo)
+
+
+# ---------------------------------------------------------------------------
+# 考试元信息：时间窗口 + 剩余提交次数
+# ---------------------------------------------------------------------------
+
+
+def test_parse_exam_notes_window_and_duration() -> None:
+    assert (FIXTURES / "quiz_examlist_219456814.html").is_file()
+    notes = parse_exam_notes(
+        "<table>"
+        "<tr><td>考试名称</td><td>【64】概率第2次课后作业</td></tr>"
+        "<tr><td>考试时长（分钟）</td><td>30 分钟</td></tr>"
+        "<tr><td>考试时间</td><td>10-12 14:07 至 10-25 22:00</td></tr>"
+        "<tr><td>可提交次数</td><td>3</td></tr>"
+        "</table>"
+    )
+    assert notes["title"] == "【64】概率第2次课后作业"
+    assert notes["duration_text"] == "30 分钟"
+    assert notes["start_text"] == "10-12 14:07"
+    assert notes["end_text"] == "10-25 22:00"
+    assert notes["attempts_limit"] == 3
+    assert "可提交次数" in notes["attempts_note"]
+
+
+def test_parse_work_meta_limits() -> None:
+    html = _html(WORK_PAGE)
+    meta = parse_work_meta(html)
+    # 实测：上限 100 = 不限，addTimes=0
+    assert meta["attempts_limit"] == 100
+    assert meta["attempts_unlimited"] is True
+    assert meta["attempts_note"] == "不限"
+
+    limited = parse_work_meta(
+        '<input type="hidden" id="limitWorkSubmitTimes" value="2">'
+        '<input type="hidden" id="addTimes" value="1">'
+    )
+    assert limited["attempts_remaining"] == 1
+    assert limited["attempts_note"] == "剩 1 次"
+
+
+def test_parse_answer_page_meta() -> None:
+    meta = parse_answer_page_meta(
+        '<div class="mark_info"><p>题量: 11</p><p>满分: 100.0</p>'
+        "<p class=\"examTime\">考试时间: 2026-10-12 14:07  至  2026-10-25 22:00</p></div>"
+    )
+    assert meta["question_count"] == 11
+    assert meta["full_score"] == 100.0
+    assert meta["start_text"].startswith("2026-10-12")
+    assert meta["end_text"].startswith("2026-10-25")

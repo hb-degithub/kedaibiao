@@ -2440,6 +2440,13 @@
     [dryBtn, liveBtn, stopBtn].forEach(function (node) { actions.appendChild(node); });
     body.appendChild(actions);
 
+    /* 考试信息：时间窗口 + 剩余提交次数（进面板就查，不开始作答） */
+    var metaGrid = el('div', '');
+    var secMeta = el('div', 'section');
+    secMeta.appendChild(el('div', 'section-title', '考试信息'));
+    secMeta.appendChild(metaGrid);
+    body.appendChild(secMeta);
+
     /* 题目信息 */
     var tableHost = el('div', '');
     var secQuestions = el('div', 'section');
@@ -2460,6 +2467,59 @@
 
     var currentJobId = '';
     var watcher = null;
+
+    function metaValue(data) {
+      if (!data) { return '—'; }
+      if (data.attempts_unlimited) { return '不限'; }
+      if (data.attempts_remaining !== null && data.attempts_remaining !== undefined) {
+        return '剩 ' + data.attempts_remaining + ' 次'
+          + (data.attempts_limit ? '（上限 ' + data.attempts_limit + '）' : '');
+      }
+      if (data.attempts_limit) { return '上限 ' + data.attempts_limit + ' 次'; }
+      return data.attempts_note || '—';
+    }
+
+    function renderMeta(data) {
+      clear(metaGrid);
+      var rows = [
+        ['开始时间', data.start_text || '平台未提供'],
+        ['截止时间', data.end_text || '平台未提供'],
+        ['考试时长', data.duration_text || '平台未提供'],
+        ['剩余提交次数', metaValue(data)]
+      ];
+      var table = el('table', 'table');
+      var tbody = el('tbody');
+      rows.forEach(function (pair) {
+        var tr = el('tr');
+        tr.appendChild(el('td', 'hint-text', pair[0]));
+        tr.appendChild(el('td', 'mono', pair[1]));
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      metaGrid.appendChild(table);
+      var remaining = data.attempts_remaining;
+      if (remaining === 0) {
+        dryBtn.disabled = true;
+        liveBtn.disabled = true;
+        stateText.textContent = '没有剩余提交次数';
+        stateText.className = 'pill pill-danger';
+        appendLog({ level: 'warn', text: '⚠ 平台显示剩余提交次数为 0，这次不能再交卷。' });
+      }
+    }
+
+    function loadMeta() {
+      var payload = { action: target.action, course: target.course };
+      if (target.action === 'quiz') {
+        payload.chapter = String(target.id || '').replace(/^quiz:/, '');
+      } else {
+        payload.exam_id = String(target.id || '');
+      }
+      post('/api/platforms/chaoxing/meta', payload).then(renderMeta).catch(function (e) {
+        clear(metaGrid);
+        metaGrid.appendChild(el('span', 'hint-text', '读取考试信息失败：' + describe(e)));
+      });
+    }
+    loadMeta();
     /* 交卷保险：题太少/置信度低时后端会停在「待确认」，这里把按钮切成「强制交卷」 */
     var blocked = false;
 
@@ -3182,8 +3242,7 @@
       loadBtn.disabled = true;
       var payload = course ? { course: course } : {};
       if (wantState) { payload.with_state = 1; }
-      post('/api/platforms/' + encodeURIComponent(platName) + '/actions/assignments',
-        payload).then(function (env) {
+      function renderAssignments(env) {
         if (seq !== state.pageSeq) { return; }
         clear(host);
         var rows = (env && env.rows) || [];
@@ -3213,6 +3272,15 @@
               if (!canSubmit) {
                 if (platName === 'chaoxing') {
                   /* 不跳工具页：就地展开作答面板（题目信息 + 日志 + 分数） */
+                  var rowState = String(row.state || '');
+                  if (rowState === '已完成' || rowState === '已过期') {
+                    /* 状态列已经写着「已完成/已过期」，这里不再重复，只留说明 */
+                    var doneTag = el('span', 'hint-text', '—');
+                    doneTag.title = rowState === '已完成'
+                      ? '已交卷；有重考机会时请到平台页面操作'
+                      : '已过截止时间，不能再作答';
+                    return doneTag;
+                  }
                   var isQuiz = String(id).indexOf('quiz:') === 0;
                   return btn(isQuiz ? '做测验' : '做考试', 'btn-sm', function () {
                     chaoxingWorkspace(platName, chaoxingHost, {
@@ -3239,6 +3307,62 @@
             aside: pill(rows.length + ' 条', 'pill-mute')
           }));
         renderRail();
+      }
+
+      function enrichChaoxing(env) {
+        var rows = (env && env.rows) || [];
+        var items = [];
+        var mapping = [];
+        rows.forEach(function (row, index) {
+          var id = assignmentIdOf(row);
+          if (!id) { return; }
+          if (String(id).indexOf('quiz:') === 0) {
+            items.push({ action: 'quiz', chapter: String(id).slice(5) });
+          } else {
+            items.push({ action: 'exam', exam_id: String(id) });
+          }
+          mapping.push(index);
+        });
+        if (!items.length) { return Promise.resolve(env); }
+        return post('/api/platforms/chaoxing/meta-batch', { course: course, items: items })
+          .then(function (res) {
+            var metas = (res && res.metas) || [];
+            var hasStart = false;
+            var hasAttempt = false;
+            metas.forEach(function (meta, at) {
+              var row = rows[mapping[at]];
+              if (!row || !meta || meta.ok === false) { return; }
+              if (meta.start_text) { row.start_text = meta.start_text; hasStart = true; }
+              if (meta.end_text && (!row.deadline || row.deadline === '—')) {
+                row.deadline = meta.end_text;
+              }
+              if (meta.attempts_unlimited) {
+                row.attempts_text = '不限';
+                hasAttempt = true;
+              } else if (meta.attempts_remaining !== null && meta.attempts_remaining !== undefined) {
+                row.attempts_text = '剩 ' + meta.attempts_remaining + ' 次';
+                hasAttempt = true;
+              } else if (meta.attempts_limit) {
+                row.attempts_text = '上限 ' + meta.attempts_limit + ' 次';
+                hasAttempt = true;
+              }
+            });
+            if (Array.isArray(env.columns)) {
+              if (hasStart) { env.columns.push({ key: 'start_text', label: '开始', mono: true }); }
+              if (hasAttempt) { env.columns.push({ key: 'attempts_text', label: '剩余次数', mono: true }); }
+            }
+            return env;
+          })
+          .catch(function () { return env; });
+      }
+
+      post('/api/platforms/' + encodeURIComponent(platName) + '/actions/assignments',
+        payload).then(function (env) {
+        if (seq !== state.pageSeq) { return; }
+        if (platName === 'chaoxing' && course) {
+          return enrichChaoxing(env).then(function (ready) { renderAssignments(ready); });
+        }
+        renderAssignments(env);
       }).catch(function (e) {
         if (seq !== state.pageSeq) { return; }
         clear(host);

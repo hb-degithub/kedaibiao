@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import http.cookiejar
 import os
 import re
@@ -559,6 +560,124 @@ class ChaoxingAutomation:
                 for step in report.steps
             ],
         }
+
+    async def meta(
+        self,
+        course: Course,
+        *,
+        action: str,
+        exam_id: str = "",
+        chapter: str = "",
+    ) -> dict[str, Any]:
+        """考试 / 测验的元信息：时间窗口、时长、剩余提交次数。
+
+        只在**不开始作答**的页面上取：考试读「考试须知」，章节测验读课件页的
+        ``doHomeWorkNew`` 表单（隐藏域里有上限/已用次数）。进考试就会开始计时，
+        所以这里绝不进答题页。
+        """
+        from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing import quiz as quiz_mod  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing.study import CARDS_URL  # noqa: PLC0415
+
+        course_id, clazz_id, cpi = self._ids(course)
+        async with PwBrowser(self._config()) as browser:
+            page = await self._page(browser)
+            if action == "exam":
+                if not exam_id:
+                    raise ValueError("exam 需要 exam_id")
+                url = (
+                    "https://mooc1.chaoxing.com/exam-ans/exam/test/examcode/examnotes"
+                    f"?courseId={course_id}&classId={clazz_id}&examId={exam_id}&cpi={cpi}"
+                )
+                await page.goto(url, timeout=60000)
+                await asyncio.sleep(2.5)
+                data = quiz_mod.parse_exam_notes(await page.html())
+                data["kind"] = "exam"
+                return data
+            if not chapter:
+                raise ValueError("quiz 需要 chapter（小节 id）")
+            await page.goto(
+                CARDS_URL.format(
+                    clazzid=clazz_id,
+                    courseid=course_id,
+                    chapter=chapter,
+                    num=1,
+                    cpi=cpi,
+                ),
+                timeout=90000,
+            )
+            deadline = 60.0
+            waited = 0.0
+            frame = None
+            while waited < deadline:
+                frame = await page.frame("doHomeWorkNew")
+                if frame is not None:
+                    break
+                await asyncio.sleep(1.5)
+                waited += 1.5
+            if frame is None:
+                return {"kind": "quiz", "attempts_limit": None, "attempts_remaining": None}
+            data = quiz_mod.parse_work_meta(await frame.html())
+            data["kind"] = "quiz"
+            return data
+
+    async def meta_batch(
+        self, course: Course, items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """一次浏览器会话里批量取元信息（作业列表「补齐信息」用）。
+
+        每个考试/测验要开一个页面读它自己的须知/表单，单个约 2~5 秒；共用同一个
+        Chrome 实例能省掉反复启动的开销。单项失败只记错误，不拖累其它项。
+        """
+        from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing import quiz as quiz_mod  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing.study import CARDS_URL  # noqa: PLC0415
+
+        course_id, clazz_id, cpi = self._ids(course)
+        results: list[dict[str, Any]] = []
+        async with PwBrowser(self._config()) as browser:
+            page = await self._page(browser)
+            for item in items:
+                action = str(item.get("action") or "")
+                try:
+                    if action == "exam":
+                        exam_id = str(item.get("exam_id") or "")
+                        url = (
+                            "https://mooc1.chaoxing.com/exam-ans/exam/test/examcode/examnotes"
+                            f"?courseId={course_id}&classId={clazz_id}"
+                            f"&examId={exam_id}&cpi={cpi}"
+                        )
+                        await page.goto(url, timeout=60000)
+                        await asyncio.sleep(1.8)
+                        data = quiz_mod.parse_exam_notes(await page.html())
+                    else:
+                        chapter = str(item.get("chapter") or "")
+                        await page.goto(
+                            CARDS_URL.format(
+                                clazzid=clazz_id,
+                                courseid=course_id,
+                                chapter=chapter,
+                                num=1,
+                                cpi=cpi,
+                            ),
+                            timeout=90000,
+                        )
+                        frame = None
+                        for _ in range(20):
+                            frame = await page.frame("doHomeWorkNew")
+                            if frame is not None:
+                                break
+                            await asyncio.sleep(1.2)
+                        data = (
+                            quiz_mod.parse_work_meta(await frame.html())
+                            if frame is not None
+                            else {"attempts_note": "", "attempts_limit": None}
+                        )
+                    data["ok"] = True
+                except Exception as exc:  # noqa: BLE001 - 单项失败不影响其它
+                    data = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                results.append(data)
+        return results
 
     async def list_exams(self, course: Course) -> list[Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415

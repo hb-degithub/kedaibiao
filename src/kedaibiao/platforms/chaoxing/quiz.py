@@ -71,6 +71,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from typing import Any
 
 from kedaibiao.platforms.chaoxing import fontdec
 
@@ -1286,3 +1287,137 @@ def _submit_script_real() -> str:
         "    confirm_selector: confirmed, submit_text: button_text };\n"
         "})()\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# 考试 / 测验元信息：时间窗口与剩余提交次数
+# ---------------------------------------------------------------------------
+
+#: 「剩余提交次数」这类行在考试须知里的叫法（老师端配置不同，名字会有出入）
+_ATTEMPT_KEYS = ("可提交次数", "提交次数", "剩余次数", "剩余提交次数", "作答次数", "可考次数")
+#: 时间窗口的分隔写法（「10-12 14:07 至 10-25 22:00」等）
+_WINDOW_SPLIT = re.compile(r"\s*(?:至|到|~|—|－|--|～)\s*")
+
+
+def _exam_notes_rows(html: str) -> dict[str, str]:
+    """考试须知页的「键 → 值」表（考试名称/考试时长/考试时间…）。"""
+    root = _parse_html(html or "")
+    rows: dict[str, str] = {}
+    for tr in (node for node in _walk(root) if node.tag == "tr"):
+        cells = [node for node in _walk(tr) if node.tag == "td"]
+        if len(cells) < 2:
+            continue
+        key = _node_text(cells[0]).strip().strip("：:")
+        value = _node_text(cells[1]).strip()
+        if key and value:
+            rows[key] = value
+    return rows
+
+
+def _split_window(text: str) -> tuple[str, str]:
+    """把「10-12 14:07 至 10-25 22:00」拆成 (开始, 截止)。"""
+    parts = [part.strip() for part in _WINDOW_SPLIT.split(text or "") if part.strip()]
+    if len(parts) >= 2:
+        return parts[0], parts[-1]
+    return (parts[0], "") if parts else ("", "")
+
+
+def _first_int(text: str) -> int | None:
+    match = re.search(r"(\d+)", text or "")
+    return int(match.group(1)) if match else None
+
+
+def parse_exam_notes(html: str) -> dict[str, Any]:
+    """考试须知页 → 元信息：时间窗口、时长、地点、提交次数（有就解析，没有为空）。
+
+    返回字段：``title`` / ``duration_text`` / ``start_text`` / ``end_text`` /
+    ``window_text`` / ``location`` / ``attempts_limit`` / ``attempts_note`` /
+    ``rows``（原始键值，排查用）。
+    """
+    rows = _exam_notes_rows(html or "")
+    window = rows.get("考试时间", "") or rows.get("有效时间", "")
+    start_text, end_text = _split_window(window)
+    attempts_limit = None
+    attempts_note = ""
+    for key, value in rows.items():
+        if any(marker in key for marker in _ATTEMPT_KEYS):
+            attempts_limit = _first_int(value)
+            attempts_note = f"{key}：{value}"
+            break
+    return {
+        "title": rows.get("考试名称", ""),
+        "duration_text": rows.get("考试时长（分钟）", "") or rows.get("考试时长", ""),
+        "window_text": window,
+        "start_text": start_text,
+        "end_text": end_text,
+        "location": rows.get("考试地点", ""),
+        "attempts_limit": attempts_limit,
+        "attempts_note": attempts_note,
+        "rows": rows,
+    }
+
+
+def parse_answer_page_meta(html: str) -> dict[str, Any]:
+    """答题页顶部信息条（题量/满分/考试时间）→ 元信息。"""
+    root = _parse_html(html or "")
+    info = _first_node(root, tag="div", cls="mark_info")
+    text = _node_text(info) if info else ""
+    window = ""
+    match = re.search(r"考试时间[:：]?\s*(.+?)(?:\s*$|\n)", text or "")
+    if match:
+        window = match.group(1).strip()
+    start_text, end_text = _split_window(window)
+    count = re.search(r"题量[:：]?\s*(\d+)", text or "")
+    full = re.search(r"满分[:：]?\s*([\d.]+)", text or "")
+    return {
+        "question_count": int(count.group(1)) if count else None,
+        "full_score": float(full.group(1)) if full else None,
+        "window_text": window,
+        "start_text": start_text,
+        "end_text": end_text,
+        "text": text.strip(),
+    }
+
+
+def parse_work_meta(html: str) -> dict[str, Any]:
+    """章节测验 / 作业页（doHomeWorkNew）→ 提交次数与时间窗口。
+
+    - ``#limitWorkSubmitTimes``：允许提交的总次数（实测默认 100，等于「不限」）；
+    - ``#addTimes``：已经提交过几次（页面用它和上限比较决定要不要弹验证码）；
+    - 时间窗口若页面给了 ``#startTime`` / ``#endTime`` 之类隐藏域就顺带取出来。
+    """
+    source = html or ""
+
+    def hidden(name: str) -> str:
+        pattern = (
+            r'id\s*=\s*["\']' + re.escape(name) + r'["\'][^>]*value\s*=\s*["\']([^"\']*)'
+            r'|value\s*=\s*["\']([^"\']*)["\'][^>]*id\s*=\s*["\']' + re.escape(name) + r'["\']'
+        )
+        match = re.search(pattern, source, re.I)
+        if not match:
+            return ""
+        return (match.group(1) or match.group(2) or "").strip()
+
+    limit = _first_int(hidden("limitWorkSubmitTimes"))
+    used = _first_int(hidden("addTimes"))
+    start_text = hidden("startTime") or hidden("startTimes") or hidden("beginTime")
+    end_text = hidden("endTime") or hidden("endTimes") or hidden("deadline")
+    remaining = None
+    unlimited = False
+    if limit is not None:
+        if limit >= 100:
+            unlimited = True
+        else:
+            remaining = max(0, limit - (used or 0))
+    return {
+        "attempts_limit": limit,
+        "attempts_used": used,
+        "attempts_remaining": remaining,
+        "attempts_unlimited": unlimited,
+        "start_text": start_text,
+        "end_text": end_text,
+        "attempts_note": (
+            "不限" if unlimited
+            else (f"剩 {remaining} 次" if remaining is not None else "")
+        ),
+    }
