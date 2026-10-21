@@ -443,6 +443,18 @@ class PwPage:
         """给输入框/可编辑元素赋值并派发 ``input`` / ``change`` 事件。"""
         await self._frame_ops(frame).fill(selector, value, timeout=timeout)
 
+    async def screenshot_bytes(
+        self, selector: str = "", *, full_page: bool = False, frame: PwFrame | None = None
+    ) -> bytes:
+        """截图为 PNG 字节（页面或指定 frame）。
+
+        学习通 OCR 用：``selector`` 给了就只截那个元素（一道题），
+        否则截整页/整帧。注意主帧要传 ``frame=None``。
+        """
+        return await self._frame_ops(frame).screenshot_bytes(
+            selector, full_page=full_page
+        )
+
     async def screenshot(self, path: str | Path, *, full_page: bool = True) -> str:
         """截图到 ``path``；父目录不存在时自动创建，返回实际写入路径。"""
         target = Path(path)

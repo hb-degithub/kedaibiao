@@ -780,3 +780,51 @@ class TestBrowser(PwAsyncTestCase):
             await browser.save_state("state.json")
         with self.assertRaises(PwError):
             await browser.cookies()
+
+
+class _ShotRaw:
+    """假的原生页面：只支持 locator().first.screenshot() 与整页截图。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def locator(self, selector: str):
+        raw = self
+
+        class _Loc:
+            @property
+            def first(self):
+                return self
+
+            async def scroll_into_view_if_needed(self, **_kw) -> None:
+                raw.calls.append("scroll:" + selector)
+
+            async def screenshot(self, **_kw) -> bytes:
+                raw.calls.append("element:" + selector)
+                return b"PNG-ELEMENT"
+
+        return _Loc()
+
+    async def screenshot(self, **_kw) -> bytes:
+        self.calls.append("page")
+        return b"PNG-PAGE"
+
+
+class TestScreenshotBytes(unittest.IsolatedAsyncioTestCase):
+    """截图能力：PwPage / PwFrame 都要有（学习通 OCR 依赖它）。"""
+
+    async def test_page_element_screenshot(self) -> None:
+        from kedaibiao.browser.pw import PwPage
+
+        raw = _ShotRaw()
+        page = PwPage(raw)
+        png = await page.screenshot_bytes(".questionLi")
+        self.assertEqual(png, b"PNG-ELEMENT")
+        self.assertIn("element:.questionLi", raw.calls)
+
+    async def test_page_full_screenshot(self) -> None:
+        from kedaibiao.browser.pw import PwPage
+
+        raw = _ShotRaw()
+        page = PwPage(raw)
+        self.assertEqual(await page.screenshot_bytes(), b"PNG-PAGE")
