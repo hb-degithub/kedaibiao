@@ -189,6 +189,10 @@ User-Agent**，否则被 Cloudflare 挡成 403（error 1010）。
   - 考试须知表格给出 `考试时间 10-12 14:07 至 10-25 22:00`、`考试时长`；
     答题页 `.mark_info` 给绝对时间（含年份）、题量、满分；
   - 面板里展示，列表在填了课程号加载时自动补齐「开始 / 剩余次数」两列；
+- **可重考**：已完成的行里如果还有 `重考` 按钮（嵌套的
+  `goTest('<courseid>',<examId>,<recordId>,<重考截止>,...)`），说明可以再交一次；
+  解析成 `ExamItem.retake/retake_exam_id/retake_deadline_text`，控制台显示
+  「可重考」并给「重考」按钮；平台没给出具体剩余次数时只标「可重考」；
 - **踩到的坑**：学习通前置 tengine 对非浏览器 UA 直接 403（httpx/urllib 默认 UA
   一律 403，带 Chrome UA 就 200）。只读请求的 `_HTML_HEADERS` 必须带 UA，
   否则控制台会一路报「会话已失效」。

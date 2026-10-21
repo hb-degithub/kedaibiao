@@ -703,3 +703,23 @@ def test_parse_answer_page_meta() -> None:
     assert meta["full_score"] == 100.0
     assert meta["start_text"].startswith("2026-10-12")
     assert meta["end_text"].startswith("2026-10-25")
+
+
+def test_real_exam_list_retake_available() -> None:
+    """已完成但挂着「重考」goTest 的场次要标成可重考（控制台据此给「重考」按钮）。"""
+    items = parse_exam_list(_html(EXAMS_PHYSICS))
+    done = [item for item in items if item.status == "done"]
+    assert done
+    assert all(item.retake for item in done)
+    assert all(item.retake_exam_id for item in done)
+    # 重考的 goTest 第 4 个参数是这一轮截止时间
+    assert done[0].retake_deadline_text.startswith("2026-10-2")
+
+
+def test_exam_attempts_text_parsing() -> None:
+    from kedaibiao.platforms.chaoxing.quiz import _exam_attempts
+
+    assert _exam_attempts("剩余2次")[0] == 2
+    assert _exam_attempts("可提交 3 次")[0] == 3
+    assert _exam_attempts("2次可考")[0] == 2
+    assert _exam_attempts("剩余19小时28分钟")[0] is None

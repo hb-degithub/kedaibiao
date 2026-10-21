@@ -356,6 +356,14 @@ class ExamItem:
     #: 已完成条目列表里回显的分数（「重考 100 分」里的 100）
     score: float | None = None
     score_text: str = ""
+    #: 已完成但还能重考（行里挂着「重考」的 goTest）
+    retake: bool = False
+    retake_exam_id: str = ""
+    retake_relation_id: str = ""
+    retake_deadline_text: str = ""
+    #: 剩余可提交次数（列表里写了「剩余N次/可考N次」才有，None = 平台没给）
+    attempts_left: int | None = None
+    attempts_text: str = ""
 
 
 @dataclass(slots=True)
@@ -789,6 +797,24 @@ def _exam_item(li: _Node) -> ExamItem | None:
             status = "done"
 
     score, score_text = _exam_score(li)
+
+    # 已完成的行里可能还挂着一个「重考」的 goTest —— 这就是允许重复作答的入口。
+    retake = False
+    retake_exam_id = ""
+    retake_relation_id = ""
+    retake_deadline = ""
+    for node in _walk(li):
+        name, call_args = _parse_call(node.attrs.get("onclick", ""))
+        if name != "goTest" or len(call_args) < 2:
+            continue
+        if call_args[1] == (exam_id or call_args[1]):
+            retake = True
+            retake_exam_id = call_args[1]
+            retake_relation_id = call_args[2] if len(call_args) > 2 else ""
+            retake_deadline = call_args[3] if len(call_args) > 3 else ""
+            break
+
+    attempts_left, attempts_text = _exam_attempts(_node_text(li))
     return ExamItem(
         title=title,
         status=status,
@@ -800,7 +826,32 @@ def _exam_item(li: _Node) -> ExamItem | None:
         raw_onclick=raw_onclick,
         score=score,
         score_text=score_text,
+        retake=retake,
+        retake_exam_id=retake_exam_id.strip(),
+        retake_relation_id=retake_relation_id.strip(),
+        retake_deadline_text=retake_deadline.strip(),
+        attempts_left=attempts_left,
+        attempts_text=attempts_text,
     )
+
+
+#: 「剩余提交次数」在列表里的写法（老师端配置不同，叫法有出入）
+_EXAM_ATTEMPTS_RE = re.compile(
+    r"(?:剩余|可考|可提交|还能考|还可考)\s*[:：]?\s*(\d+)\s*次"
+    r"|(\d+)\s*次\s*(?:可考|可提交|重考)"
+)
+
+
+def _exam_attempts(text: str) -> tuple[int | None, str]:
+    """从考试行文本里取剩余次数；没有就 ``(None, "")``。"""
+    match = _EXAM_ATTEMPTS_RE.search(text or "")
+    if not match:
+        return None, ""
+    value = match.group(1) or match.group(2)
+    try:
+        return int(value), match.group(0).strip()
+    except (TypeError, ValueError):  # pragma: no cover - 正则已限制数字
+        return None, ""
 
 
 _EXAM_SCORE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*分(?!钟)")

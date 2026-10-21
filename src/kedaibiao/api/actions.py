@@ -2491,6 +2491,11 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
                     "deadline": _fmt_deadline(item.deadline) or "—",
                     "state": _assignment_state(item, with_state=with_state),
                     "score": str(raw.get("score_text") or ""),
+                    # 让前端知道这行能不能重考 / 还剩几次（不额外开页面）
+                    "retake": bool(raw.get("retake")),
+                    "retake_exam_id": str(raw.get("retake_exam_id") or ""),
+                    "retake_relation_id": str(raw.get("retake_relation_id") or ""),
+                    "attempts_text": str(raw.get("attempts_text") or ""),
                 }
             )
 

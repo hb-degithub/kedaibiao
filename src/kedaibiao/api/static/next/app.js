@@ -2483,9 +2483,11 @@
       clear(metaGrid);
       var rows = [
         ['开始时间', data.start_text || '平台未提供'],
-        ['截止时间', data.end_text || '平台未提供'],
+        ['截止时间', data.end_text || target.deadline || '平台未提供'],
         ['考试时长', data.duration_text || '平台未提供'],
-        ['剩余提交次数', metaValue(data)]
+        ['剩余提交次数', metaValue(data) !== '—'
+          ? metaValue(data)
+          : (target.action === 'exam' ? '平台未提供（能重考时不限次）' : '—')]
       ];
       var table = el('table', 'table');
       var tbody = el('tbody');
@@ -3273,11 +3275,25 @@
                 if (platName === 'chaoxing') {
                   /* 不跳工具页：就地展开作答面板（题目信息 + 日志 + 分数） */
                   var rowState = String(row.state || '');
+                  var retakeId = String(row.retake_exam_id || '');
+                  if (row.retake === true && retakeId && rowState !== '已过期') {
+                    /* 平台允许重考：已完成也能再进一次（分数按平台规则取） */
+                    return btn(rowState === '已完成' ? '重考' : '做考试', 'btn-sm', function () {
+                      chaoxingWorkspace(platName, chaoxingHost, {
+                        action: 'exam',
+                        id: retakeId,
+                        title: (row.title || retakeId) + (rowState === '已完成' ? '（重考）' : ''),
+                        relation_id: String(row.retake_relation_id || ''),
+                        deadline: String(row.deadline || ''),
+                        course: String(courseField.value || '').trim() || (row.course || '')
+                      });
+                    });
+                  }
                   if (rowState === '已完成' || rowState === '已过期') {
                     /* 状态列已经写着「已完成/已过期」，这里不再重复，只留说明 */
                     var doneTag = el('span', 'hint-text', '—');
                     doneTag.title = rowState === '已完成'
-                      ? '已交卷；有重考机会时请到平台页面操作'
+                      ? '已交卷；这场没有重考入口（或平台已关闭重考）'
                       : '已过截止时间，不能再作答';
                     return doneTag;
                   }
@@ -3287,6 +3303,7 @@
                       action: isQuiz ? 'quiz' : 'exam',
                       id: id,
                       title: row.title || id,
+                      deadline: String(row.deadline || ''),
                       course: String(courseField.value || '').trim() || (row.course || '')
                     });
                   });
@@ -3347,6 +3364,18 @@
                 hasAttempt = true;
               }
             });
+            rows.forEach(function (row) {
+              if (row.attempts_text) { hasAttempt = true; return; }
+              var state = String(row.state || '');
+              if (row.retake === true) {
+                row.attempts_text = '可重考';
+                hasAttempt = true;
+              } else if (state === '已完成') {
+                row.attempts_text = '不可重考';
+                hasAttempt = true;
+              }
+            });
+            hasAttempt = hasAttempt || rows.some(function (row) { return !!row.attempts_text; });
             if (Array.isArray(env.columns)) {
               if (hasStart) { env.columns.push({ key: 'start_text', label: '开始', mono: true }); }
               if (hasAttempt) { env.columns.push({ key: 'attempts_text', label: '剩余次数', mono: true }); }

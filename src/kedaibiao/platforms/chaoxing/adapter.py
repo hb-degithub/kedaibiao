@@ -379,8 +379,10 @@ class ChaoxingAdapter(PlatformAdapter):
                 if any(word in title for word in ("测验", "测试", "考试", "阶段测验"))
                 else TaskKind.HOMEWORK
             )
-            deadline = _parse_deadline(item.end_time_text) or _deadline_from_onclick(
-                item.raw_onclick
+            deadline = (
+                _parse_deadline(item.end_time_text)
+                or _deadline_from_onclick(item.raw_onclick)
+                or _parse_deadline(item.retake_deadline_text)
             )
             finished = item.status == "done"
             out.append(
@@ -401,6 +403,13 @@ class ChaoxingAdapter(PlatformAdapter):
                         "action": item.action,
                         "exam_id": item.exam_id,
                         "relation_id": item.relation_id,
+                        # 允许重复作答的场次：已完成也能「重考」
+                        "retake": item.retake,
+                        "retake_exam_id": item.retake_exam_id,
+                        "retake_relation_id": item.retake_relation_id,
+                        "retake_deadline_text": item.retake_deadline_text,
+                        "attempts_left": item.attempts_left,
+                        "attempts_text": item.attempts_text,
                     },
                 )
             )
