@@ -249,22 +249,80 @@ class ChaoxingQuiz:
             log.debug("human_gate 失败", exc_info=True)
             return False
 
-    async def _page_has_face_capture(self) -> bool:
-        """考试须知/答题页是否出现人脸识别层。"""
-        html = ""
+    #: 须知/答题页判断「是否真的要求人脸认证」的脚本。
+    #:
+    #: 别扫 HTML 文本：考试须知模板里**永远**带着人脸比对的 DOM（`face_Box`、
+    #: 「人脸比对中…」之类），只是隐藏着。真正的开关是隐藏域
+    #: ``#needFaceRecognition`` / ``#webNeedFaceRecognition``（实测值 0 = 不需要），
+    #: 其次才是「人脸弹层是否可见」。
+    _FACE_JS = """(() => {
+        const flagOn = (id) => {
+            const el = document.getElementById(id);
+            return !!el && String(el.value || '').trim() === '1';
+        };
+        if (flagOn('needFaceRecognition') || flagOn('webNeedFaceRecognition')) return true;
+        const pop = document.getElementById('faceRecognitionComparePop');
+        if (pop) {
+            const style = window.getComputedStyle(pop);
+            if (style.display !== 'none' && style.visibility !== 'hidden'
+                && (pop.offsetWidth || pop.offsetHeight)) return true;
+        }
+        const boxes = Array.from(document.querySelectorAll(
+            '.face_Box, .face_video_btn, .face_recognition_pop'));
+        return boxes.some(el => (el.offsetWidth || 0) > 50 && (el.offsetHeight || 0) > 20);
+    })()"""
+
+    #: 进入考试时可能弹出超星自己的「安全验证」滑块（captcha.chaoxing.com）。
+    #: 这是风控触发，不是人脸；按仓库纪律**不代过**，交给人工在可见窗口里拖。
+    _CAPTCHA_JS = """(() => {
+        const captcha = document.getElementById('captcha');
+        if (captcha && captcha.style.display !== 'none'
+            && (captcha.offsetWidth || 0) > 0) return true;
+        const eject = document.getElementById('eject');
+        return !!eject && (eject.offsetWidth || 0) > 0
+            && window.getComputedStyle(eject).display !== 'none';
+    })()"""
+
+    async def _page_has_captcha(self) -> bool:
         with contextlib.suppress(PwError):
-            html = await self.page.html()
-        return any(
-            marker in html
-            for marker in ("人脸比对", "reFaceRecognition", "face_Box", "人脸识别")
-        )
+            if await self.page.eval(self._CAPTCHA_JS):
+                return True
+        for frame in await self.page.frames():
+            with contextlib.suppress(PwError):
+                if await frame.eval(self._CAPTCHA_JS):
+                    return True
+        return False
+
+    async def _wait_captcha_done(self, *, timeout: float = 120.0) -> bool:
+        """等人拖完滑块：验证码消失即视为完成。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not await self._page_has_captcha():
+                return True
+            await asyncio.sleep(2)
+        return False
+
+    async def _page_has_face_capture(self) -> bool:
+        """当前页面**真的**要求人脸认证吗（隐藏模板 DOM 不算）。"""
+        with contextlib.suppress(PwError):
+            if await self.page.eval(self._FACE_JS):
+                return True
+        for frame in await self.page.frames():
+            with contextlib.suppress(PwError):
+                if await frame.eval(self._FACE_JS):
+                    return True
+        return False
 
     async def open_exam_item(self, item: quiz_mod.ExamItem) -> PwPage:
-        """打开考试/作业：须知页 → 勾选同意 → 进入考试 → 返回答题页。
+        """打开考试/作业：须知页 → 勾选同意 → 进入考试 →（二次确认）→ 答题页。
 
-        - 「只允许手机 APP 考试」直接拒绝（网页端没有这条路）；
-        - 考试人脸识别不代过：检测到就调 ``human_gate`` 等人工完成，再重试进入；
-        - 答题页可能开在新标签里，按 URL/标题特征挑出来。
+        实测到的坑：
+
+        - 「我已阅读并同意」是**开关**：连点两次会取消勾选，`进入考试` 随之变灰；
+        - 点「进入考试」不会直接跳转，而是弹出 `#confirmEnterWin` 提示层
+          （本次考试答题时长…），要点 `#tabIntoexam2` 才真正进卷；
+        - 答题页可能开在新标签里，也可能当前页跳转，两种都要认；
+        - 「只允许手机 APP 考试」直接拒绝。
         """
         if item.mobile_only:
             raise PwError(f"「{item.title}」只允许手机 APP 作答，网页端做不了")
@@ -277,24 +335,74 @@ class ChaoxingQuiz:
         await self.page.goto(url, timeout=90000)
         self.emit("info", f"考试须知：{item.title}（{item.status}）")
         for _attempt in range(3):
-            with contextlib.suppress(PwError):
-                await self.page.click(".face_agreement", timeout=8000)
-            await asyncio.sleep(0.5)
+            await self._ensure_agreement()
             with contextlib.suppress(PwError):
                 await self.page.click("#startBtn", timeout=8000)
-            await asyncio.sleep(4)
+            await asyncio.sleep(2)
             if await self._page_has_face_capture():
                 handled = await self._wait_human(
                     "face",
-                    "考试要求人脸识别：请在可见的浏览器窗口里完成认证后再继续",
+                    "考试要求人脸识别：请完成认证后再继续",
                 )
                 if not handled:
-                    raise PwError("考试需要人脸识别，未完成认证（可用 --show 打开窗口人工认证）")
+                    raise PwError(
+                        "考试要求人脸识别，未完成认证（可用 --show 在有摄像头的机器上跑）"
+                    )
                 continue
+            await self._confirm_enter_dialog()
+            if await self._page_has_captcha():
+                handled = await self._wait_human(
+                    "captcha",
+                    "进入考试触发了「安全验证」滑块：请在可见的浏览器窗口里完成拖动",
+                )
+                if not handled:
+                    raise PwError(
+                        "进入考试需要滑块安全验证，未完成（用 --show 打开窗口人工拖动）"
+                    )
+                if not await self._wait_captcha_done():
+                    raise PwError("滑块安全验证没有通过，请重试")
+                await asyncio.sleep(2)
             answer_page = await self._pick_answer_page()
             if answer_page is not None:
                 return answer_page
-        raise PwError("进入考试后没有找到答题页（可能需要人脸识别/被风控）")
+        raise PwError("进入考试后没有找到答题页（可能被风控/需要人脸）")
+
+    async def _ensure_agreement(self) -> None:
+        """勾选「我已阅读并同意」——已经勾上时不要再点（再点会取消）。"""
+        disabled = await self.page.eval(
+            "(() => { const b = document.getElementById('startBtn');"
+            " return !!b && /disble|opa40/.test(b.className); })()"
+        )
+        if disabled:
+            with contextlib.suppress(PwError):
+                await self.page.click(".face_agreement", timeout=8000)
+            await asyncio.sleep(0.5)
+
+    async def _confirm_enter_dialog(self) -> None:
+        """点掉「本次考试答题时长…」确认层里的「进入考试/继续考试」。"""
+        script = (
+            "(() => {"
+            " const ids = ['tabIntoexam2'];"
+            " for (const id of ids) {"
+            "   const el = document.getElementById(id);"
+            "   if (el && (el.offsetWidth || 0) > 0) { el.click(); return true; }"
+            " }"
+            " const nodes = Array.from(document.querySelectorAll('a,button'));"
+            " const labels = ['进入考试', '继续考试'];"
+            " for (const label of labels) {"
+            "   const hit = nodes.find(el => (el.innerText || '').trim() === label"
+            "     && (el.offsetWidth || 0) > 0 && (el.offsetHeight || 0) > 0);"
+            "   if (hit) { hit.click(); return true; }"
+            " }"
+            " return false;"
+            "})()"
+        )
+        for _ in range(6):
+            with contextlib.suppress(PwError):
+                if await self.page.eval(script):
+                    self.emit("info", "已确认进入考试，等待答题页…")
+                    return
+            await asyncio.sleep(1.5)
 
     async def _pick_answer_page(self) -> PwPage | None:
         """在已打开的页面里找答题页（新标签或当前页跳转两种都可能）。"""
