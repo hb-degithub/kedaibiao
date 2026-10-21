@@ -1422,7 +1422,7 @@
   }
 
   /* 完成度进度条：宽度只能靠 .w-XX 阶梯类（CSP 下没有内联 style） */
-  function completionProgress(label, done, total, caption) {
+  function completionProgress(label, done, total, caption, unit) {
     var totalNum = Number(total) || 0;
     var doneNum = Number(done) || 0;
     var pct = totalNum > 0 ? Math.round((doneNum / totalNum) * 100) : 0;
@@ -1434,7 +1434,7 @@
     var head = el('div', 'progress-head');
     head.appendChild(el('span', 'progress-label', label));
     var value = el('span', 'progress-value', String(doneNum));
-    value.appendChild(el('span', 'unit', '/ ' + totalNum + ' 点'));
+    value.appendChild(el('span', 'unit', '/ ' + totalNum + ' ' + (unit || '点')));
     head.appendChild(value);
     box.appendChild(head);
 
@@ -2193,9 +2193,40 @@
           '必修 ' + (tree.required_count || 0) + ' 组',
           '全部 ' + (tree.group_count || 0) + ' 组'
         ];
+        /* 得分点是另一套口径（只统计有计分点的组），作为补充信息放在说明里 */
+        if (tree.total_points) {
+          captionParts.push('得分点 ' + (tree.finish_points || 0) + '/' + tree.total_points);
+        }
         if (tree.class_name) { captionParts.push(tree.class_name); }
-        sec.appendChild(completionProgress('课程完成度', tree.finish_points || 0,
-          tree.total_points, captionParts.join(' · ')));
+        /* 完成度必须按「组」算：finish_points 是**得分点**口径，
+           纯学习组（text-learn / 视频）没有计分点，永远是 0 ——
+           拿它画进度条会让一本 33 组全做完的书显示 0%。 */
+        var reqTotal = 0, reqDone = 0, anyTotal = 0, anyDone = 0, hasState = false;
+        (tree.units || []).forEach(function (unit) {
+          (unit.groups || []).forEach(function (g) {
+            anyTotal += 1;
+            if (g.finished !== undefined && g.finished !== null) { hasState = true; }
+            if (g.finished) { anyDone += 1; }
+            if (g.required) {
+              reqTotal += 1;
+              if (g.finished) { reqDone += 1; }
+            }
+          });
+        });
+        /* state=none 时不回读状态，groups 里没有 finished —— 别画一个假的 0% */
+        if (!hasState) {
+          var pending = el('div', 'pills');
+          pending.appendChild(pill('必修 ' + (tree.required_count || reqTotal) + ' 组', 'pill-mute'));
+          pending.appendChild(pill('全部 ' + (tree.group_count || anyTotal) + ' 组', 'pill-mute'));
+          pending.appendChild(pill('未读取完成状态', 'pill-warn'));
+          sec.appendChild(pending);
+        } else if (reqTotal) {
+          sec.appendChild(completionProgress('必修完成度', reqDone, reqTotal,
+            captionParts.join(' · '), '组'));
+        } else {
+          sec.appendChild(completionProgress('已完成', anyDone, anyTotal,
+            captionParts.join(' · '), '组'));
+        }
       } else {
         var summary = el('div', 'pills');
         summary.appendChild(pill('必修 ' + (tree.required_count || 0) + ' 组', 'pill-mute'));

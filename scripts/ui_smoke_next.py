@@ -426,6 +426,18 @@ def main() -> int:
         page.wait_for_timeout(900)
         result.check(page.locator(".tree-unit").count() == 2, "教材树渲染 2 个单元")
         result.check(page.locator(".tree-group").count() == 5, "教材树渲染 5 个分组")
+        # 完成度按「组」算而不是「得分点」：fixture 里必修 2 组、完成 1 组
+        prog_val = page.locator(".progress-value").first.inner_text() if page.locator(
+            ".progress-value").count() else ""
+        # 期望值从 fixture 现算：必修组数 + 其中已完成数（改 fixture 不会假失败）
+        req_groups = [g for u in TREE["units"] for g in u["groups"] if g.get("required")]
+        req_done = sum(1 for g in req_groups if g.get("finished"))
+        expect = f"{req_done}/{len(req_groups)}"
+        result.check(expect in prog_val.replace(" ", ""),
+                     f"完成度按必修组数计算（{expect} 组，不是得分点）",
+                     f"实际 {prog_val!r}")
+        result.check("得分点" in page.locator(".progress-caption").first.inner_text(),
+                     "caption 里保留得分点口径")
         shoot("smoke-brush")
         page.get_by_role("button", name="提交未完成（干跑）").click()
         page.wait_for_timeout(1800)
