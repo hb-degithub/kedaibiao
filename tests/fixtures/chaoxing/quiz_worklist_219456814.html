@@ -1,0 +1,241 @@
+<!DOCTYPE html><html lang="en"><head><script>
+    _HOST_ = "//mooc1.chaoxing.com";
+    _CP_ = "/mooc-ans";
+    _HOST_CP1_ = "//mooc1.chaoxing.com/mooc-ans";
+    // _HOST_CP2_ = _HOST_ + _CP_;
+    _HOST_CP2_ = _CP_;
+</script>
+<meta charset="UTF-8">
+<title>作业列表</title>
+<link href="//mooc1.chaoxing.com/mooc-ans/mooc2/css/work-list.css?v=2026-0708-1500" type="text/css" rel="stylesheet">
+<link rel="stylesheet" type="text/css" href="//mooc1.chaoxing.com/mooc-ans/mooc2/css/taskStudent_pop.css">
+<script type="text/javascript" src="//mooc-res2.chaoxing.com/mooc-ans/js/common/jquery.min.js"></script>
+<script type="text/javascript" src="//mooc-res2.chaoxing.com/mooc-ans/js/common/jquery-migrate.min.js"></script><script type="text/javascript" src="//mooc1.chaoxing.com/mooc-ans/js/jquery.nicescroll.min.js"></script>
+<script type="text/javascript" src="//mooc1.chaoxing.com/mooc-ans/mooc2/js/poplayout.js"></script>
+<script type="text/javascript" src="//mooc1.chaoxing.com/mooc-ans/mooc2/js/xlPaging.js"></script>
+<script src="//mooc1.chaoxing.com/mooc-ans/js/ServerHost.js"></script>
+<style>
+.check_repeat {display:inline-block;padding: 0 12px;background: #F2F4F7;border-radius:35px;line-height: 30px;color: #474C59;font-size: 14px;cursor: pointer;}
+.check_repeat i{display:inline-block;width:94px;height:18px;float:left;margin:6px 10px 0 0;}
+.check_repeat i img{width:100%;height:100%;display: block;}
+/*无障碍元素隐藏*/
+.element-invisible-hidden {
+	position: absolute !important;
+	clip: rect(1px 1px 1px 1px); /* IE6, IE7 */
+	clip: rect(1px, 1px, 1px, 1px);
+}
+.task-list .filter .title, .task-list .filter .fs12 {
+	font-size: 14px
+}
+
+.work-progress-box {
+	display: inline-block;
+	vertical-align: middle;
+	margin-left: 40px;
+	font-weight: 700;
+	color: #474C59;
+	font-size: 14px;
+}
+
+.progressWrap {
+	display: inline-block;
+	vertical-align: middle;
+	width: 120px;
+	height: 14px;
+	background: #EBF0F5;
+	border-radius: 100px;
+	margin-right: 14px;
+	position: relative;
+}
+
+.progressing {
+	position: absolute;
+	height: 100%;
+	top: 0;
+	left: 0;
+	background: #3A8BFF;
+	border-radius: 100px;
+}
+</style>
+<style>.clearfix:after{content: " ";display: block;height: 0px;clear: both;}</style></head>
+<body style="background: transparent; zoom: 1;">
+<div id="workFocus" tabindex="0" aria-label=" 作业已刷新，请按tab键" role="option" class="clearfix"></div>
+<div class="box">
+    <div class="content">
+        <div class="main task-list">
+            <div class="top-back" tabindex="0">
+                <h2>【64】计算机25009-11</h2>
+            </div>
+            
+            <input type="hidden" id="courseId" value="219456814">
+			<input type="hidden" id="classId" value="151567344">
+			<input type="hidden" id="cpi" value="100000002">
+			<input type="hidden" id="enc" value="0f1e2d3c4b5a69788796a5b4c3d2e1f0">
+			<input type="hidden" id="status" value="0">
+			<input type="hidden" id="topicId" value="0">
+
+            <div class="has-content" style="display: block;" tabindex="-1">
+                <div class="filter">
+										
+											<div class="check_repeat fr" onclick="gotoDaya();"><i><img src="//mooc1.chaoxing.com/mooc-ans/mooc2/images/daya.png"></i>提交的作业将经过大雅相似度分析系统，请勿抄袭</div>
+															<span class="title">筛选</span>
+					<span class="ipt-radio circl-choosed">
+						<input name="group-radio" type="radio" onclick="changeStatus(this);" checked="" data="0" tabindex="-1"><i class="icon-radio"></i>
+					</span>
+					<div class="operate-list-group fs12 color181E33 lineheight20 inlineBlock">全部</div>
+
+					<span class="ipt-radio circl-choosed">
+						<input name="group-radio" type="radio" onclick="changeStatus(this);" data="2" tabindex="-1"><i class="icon-radio"></i>
+					</span>
+					<div class="operate-list-group fs12 color181E33 lineheight20 inlineBlock">已完成</div>
+
+					<span class="ipt-radio circl-choosed">
+						<input name="group-radio" type="radio" onclick="changeStatus(this);" data="1" tabindex="-1"><i class="icon-radio"></i>
+					</span>
+					<div class="operate-list-group fs12 color181E33 lineheight20 inlineBlock">未完成</div>
+										<div class="work-progress-box">
+						<div class="progressWrap"><span class="progressing" style="width:0.0%"></span></div>
+						<span>0/0</span>
+					</div>
+                </div>
+                
+                				<div class="null-data" style="font-size: 14px;">暂无作业</div>
+				            </div>
+            <div style="width:100%;height:110px;"></div>
+            <div class="pagePosition">
+				<div class="pageDiv" id="page"></div>
+			</div>
+			        </div>
+    </div>
+</div>
+
+<div class="maskDiv popMoveShowHide" style="display:none;" id="recordList">
+	<div class="popDiv wid640 popMove">
+		<div class="popHead">
+			<a href="javascript:;" onclick="closeAnswers();" class="popClose popMoveDele fr" style="margin-top: 5px;"><img src="//mooc1.chaoxing.com/mooc-ans/mooc2/images/popClose.png"></a>
+			<p class="fl" style="color: #181E33;font-size: 18px;">查看作答记录</p>
+		</div>
+		<div class="het62"></div>
+				<div id="content"></div>
+	</div>
+</div>
+<script>
+
+var courseId = $("#courseId").val();
+var classId = $("#classId").val();
+var cpi = $("#cpi").val();
+var enc = $("#enc").val();
+var status = $("#status").val();
+var topicId = $("#topicId").val();
+
+	$("#page").html("");
+
+function goTask(obj) {
+	var url = $(obj).attr("data");
+	window.open(url, '_blank');
+}
+
+function changeStatus(obj) {
+	var data = $(obj).attr("data");
+	location.href = "/mooc-ans/mooc2/work/list?courseId=" + courseId + "&classId=" + classId + "&cpi=" + cpi + "&enc=" + enc + "&status=" + data;
+}
+
+$(function() {
+	$(".insightBtn").click(function(event) {
+		event.stopPropagation();
+	});
+
+	$(".bottomList ul li").each(function() {
+		var PLHeight = $(this).find(".right-content p.status").height();
+		var PHeight = $(this).find(".right-content p:first-child").height();
+		if (PLHeight == null) {
+			var marginTop = (40 - PHeight) / 2
+			$(this).find(".right-content p:first-child").css("margin-top", marginTop + "px");
+		}
+	});
+
+	if("0" == "1"){
+		tabIntoAccessibleCustom();
+	}
+});
+
+function tabIntoAccessibleCustom() {
+	if("0" == "1"){
+		try {
+			if (window.top && window.top.accessiblePlugs) {
+				// window.top.accessiblePlugs.taggeriframe();
+				window.top.accessiblePlugs.update();
+			}
+		} catch (e) {
+			console.log(e)
+		}
+	}
+}
+
+function gotoDaya() {
+	var url = ServerHost.dayaDomain;
+	window.open(url, "_blank");
+}
+
+var recordLock = 0
+function answerList(workId, answerId, enc) {
+	if(recordLock == 1) {
+		return;
+	}
+	recordLock = 1;
+
+	$.ajax({
+		type : "get",
+		url : _HOST_CP2_ + "/mooc2/work/answer-list",
+		dataType : "html",
+		data : {
+			courseId : courseId,
+			classId : classId,
+			cpi : cpi,
+			workId : workId,
+			answerId : answerId,
+			enc : enc
+		},
+		success : function(data) {
+			$("#content").html(data);
+			$(".popSetupShowHide").fullFadeIn();
+			$("#recordList").show();
+			MoveFixed();
+		}
+	});
+}
+
+function closeAnswers() {
+	$("#recordList").hide();
+	$('.popSetupShowHide').fullFadeOut();
+	recordLock = 0;
+}
+
+function MoveFixed() {
+	$('.popMove').css({
+		top : function() {
+			return ($(window).height() - $(this).height()) / 2;
+		},
+		left : function() {
+			return ($(window).width() - $(this).width()) / 2;
+		}
+	});
+
+	$("#boxscroll").niceScroll({
+		cursorborder : "",
+		cursorcolor : "#D9DDE1",
+		boxzoom : false
+	});
+}
+
+$(function(){
+	if("0" == "1"){
+		setTimeout(function() {
+			$('#workFocus').focus();
+		}, 500)
+	}
+})
+</script>
+
+
+</body></html>

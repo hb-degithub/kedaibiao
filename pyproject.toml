@@ -20,6 +20,8 @@ dependencies = []
 
 [project.optional-dependencies]
 browser = ["playwright>=1.47"]
+# 学习通题面字体混淆解码（fontdec）：fontTools 读 cmap、Pillow 渲染字形
+chaoxing = ["fonttools>=4.50", "pillow>=10"]
 # 听力题转写（iTEST）：本地 faster-whisper，CPU 可跑
 stt = ["faster-whisper>=1.1"]
 api = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]

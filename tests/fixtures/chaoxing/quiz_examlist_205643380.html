@@ -1,0 +1,875 @@
+<!DOCTYPE html><html lang="en"><head><script>
+    _HOST_ = "//mooc1.chaoxing.com";
+    _CP_ = "/exam-ans";
+    _HOST_CP1_ = "//mooc1.chaoxing.com/exam-ans";
+    // _HOST_CP2_ = _HOST_ + _CP_;
+    _HOST_CP2_ = _CP_;
+</script>
+<meta charset="UTF-8">
+<title>考试列表</title>
+<link rel="stylesheet" type="text/css" href="//mooc1.chaoxing.com/exam-ans/mooc2/css/pop.css">
+<link href="//mooc1.chaoxing.com/exam-ans/mooc2/css/examStudent_pop.css?v=2026-0129-1516" rel="stylesheet" type="text/css">
+<link href="//mooc1.chaoxing.com/exam-ans/mooc2/css/exam-list.css?v=2026-0708-1641" type="text/css" rel="stylesheet">
+<script type="text/javascript" src="//mooc-res2.chaoxing.com/exam-ans/js/common/jquery.min.js"></script>
+<script type="text/javascript" src="//mooc-res2.chaoxing.com/exam-ans/js/common/jquery-migrate.min.js"></script>	<script>
+		I18N = {
+			"examreadCheckTip": "请勾选我已阅读《考试说明》",
+			"autoSubmitTestTip": "考试时间截止后系统将会自动提交试卷，",
+			"examstutips2": '<h2 class="title">考试说明：</h2> <p>1、离开或退出考试界面答题计时不停止，请不要中途离开考试界面。</p> <p>2、保持座位前的桌面干净，不要有与考试无关的内容。</p> <p>3、考试时间截止或答题时间结束，如果处于答题页面，将自动提交试卷。</p> ',
+			"randomQuestions": '随机抽题数量',
+			"examreadCheckTip": '请勾选我已阅读《考试说明》'
+		};
+	</script>
+<script type="text/javascript" src="//mooc1.chaoxing.com/exam-ans/mooc2/js/poptoast.js"></script>
+<script type="text/javascript" src="//mooc1.chaoxing.com/exam-ans/mooc2/js/poplayout.js?v=2022-0218-1818"></script>
+<script type="text/javascript" src="//mooc1.chaoxing.com/exam-ans/mooc2/js/xlPaging.js"></script>
+<script type="text/javascript" src="//mooc1.chaoxing.com/exam-ans/mooc2/js/exam/stu-exam-list.js?v=2026-1008-2102"></script>
+<script type="text/javascript" src="//mooc1.chaoxing.com/exam-ans/js/jquery.nicescroll.min.js"></script>
+<style>
+	.jb_btn{display:inline-block;box-shadow: 0 3px 12px 0 rgba(39,125,255,0.30);color: #FFFFFF;text-align:center;line-height:36px;border-radius: 20px;}
+	.fs14{font-size:14px;}
+	.piyueBtn{width:80px;height:36px;background:url(//mooc1.chaoxing.com/exam-ans/images/exam/exam-tesk-record/jb_btn_80.png) no-repeat 0 0;background-size:100%;}
+	.piyueBtn:hover{background-position:0 -36px;}
+	.piyueBtn:active{background-position:0 -72px}
+	.btnBlue{border: 1px solid #94C1FF;border-radius: 20px;display:inline-block;width:90px;height:34px;text-align:center;line-height:34px;color: #3A8BFF;}
+	.btnBlue:hover{background: #EAF0FF;}
+	.btnBlue:active{background: #E4ECFF;}
+	.btn_92_cancel:hover{background:none}
+	.btn_92_cancel:active{background:none}
+	.fs14{font-size:14px;}
+	.jb_btn_92{width:92px;height:36px;background:url(//mooc1.chaoxing.com/exam-ans/images/jb_btn_92.png) no-repeat 0 0;}
+	.task-list .bottomList ul li .time{    transform: translateY(-50%);margin-top:0;}
+	.btnBlue{display: inline-block;width:68px;height:32px;line-height:32px;border:1px solid #3A8BFF;color:#3A8BFF;	text-align: center;border-radius: 20px;}
+	@font-face {font-family: din; src: url(/exam-ans/mooc2/css/fonts/D-DINExp.otf);}
+	.numspan{display:block;text-align:center;font-size: 22px;color: #F7704E;line-height:22px;font-family:'din';text-align:right}
+	.numspan i{font-size:12px;margin-left:5px;}
+	/*无障碍元素隐藏*/
+	.element-invisible-hidden {
+		position: absolute !important;
+		clip: rect(1px 1px 1px 1px); /* IE6, IE7 */
+		clip: rect(1px, 1px, 1px, 1px);
+	}
+</style><style>.clearfix:after{content: " ";display: block;height: 0px;clear: both;}</style></head>
+
+<body style="zoom: 1;">
+<input type="hidden" id="courseId" name="courseId" value="205643380" class="clearfix">
+<input type="hidden" id="classId" name="classId" value="151631873">
+<input type="hidden" id="moocTeacherId" name="moocTeacherId" value="100000001">
+<input type="hidden" id="examEnc" name="examEnc" value="">
+<input type="hidden" id="examsystem" name="examsystem" value="">
+<input type="hidden" id="cpi" name="cpi" value="100000002">
+<input type="hidden" id="openc" name="openc" value="0f1e2d3c4b5a69788796a5b4c3d2e1f0">
+<input type="hidden" id="testPaperId" value="0">
+<input type="hidden" id="testUserRelationId" value="0">
+<input type="hidden" id="isRetest" value="false">
+<input type="hidden" id="fid" value="0">
+<input type="hidden" id="stuLoginName" value="">
+<textarea id="notAllowAnswerBackTip" style="display:none;">&lt;p&gt;&lt;strong&gt;注意事项：&lt;/strong&gt;&lt;br/&gt;本场考试教师已设置不允许查看上一题，请确认好答案后提交。&lt;/p&gt;</textarea>
+<textarea id="singleQuesLimitTimeTip" style="display:none;">&lt;p&gt;本场考试设置了单题限时，只能顺序作答，请确认好答案后提交&lt;/p&gt;</textarea>
+<div class="box">
+    <div class="content">
+        <div class="main task-list">
+			<div class="top-back">
+				<h2>示例班级</h2>
+			</div>
+			            <div class="has-content" style="display: block;">
+								<div class="filter" tabindex="-1" aria-hidden="true">
+					<span class="title">筛选</span>
+					<span class="ipt-radio circl-choosed">
+						<input tabindex="-1" aria-hidden="true" name="group-radio" type="radio" onclick="changeStatus(this);" checked="" data="0"><i class="icon-radio"></i>
+					</span>
+					<div class="operate-list-group fs12 color181E33 lineheight20 inlineBlock">全部</div>
+
+					<span class="ipt-radio circl-choosed">
+						<input tabindex="-1" aria-hidden="true" name="group-radio" type="radio" onclick="changeStatus(this);" data="2"><i class="icon-radio"></i>
+					</span>
+					<div class="operate-list-group fs12 color181E33 lineheight20 inlineBlock">已完成</div>
+
+					<span class="ipt-radio circl-choosed">
+						<input tabindex="-1" aria-hidden="true" name="group-radio" type="radio" onclick="changeStatus(this);" data="1"><i class="icon-radio"></i>
+					</span>
+					<div class="operate-list-group fs12 color181E33 lineheight20 inlineBlock">未完成</div>
+				</div>
+								
+                <div class="bottomList">
+                    <ul>
+																																	
+																																																																																			
+							<li>
+								<div style="float: left; width:100%;" tabindex="0" role="option" onclick="goTest('205643380',10949843,171363439,'2026-10-23 12:00:00.0',559363664,false,'0f1e2d3c4b5a69788796a5b4c3d2e1f0', '0');">
+									<div class="tag icon-exam icon-exam"></div>
+									<div class="right-content">
+										<p class="overHidden2 fl">示例-大学物理-课后测试4</p>
+																														<div class="clear"></div>
+										<p class="status fl">待做</p>
+																																																	</div>
+								</div>
+
+														
+							
+															<div class="time notOver">
+								    									<img class="verticalMiddle" src="//mooc1.chaoxing.com/exam-ans/mooc2/images/endTimeV2.png">剩余43小时28分钟
+								</div>
+														<div class="clear"></div>
+							</li>
+                        															
+																																																																																			
+							<li>
+								<div style="float: left; width:100%;" tabindex="0" role="option" onclick="goTest('205643380',10949819,171418814,'2026-10-23 12:00:00.0',559362736,false,'0f1e2d3c4b5a69788796a5b4c3d2e1f0', '0');">
+									<div class="tag icon-exam icon-exam"></div>
+									<div class="right-content">
+										<p class="overHidden2 fl">热学测试</p>
+																														<div class="clear"></div>
+										<p class="status fl">待做</p>
+																																																	</div>
+								</div>
+
+														
+							
+															<div class="time notOver">
+								    									<img class="verticalMiddle" src="//mooc1.chaoxing.com/exam-ans/mooc2/images/endTimeV2.png">剩余43小时28分钟
+								</div>
+														<div class="clear"></div>
+							</li>
+                        															
+																																																																																			
+							<li>
+								<div style="float: left; width:100%;" tabindex="0" role="option" onclick="goTest('205643380',10949796,171374637,'2026-10-23 12:00:00.0',559351189,false,'0f1e2d3c4b5a69788796a5b4c3d2e1f0', '0');">
+									<div class="tag icon-exam icon-exam"></div>
+									<div class="right-content">
+										<p class="overHidden2 fl">示例-课中测试9能量均分定理 热力学第一定律</p>
+																														<div class="clear"></div>
+										<p class="status fl">待做</p>
+																																																	</div>
+								</div>
+
+														
+							
+															<div class="time notOver">
+								    									<img class="verticalMiddle" src="//mooc1.chaoxing.com/exam-ans/mooc2/images/endTimeV2.png">剩余43小时28分钟
+								</div>
+														<div class="clear"></div>
+							</li>
+                        															
+																																																													
+							<li>
+								<div style="float: left; width:100%;" tabindex="0" role="option" onclick="viewExamAnswer('10935896','171374632')">
+									<div class="tag icon-exam icon-exam"></div>
+									<div class="right-content">
+										<p class="overHidden2 fl">示例大学物理课中测试6</p>
+																														<div class="clear"></div>
+										<p class="status fl">已完成</p>
+																																																	</div>
+								</div>
+
+														
+																								<div class="time" style="margin-right:200px;">
+										<a onclick="goTest('205643380',10935896,171374632,'2026-10-22 12:00:00.0',559351031,true,'0f1e2d3c4b5a69788796a5b4c3d2e1f0',0);" href="javascript:;" class="btnBlue fs14 ">重考</a>
+									</div>
+															
+															<div class="time notOver">
+								    									   <span class="numspan">
+										   										           										           											    100
+        										           										   <i>分</i>
+										  										  &nbsp;
+										   									   </span>
+																		<img class="verticalMiddle" src="//mooc1.chaoxing.com/exam-ans/mooc2/images/endTimeV2.png">剩余19小时28分钟
+								</div>
+														<div class="clear"></div>
+							</li>
+                        															
+																																																													
+							<li>
+								<div style="float: left; width:100%;" tabindex="0" role="option" onclick="viewExamAnswer('10935797','171363568')">
+									<div class="tag icon-exam icon-exam"></div>
+									<div class="right-content">
+										<p class="overHidden2 fl">力学测试</p>
+																														<div class="clear"></div>
+										<p class="status fl">已完成</p>
+																																																	</div>
+								</div>
+
+														
+																								<div class="time" style="margin-right:200px;">
+										<a onclick="goTest('205643380',10935797,171363568,'2026-10-22 12:00:00.0',559362669,true,'0f1e2d3c4b5a69788796a5b4c3d2e1f0',0);" href="javascript:;" class="btnBlue fs14 ">重考</a>
+									</div>
+															
+															<div class="time notOver">
+								    									   <span class="numspan">
+										   										           										           											    95
+        										           										   <i>分</i>
+										  										  &nbsp;
+										   									   </span>
+																		<img class="verticalMiddle" src="//mooc1.chaoxing.com/exam-ans/mooc2/images/endTimeV2.png">剩余19小时28分钟
+								</div>
+														<div class="clear"></div>
+							</li>
+                        															
+																																																													
+							<li>
+								<div style="float: left; width:100%;" tabindex="0" role="option" onclick="viewExamAnswer('10935757','171363498')">
+									<div class="tag icon-exam icon-exam"></div>
+									<div class="right-content">
+										<p class="overHidden2 fl">示例-大学物理-课后测试3</p>
+																														<div class="clear"></div>
+										<p class="status fl">已完成</p>
+																																																	</div>
+								</div>
+
+														
+																								<div class="time" style="margin-right:200px;">
+										<a onclick="goTest('205643380',10935757,171363498,'2026-10-22 12:00:00.0',559363646,true,'0f1e2d3c4b5a69788796a5b4c3d2e1f0',0);" href="javascript:;" class="btnBlue fs14 ">重考</a>
+									</div>
+															
+															<div class="time notOver">
+								    									   <span class="numspan">
+										   										           										           											    100
+        										           										   <i>分</i>
+										  										  &nbsp;
+										   									   </span>
+																		<img class="verticalMiddle" src="//mooc1.chaoxing.com/exam-ans/mooc2/images/endTimeV2.png">剩余19小时28分钟
+								</div>
+														<div class="clear"></div>
+							</li>
+                        																							
+																																									
+							<li>
+								<div style="float: left; width:100%;" tabindex="0" role="option" onclick="viewExamAnswer('10834678','0')">
+									<div class="tag icon-exam-g icon-exam-g"></div>
+									<div class="right-content">
+										<p class="overHidden2 fl">示例-大学物理-课后测试2</p>
+																														<div class="clear"></div>
+										<p class="status fl">已过期</p>
+																																																	</div>
+								</div>
+
+														
+							
+														<div class="clear"></div>
+							</li>
+                        																							
+																																									
+							<li>
+								<div style="float: left; width:100%;" tabindex="0" role="option" onclick="lookUpPaper('10811527','205643380','559363561',1,'0f1e2d3c4b5a69788796a5b4c3d2e1f0')">
+									<div class="tag icon-exam-g icon-exam-g"></div>
+									<div class="right-content">
+										<p class="overHidden2 fl">示例-大学物理-课后测试1</p>
+																														<div class="clear"></div>
+										<p class="status fl">已过期</p>
+																																																	</div>
+								</div>
+
+														
+							
+														<div class="clear"></div>
+							</li>
+                                            </ul>
+                </div>
+            </div>
+                        <div style="width:100%;height:110px;"></div>
+			            <div class="pagePosition">
+				<div class="pageDiv" id="page"></div>
+			</div>
+        </div>
+    </div>
+</div>
+
+<div class="maskDiv popMoveShowHide" id="examDescription" style="display: none">
+	<div class="popDiv wid640 popMove" style="top: 204px; left: 310px;">
+		<div class="popHead">
+			<a href="javascript:;" class="popClose fr"><img src="//mooc1.chaoxing.com/exam-ans/images/popClose.png" onclick="cancleExam()"></a>
+			<p class="fl fs18 colorDeep">提示</p>
+		</div>
+		<div class="het62"></div>
+		<div class="readPad">
+			<div class="het120" id="boxscroll" tabindex="1" style="overflow: hidden; outline: none;">
+			</div>
+			<div class="readCheckBox"><span class="read_check read_checked" id="readCheck"></span>我已阅读</div>
+			<div class="yzmDiv" style="display: " id="identifyCodeDiv">
+				<span>验证码：</span>
+				<p class="pInput">
+										<input type="text" id="codeId">
+					<span class="wrongTips" style="display:none" id="wrongTipId1">请输入验证码</span>
+					<span class="wrongTips" style="display:none" id="wrongTipId2">验证码不正确，请重新输入</span>
+				</p>
+			</div>
+		</div>
+		<div class="popBottom">
+			<a href="javascript:;" class="jb_btn jb_btn_92 fr fs14" onclick="startTest()">进入考试</a>
+			<a href="javascript:;" class="btnBlue btn_92_cancel fr fs14" onclick="cancleExam()">取消</a>
+		</div>
+		<div class="het72"></div>
+	<div id="ascrail2000" class="nicescroll-rails nicescroll-rails-vr" style="width: 8px; z-index: 10; cursor: default; position: absolute; top: 0px; left: 92px; height: 120px; display: none;"><div class="nicescroll-cursors" style="position: relative; top: 0px; float: right; width: 8px; height: 0px; background-color: rgb(230, 236, 245); background-clip: padding-box; border-radius: 5px;"></div></div><div id="ascrail2000-hr" class="nicescroll-rails nicescroll-rails-hr" style="height: 8px; z-index: 10; top: 112px; left: 0px; position: absolute; cursor: default; display: none;"><div class="nicescroll-cursors" style="position: absolute; top: 0px; height: 8px; width: 0px; background-color: rgb(230, 236, 245); background-clip: padding-box; border-radius: 5px;"></div></div></div>
+</div>
+<div class="maskDiv qrCodeShowHide" id="qrCodeMasDiv" style="display:none;">
+	<div class="popDiv wid640 ewmPop">
+		<div class="popHead">
+			<a href="#" class="popClose fr"><img src="//mooc1.chaoxing.com/exam-ans/images/popClose.png" onclick="cancleQrCode()"></a>
+			<p class="fl fs18 colorDeep">提示</p>
+		</div>
+		<div class="het62"></div>
+		<dl class="pop_ewm">
+			<dd id="qrTip"></dd>
+			<dt><img id="qrImg" src=""></dt>
+		</dl>
+		<div class="popBottom">
+			<a href="#" class="jb_btn jb_btn_92 fr fs14" onclick="cancleQrCode()">知道了</a>
+			<a href="#" class="btnBlue btn_92_cancel fr fs14" onclick="cancleQrCode()">取消</a>
+		</div>
+		<div class="het72"></div>
+	</div>
+</div>
+<div class="maskDiv" style="display:none;z-index: 1000;" id="stopExamEnterWin">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:215px">
+		<div class="popHead">
+			<p class="fl fs18 colorDeep">提示</p>
+		</div>
+		<div class="het62"></div>
+		<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;">当前考试暂未开放，无法进入作答</div>
+		<div class="popBottom">
+			<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="$('#stopExamEnterWin').fullFadeOut();">确定</a>
+		</div>
+		<div class="het72"></div>
+	</div>
+</div>
+<input type="hidden" id="allowMultiplePendingSelfTask" value="">
+<div class="maskDiv " style="display:none;z-index:2001;" id="timeOverSubmitConfirmPop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:300px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<p class="popWord fs16 colorIn" style="margin: 10px 2px;">作答时间耗尽，试卷已提交</p>
+			<p class="popWord fs16 colorIn" style="margin: 2px 2px;">试卷领取时间：</p>
+			 <p class="popWord fs16 colorIn" style="margin: 10px 2px;">考试用时：<span class="consumeMinutes"></span>分钟</p>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="">知道了</a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv " style="display:none;z-index:2001;" id="showLoginInfo">
+    <div class="popDiv liveEwmPop">
+        <div class="popHead">
+            <a href="#" class="popClose fr"><img src="//mooc1.chaoxing.com/exam-ans/mooc2/images/popClose.png" onclick="$('#showLoginInfo').fullFadeOut();"></a>
+            <p class="fl fs18 colorDeep">直播二维码</p>
+        </div>
+        <div class="het62"></div>
+        <div class="livePop_con">
+            <div class="fs16 color1 liveweminfo">
+                <p>账号：<span class="color0" id="loginName"></span></p>
+                <p>密码：<span class="color0" id="password"></span></p>
+            </div>
+            <dl class="pop_ewm">
+                <dd>二维码仅考试期间有效</dd>
+                <dt><img id="ewmUrl" src="" onclick="rereshSecondDeviceQRCode()"></dt>
+            </dl>
+        </div>
+
+    </div>
+</div>
+
+<div class="maskDiv " style="display:none;z-index:2000;" id="submitConfirmPop" tabindex="0" role="alertdialog" aria-label="交卷">
+	<div class="popDiv wid440 Marking" style="left:39%;top:30%;width:450px;min-height:200px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep" tabindex="0" role="option">提示</p>
+				<a href="javascript:;" class="popClose fr" tabindex="0" role="button" aria-label="关闭">
+					<img tabindex="-1" aria-hidden="true" src="//mooc1.chaoxing.com/exam-ans/mooc2/images/popClose.png" onclick="$('#submitConfirmPop').fullFadeOut();$('#showNextPop').val('false');">
+				</a>
+			</div>
+			<div class="het62"></div>
+			<p class="popWord fs16 colorIn" style="margin: 30px 2px;" tabindex="0" role="option">确认交卷？</p>
+
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirm" onclick="">确定</a>
+				<a href="javascript:" class="btnBlue btn_92_cancel fr fs14" onclick="$('#submitConfirmPop').fullFadeOut();$('#showNextPop').val('false');">取消</a>
+			</div>
+			<div class="het72" tabindex="0" role="option" aria-label="弹窗结尾"></div>
+				</div>
+</div>
+
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="audioLimitTimesWin">
+	<div class="popSetDiv wid440">
+			<div class="popHead RadisTop">
+				<a href="javascript:;" class="popClose fr" onclick="$('#audioLimitTimesWin').fullFadeOut();"><img src="//mooc1.chaoxing.com/exam-ans/mooc2/images/popClose.png"></a>
+				<p class="fl fs18 color1">提示</p>
+			</div>
+			<div class="het62"></div>
+			<p class="popWord fs16 color2 audioLimitTimesTip">此附件仅支持打开 <span></span> 次，你已打开 <span></span> 次，不能再次打开</p>
+			<div class="popBottom RadisBom">
+				<a href="javascript:;" class="jb_btn jb_btn_92 fr fs14" onclick="$('#audioLimitTimesWin').fullFadeOut();">知道了</a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv popMoveShowHide" id="confirmEnterWin" style="display:none;z-index:1000;" tabindex="0" role="alertdialog" aria-label="进入考试">
+	<div class="popDiv wid440 popMove" style="top: 204px; left: 410px;">
+		<div class="popHead">
+			<a href="javascript:;" class="popClose fr" tabindex="0" role="button" aria-label="关闭">
+				<img tabindex="-1" src="//mooc1.chaoxing.com/exam-ans/mooc2/images/popClose.png" onclick="$('#confirmEnterWin').fullFadeOut();">
+			</a>
+			<p class="fl fs18 colorDeep" style="font-size:18px;" tabindex="-1">提示</p>
+		</div>
+		<div class="het62"></div>
+		<div class="readPad" style="padding-bottom:0px;" tabindex="0" role="option">
+			<div class=" tip" style="line-height:26px;font-size:16px;min-height: 140px;width:100%;"></div>
+		</div>
+		<div class="popBottom">
+			<a tabindex="0" role="button" id="tabIntoexam2" href="javascript:;" class="jb_btn jb_btn_92 fr fs14 confirm" onclick="">进入考试</a>
+			<a tabindex="0" role="button" href="javascript:;" class="btnBlue btn_92_cancel fr fs14" onclick="$('#confirmEnterWin').fullFadeOut();" style="width:88px;">取消</a>
+		</div>
+		<div class="het72" tabindex="0" role="option" id="confirmEnterWinEnd" aria-label="弹窗结尾"></div>
+	</div>
+</div>
+
+
+<div class="maskDiv " style="display:none;z-index:1000;" id="multiTerminalWin">
+	<div class="popDiv wid440 Marking" style="left:50%;top:40%;width:480px;height:300px;margin-left:-240px;">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<p class="popWord fs16 colorIn" style="margin:18px 2px;"></p>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="">继续考试</a>
+				<a href="javascript:;" class="btnBlue btn_92_cancel fr fs14 cancel" onclick="$('#confirmEnterWin').fullFadeOut();" style="width:88px;">退出考试</a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="examTipsPop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:300px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;"></div>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="$('#examTipsPop').fullFadeOut();">知道了</a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="singleQuesLimitTimePop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:200px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;position:relative;top:20px;"> 本题作答时间已用完，将进入下一题 </div>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="singleQuesLimitTimeConfirm();"> 确定 </a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="groupPaperLimitTimePop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:auto;min-height:200px;padding-bottom:70px;">
+		<div class="popHead">
+			<p class="fl fs18 colorDeep">提示</p>
+		</div>
+		<div class="het62"></div>
+		<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:auto;max-height:46vh;word-break: break-all;position:relative;top:0;">
+			 当前考试需按分卷顺序作答，进入下一个分卷后当前分卷标记题目将无法跳转查看，确认进入下一个分卷？ </div>
+		<div class="popBottom">
+			<a href="javascript:" class="jb_btn jb_btn_92 fr fs14" onclick="groupLimitTimeConfirm();">确定</a>
+			<a href="javascript:" class="btnBlue btn_92_cancel fr fs14" onclick="$('#groupPaperLimitTimePop').fullFadeOut();$('#groupStart').val(0)">取消</a>
+		</div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="groupPaperLimitTimeOverPop">
+    <div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:auto;min-height:200px;padding-bottom:70px;">
+		<div class="popHead">
+			<p class="fl fs18 colorDeep">提示</p>
+		</div>
+		<div class="het62"></div>
+		<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:auto;max-height:46vh;word-break: break-all;position:relative;top:0;">
+							当前分卷作答时间已用完，将进入下一分卷，当前分卷标记题目将无法跳转查看					</div>
+		<div class="popBottom">
+			<a href="javascript:" class="jb_btn jb_btn_92 fr fs14" onclick="groupLimitTimeConfirm();">确定</a>
+		</div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="groupPaperLimitTimeSubmitPop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:200px">
+		<div class="popHead">
+			<p class="fl fs18 colorDeep">提示</p>
+		</div>
+		<div class="het62"></div>
+		<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;position:relative;top:20px;">当前分卷需限时耗尽才允许提交</div>
+		<div class="popBottom">
+			<a href="javascript:" class="jb_btn jb_btn_92 fr fs14" onclick="groupLimitTimeConfirm();">确定</a>
+		</div>
+		<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv " style="display:none;z-index:1000;" id="switchScreenPop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:220px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;position:relative;top:20px;"></div>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="$('#switchScreenPop').fullFadeOut();">确定</a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+
+<div class="maskDiv popMoveShowHide" id="confirmRetestWin" style="display:none;z-index:1000;" tabindex="0" role="alertdialog" aria-label="重考提示">
+	<div class="popDiv wid440 popMove" style="top: 204px; left: 410px;">
+		<div class="popHead">
+			<a href="javascript:;" class="popClose fr" tabindex="0" role="button" aria-label="关闭">
+				<img tabindex="-1" src="//mooc1.chaoxing.com/exam-ans/mooc2/images/popClose.png" onclick="$('#confirmRetestWin').fullFadeOut();"></a>
+			<p class="fl fs18 colorDeep" style="font-size:18px;">提示</p>
+		</div>
+		<div class="het62"></div>
+		<div class="readPad" style="padding-bottom:0px;" tabindex="0" role="option">
+			<div class=" tip" style="line-height:26px;font-size:16px;min-height: 80px;width:100%;">开始重考后，请重新提交考试，否则可能影响最终成绩。本次考试教师已设置取最后一次考试成绩为最终成绩，请确认是否重考？</div>
+		</div>
+		<div class="popBottom">
+			<a tabindex="0" role="button" href="javascript:;" class="jb_btn jb_btn_92 fr fs14 confirm" onclick="">确定重考</a>
+			<a tabindex="0" role="button" href="javascript:;" class="btnBlue btn_92_cancel fr fs14" onclick="$('#confirmRetestWin').fullFadeOut();" style="width:88px;">取消</a>
+		</div>
+					<div class="het72"></div>
+			</div>
+</div>
+
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="exitTimesSubmitPop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:220px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;" data="系统检测到你已离开考试{1}次，将强制收卷"></div>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="$('#exitTimesSubmitPop').fullFadeOut();" data="知道了"></a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="exitDurationSubmitPop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:220px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;" data="系统检测到你的切屏时长已超过{1}秒，将强制收卷"></div>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="$('#exitDurationSubmitPop').fullFadeOut();" data="知道了"></a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;z-index:2001;" id="teacherNoticePop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:300px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">教师提醒</p>
+			</div>
+			<div class="het62"></div>
+			<div class="popWord fs16 colorIn" style="margin: 10px 2px; height:200px;overflow:auto;"></div>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="$('#teacherNoticePop').fullFadeOut()">知道了</a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+
+
+<div class="maskDiv taskStatusShowHide" style="display:none;z-index:1000;" id="stuSelfTestAutoPaper">
+	<div class="popDiv wid440 centered">
+		<div class="popHead">
+			<a href="javascript:" class="popClose popMoveDele fr"><img src="//mooc1.chaoxing.com/exam-ans/mooc2/images/popClose.png"></a>
+			<p class="fl fs18 colorDeep">提示</p>
+		</div>
+		<div class="het62"></div>
+		<div class="barDiv">
+			<div class="barCon" style="width:10%"></div>
+		</div>
+        <div><p class="barInfo" style="margin-bottom:20px"><span id="taskTip">自测试卷生成中，已完成</span><span id="taskrate">0%</span></p></div>
+		<div class="popBottom">
+								</div>
+		<div class="het72"></div>
+	</div>
+</div>
+
+
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="faceRecognitionComparePop">
+	<div class="popDiv iden_resultPop">
+        		<div class="popHead">
+        			<a href="javascript:" class="popClose fr" onclick="$('#faceRecognitionComparePop').fullFadeOut();"><img src="//mooc1.chaoxing.com/exam-ans/mooc2/images/popClose.png"></a>
+        			<p class="fl fs18 colorDeep">识别结果</p>
+        		</div>
+        		<div class="het62"></div>
+                <div class="face_Box face_compared">
+                    <p class="contrastTit textCenter face_result"><i class="icon"></i><span class="tip"></span></p>
+                    <div class="contrastImgBox textCenter">
+                        <dl>
+                            <dt><img src="" class="currentFaceId"></dt>
+                            <dd>本次采集</dd>
+                        </dl>
+                        <dl class="greenDL">
+                            <dt><img src="" class="collectedFaceId"></dt>
+                            <dd class="archivePhoto">档案照片</dd>
+                        </dl>
+                    </div>
+                    <div class="face_video_btn textCenter marTop60 face_fail_actionbtn">
+                                                <a href="javascript:" class="disble_time_btn jb_btn_158 fs14 reFaceRecognition">重新识别</a>
+                    </div>
+                </div>
+				<div class="face_Box face_comparing">
+                    <p class="contrast_loading"><i><img src="//mooc1.chaoxing.com/exam-ans/mooc2/images/load.png"></i>人脸比对中...</p>
+                </div>
+	</div>
+</div>
+
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="forceSubmitTip">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:220px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;"></div>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="$('#forceSubmitTip').fullFadeOut();" data="知道了"></a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="stopExamAnswerTip">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:220px">
+		<div class="popHead">
+			<p class="fl fs18 colorDeep">提示</p>
+		</div>
+		<div class="het62"></div>
+		<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;">当前考试已被教师取消，系统将关闭作答页面</div>
+		<div class="popBottom">
+			<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose">确定</a>
+		</div>
+		<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="examAddTimeRemindTip">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;max-height:360px;">
+			<div class="popHead"><p class="fl fs18 colorDeep">延时提醒</p></div>
+			<div class="het62"></div>
+			<p class="popWord fs16 colorIn" style="margin:6px 2px;">该考试教师进行延时操作</p>
+			<p class="popWord fs16 colorIn minutes" style="margin:2px 2px;" data="延时时长：[1]分钟"></p>
+			<p class="popWord fs16 colorIn remind" style="margin:6px 2px;overflow: auto;max-height:160px;word-break: break-all;" data="延时原因：[1]"></p>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="$('#examAddTimeRemindTip').fullFadeOut();" data="知道了"></a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+
+<div class="maskDiv" style="display:none;" id="confirmPop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;">
+			<div class="popHead">
+				<a href="javascript:" class="popClose fr" onclick="$('#confirmPop').fullFadeOut();"><img src="//mooc1.chaoxing.com/exam-ans/mooc2/images/popClose.png"></a>
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<p class="popWord fs16 colorIn deleteRecoverTip">删除后将无法恢复，确认删除？</p>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmDelete" onclick="">确定</a>
+				<a href="javascript:" onclick="$('#confirmPop').fullFadeOut();" class="btnBlue btn_92_cancel fr fs14">取消</a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;" id="examWrongQuesPop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;">
+			<div class="popHead">
+				<a href="javascript:" class="popClose fr" onclick="$('#examWrongQuesPop').fullFadeOut();"><img src="//mooc1.chaoxing.com/exam-ans/mooc2/images/popClose.png"></a>
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<p class="popWord fs16 colorIn deleteRecoverTip">您有正在进行的错题练习，是否继续上次作答？</p>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 continueAnswer" onclick="">继续作答</a>
+				<a href="javascript:" onclick="" class="btnBlue btn_92_cancel fr fs14 reAnswer">重刷</a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+
+<div class="maskDiv " style="display:none;z-index:1000;" id="lockExamWin">
+	<div class="popDiv wid440 Marking" style="left:50%;top:40%;width:480px;height:220px;margin-left:-240px;">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<p class="popWord fs16 colorIn" style="margin:6px 2px;padding:26px 30px;"></p>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="">申诉</a>
+				<a href="javascript:;" class="btnBlue btn_92_cancel fr fs14 cancel" onclick="" style="width:88px;">退出考试</a>			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="exitexamForcesubmitWin">
+	<div class="popDiv wid440 Marking" style="left:50%;top:40%;width:480px;height:220px;margin-left:-240px;">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<p class="popWord fs16 colorIn" style="margin:6px 2px;padding:26px 30px;">退出考试将强制收卷，确认退出?</p>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirm" onclick="">退出</a>
+				<a href="javascript:;" class="btnBlue btn_92_cancel fr fs14 cancel" onclick="$('#exitexamForcesubmitWin').fullFadeOut();" style="width:88px;">取消</a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="exitexamForcesubmitPop">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:220px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;">系统检测到曾退出考试，将强制收卷</div>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="$('#exitexamForcesubmitPop').fullFadeOut();" data="知道了"></a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+<div class="maskDiv" style="display:none;z-index:1000;" id="forbidMultiterminalForceSubmitTip">
+	<div class="popDiv wid440 Marking" style="left:39%;top:40%;width:480px;height:220px">
+			<div class="popHead">
+				<p class="fl fs18 colorDeep">提示</p>
+			</div>
+			<div class="het62"></div>
+			<div class="popWord fs16 colorIn" style="margin: 6px 2px;overflow: auto;height:160px;word-break: break-all;">系统检测到学生考试多终端，将强制收卷</div>
+			<div class="popBottom">
+				<a href="javascript:" class="jb_btn jb_btn_92 fr fs14 confirmClose" onclick="$('#exitexamForcesubmitPop').fullFadeOut();" data="知道了"></a>
+			</div>
+			<div class="het72"></div>
+	</div>
+</div>
+
+
+
+
+<div class="maskDiv" id="deviceLockPopMask" style="display:none;z-index:1000;">
+<div class="deviceLockPop">
+		<h3 class="devicTit">设备已锁定</h3>
+		<div class="grayinfos">
+			<p class="infos">姓名：<span class="stuName"></span></p>
+			<p class="infos stuNo">学号：<span class="stuNo"></span></p>
+			<p class="infos">锁定原因：<span class="lockReason"></span></p>
+		</div>
+		<p class="deviceword"></p>
+		<div class="passwordBox">
+			<input type="input" maxlength="1">
+			<input type="input" maxlength="1">
+			<input type="input" maxlength="1">
+			<input type="input" maxlength="1">
+			<input type="input" maxlength="1">
+			<input type="input" maxlength="1">
+		</div>
+		<div class="popSubmit">
+			<a href="javascript:void(0)" class="subLine closebtn">退出考试</a> 			<a href="javascript:void(0)" class="subBlueBg confirmbtn">确定</a>
+			<a href="/keeper/appeal/page/submit?clazzId=151631873&amp;examId=&amp;personId=100000002&amp;answerId=&amp;type=4" target="_blank" class="subBlueBg appealbtn">申诉</a>
+		</div>
+  </div>
+</div>
+
+
+<script>
+
+ 	    TestRelationInfo = {"10949819":{"limitTime":11100,"expiredAutoSubmit":1},"10949796":{"limitTime":11060,"expiredAutoSubmit":1},"10834678":{"limitTime":16006,"expiredAutoSubmit":1},"10949843":{"limitTime":11060,"expiredAutoSubmit":1},"10935896":{"limitTime":13000,"expiredAutoSubmit":1},"10935797":{"limitTime":13000,"expiredAutoSubmit":1},"10811527":{"limitTime":11628,"expiredAutoSubmit":1},"10935757":{"limitTime":13000,"expiredAutoSubmit":1}};
+ 
+	$("#page").html("");
+
+function goTask(obj) {
+	var url = $(obj).attr("data");
+	window.open(url, '_blank');
+}
+
+function changeStatus(obj) {
+	var data = $(obj).attr("data");
+	location.href =  "/exam-ans/mooc2/exam/exam-list?courseid=205643380&clazzid=151631873&cpi=100000002&enc=0f1e2d3c4b5a69788796a5b4c3d2e1f0&status="+data+"&openc=0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+}
+
+$(document).ready(function() {
+	$("#boxscroll").niceScroll({cursorborder:"",cursorwidth:"8px", cursorcolor:"#E6ECF5",boxzoom:false});
+	$("#readCheck").click(function(){
+		if($(this).hasClass("read_checked")) {
+			$(this).removeClass("read_checked");
+		}else {
+			$(this).addClass("read_checked");
+		}
+	});
+});
+
+$(function() {
+	$(".bottomList ul li").each(function() {
+		var PLHeight = $(this).find(".right-content p.status").height();
+		var PHeight = $(this).find(".right-content p:first-child").height();
+		if (PLHeight == null) {
+			var marginTop = (40 - PHeight) / 2
+			$(this).find(".right-content p:first-child").css("margin-top", marginTop + "px");
+		}
+	});
+
+	function MoveFixed(){
+		$('.popMove').css({top:function(){
+				return ($(window).height()-440)/2;
+			},left:function(){
+				return ($(window).width()-$(this).width())/2;
+			}
+		});
+	}
+	setTimeout(function(){
+		MoveFixed();
+		if("0" == "1"){
+			tabIntoAccessibleCustom();
+		}
+	}, 500);
+	function tabIntoAccessibleCustom() {
+		if("0" == "1"){
+			$('#stuExamListFocus').focus();
+			try {
+				if (window.top && window.top.accessiblePlugs && window.top.accessiblePlugs.update()) {
+					// window.top.accessiblePlugs.taggeriframe();
+					window.top.accessiblePlugs.update();
+				}
+			} catch (e) {
+				console.log(e)
+			}
+		}
+	}
+});
+</script>
+
+
+</body></html>

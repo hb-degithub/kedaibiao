@@ -405,6 +405,74 @@ PYTHONPATH=src python3 -m kedaibiao action unipus answers \
 > ⚠️ 提交 / 时长 / 语音评测都属**写操作**，一律默认干跑；语音评测的报文形状
 > 大部分未实测，只有模块与闸门，没有控制台入口。
 
+#### 超星 / 学习通（只读 + 浏览器自动化）
+
+超星的登录要扫码/验证码，框架**不代过**。这里有三条入口，按「安全性」排序：
+
+1. **只读**（控制台 / 脚本，HTTP）：课程、作业、考试、截止时间。适配器的
+   `fetch_questions` / `submit` / `course_playback` 三个能力全是 `False`，
+   流水线对应阶段直接跳过，不是「跑起来才拒绝」；
+2. **浏览器自动化 · 刷课**：任务点树 → 逐个播放视频（2 倍速、静音）、读文档，
+   进度由播放器**自己上报**，完成判定回读 `isPassed` 与章节树；
+3. **浏览器自动化 · 刷题**：章节测验 / 作业 / 考试题面 → 字体混淆解码
+   （`font-cxsecret`，字形比对，已实测 34 个伪字全中）→ LLM / 题库 / 规则作答
+   → 逐题填卷 → 逐题回读核验 → **默认干跑，显式确认才交卷**。
+
+原理、真实 DOM 与实测记录见
+[docs/research/chaoxing-web.md](docs/research/chaoxing-web.md)。
+
+**已接入控制台的只读部分**：顶栏平台切换里会多出「超星学习通」，「课程 / 作业」
+页与其它平台同构（走同一套通用动作 `courses` / `assignments`），提交类入口因为
+能力没开而不会出现。
+
+![控制台里的学习通](docs/screenshots/chaoxing/console.png)
+
+##### 自动化台（本地网页，推荐）
+
+```bash
+# 1) 用账号密码登录一次，会话落到 data/sessions/chaoxing.storage_state.json
+python3 scripts/chaoxing_auto.py login --user 手机号
+
+# 2) 起自动化台（只绑 127.0.0.1）
+python3 scripts/chaoxing_studio.py
+#   → http://127.0.0.1:8900/
+```
+
+页面左边选课程，右边两个页签：
+
+- **任务点 / 刷课**：列出视频/文档任务点与完成状态，点「开始刷课」；可限制
+  最多任务点数、倍速（上限 2x）、文档停留秒数。视频逐个播完，日志实时滚动；
+- **测验 / 刷题**：列出章节测验，「干跑填卷」只填卷并逐题回读核验、不提交；
+  「填卷并交卷」才真交（不可逆，二次确认）。
+
+![学习通自动化台](docs/screenshots/chaoxing/studio.png)
+
+##### 命令行
+
+```bash
+# 课程 / 任务点
+python3 scripts/chaoxing_auto.py courses
+python3 scripts/chaoxing_auto.py tasks --course 205643380
+
+# 刷课：先 --limit 1 验证一个，再放开
+python3 scripts/chaoxing_auto.py study --course 205643380 --limit 1
+
+# 刷题：默认干跑；--confirm 才交卷
+python3 scripts/chaoxing_auto.py quiz --course 219456814 --chapter 461423614
+python3 scripts/chaoxing_auto.py quiz --course 219456814 --chapter 461423614 --confirm
+```
+
+**边界与纪律**：
+
+- 视频**人脸采集**、考试**验证码**不代过 —— 检测到就停在日志里等人工；
+- 同账号同一时刻只跑一个任务（并发会互相顶掉播放器）；
+- 2x 是播放器白名单上限（更高会被打回 1x 并暂停），不建议硬改；
+- 题面里的**公式截图**模型看不到，这类题在报告里标低置信度，不当成「已答对」；
+- 考试（尤其「只允许手机 APP」的）不在自动化范围内；
+- 只读看板仍保留：`scripts/chaoxing_web.py --profile ...` / `scripts/chaoxing_peek.py`。
+
+![学习通只读看板](docs/screenshots/chaoxing/overview.png)
+
 ### 可选依赖
 
 ```bash
