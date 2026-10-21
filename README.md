@@ -421,11 +421,18 @@ PYTHONPATH=src python3 -m kedaibiao action unipus answers \
 原理、真实 DOM 与实测记录见
 [docs/research/chaoxing-web.md](docs/research/chaoxing-web.md)。
 
-**已接入控制台的只读部分**：顶栏平台切换里会多出「超星学习通」，「课程 / 作业」
-页与其它平台同构（走同一套通用动作 `courses` / `assignments`），提交类入口因为
-能力没开而不会出现。
+**已接入主控制台**：顶栏平台切换里就有「超星学习通」，账号用**手机号 + 密码**
+在「账号」页绑定一次（自动过登录页，会话落盘复用）：
 
-![控制台里的学习通](docs/screenshots/chaoxing/console.png)
+- **课程**：6 门课，只读；
+- **作业页 · 刷课**：按任务点播放视频 / 阅读文档，默认干跑先看计划，
+  勾选确认后才真播；完成判定回读平台记录；
+- **工具页**：`任务点`、`考试/作业`、`做考试`、`章节测验` 四个平台动作
+  （做考试/章节测验默认干跑，`confirm=true` 才交卷，交完显示平台回显的分数）。
+
+![控制台里的学习通](docs/screenshots/chaoxing/console-tab.png)
+
+![控制台里的学习通工具页](docs/screenshots/chaoxing/console-tools.png)
 
 ##### 自动化台（本地网页，推荐）
 

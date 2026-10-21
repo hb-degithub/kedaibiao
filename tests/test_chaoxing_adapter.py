@@ -131,10 +131,27 @@ class TestLogin(unittest.TestCase):
 
         self.assertTrue(asyncio.run(adapter.login(Credentials(username="s1"))))
 
-    def test_plain_password_is_rejected_with_guidance(self) -> None:
+    def test_plain_password_goes_through_browser_login(self) -> None:
+        """账密登录：不再是「必须贴 Cookie」，而是走浏览器的手机号+密码登录。
+
+        这里不联网：把 ``_login_with_password`` 换掉，只验证分支走对了。
+        """
+        adapter = make_adapter(FakeTransport())
+        calls: list[tuple[str, str]] = []
+
+        async def fake_login(username: str, password: str) -> bool:
+            calls.append((username, password))
+            return True
+
+        adapter._login_with_password = fake_login  # type: ignore[method-assign]
+        ok = asyncio.run(adapter.login(Credentials(username="s1", password="hunter2")))
+        self.assertTrue(ok)
+        self.assertEqual(calls, [("s1", "hunter2")])
+
+    def test_no_credentials_still_asks_for_cookie(self) -> None:
         adapter = make_adapter(FakeTransport())
         with self.assertRaises(ChaoxingLoginError) as ctx:
-            asyncio.run(adapter.login(Credentials(username="s1", password="hunter2")))
+            asyncio.run(adapter.login(Credentials(username="s1", password="")))
         self.assertIn("Cookie", str(ctx.exception))
 
     def test_login_page_means_false(self) -> None:

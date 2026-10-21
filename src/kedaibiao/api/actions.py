@@ -1832,7 +1832,7 @@ async def _unipus_answers(adapter: Any, params: dict[str, Any]) -> dict[str, Any
     try:
         questions = list(await client.fetch_content(course_instance_id, group_id))
         answers = list(await client.fetch_answers(course_instance_id, group_id))
-    except Exception as exc:  # noqa: BLE001 - 平台异常由服务层翻成 502
+    except Exception:  # noqa: BLE001 - 平台异常由服务层翻成 502
         raise
 
     rows: list[dict[str, Any]] = []
@@ -1921,7 +1921,8 @@ async def _unipus_duration(adapter: Any, params: dict[str, Any]) -> dict[str, An
     plan = report.plan
     lines = [
         f"干跑：{'否（已真实建立连接）' if confirm else '是（未建立任何连接）'}",
-        f"计划时长：{plan.requested_seconds:g} 秒；心跳 {plan.planned_pings} 次（间隔 {plan.ping_interval:g}s）",
+        f"计划时长：{plan.requested_seconds:g} 秒；心跳 {plan.planned_pings} 次"
+        f"（间隔 {plan.ping_interval:g}s）",
     ]
     if kick:
         lines.append(f"kick-v2：已启用（module={module or '-'} / group={module_group or '-'}）")
@@ -1929,7 +1930,8 @@ async def _unipus_duration(adapter: Any, params: dict[str, Any]) -> dict[str, An
         lines.append("kick-v2：未启用（源码事实：不 kick 不记账，是否替用户做由你决定）")
     lines.append(
         f"连接={report.connected} 入房={report.namespace_acked} "
-        f"ping={report.pings_sent} pong={report.pongs_received} 观测记账秒数={report.credited_seconds:g}"
+        f"ping={report.pings_sent} pong={report.pongs_received} "
+        f"观测记账秒数={report.credited_seconds:g}"
     )
     if report.error:
         lines.append(f"错误：{report.error}")
@@ -2324,6 +2326,7 @@ def load_builtin_actions() -> int:
     _register_pinco()
     _register_unipus()
     _register_neusoft()
+    _register_chaoxing()
     return len(_HANDLERS)
 
 
@@ -2662,3 +2665,326 @@ def ensure_generic_actions(platform: str) -> None:
             ),
             _generic_assignments,
         )
+
+
+# ---------------------------------------------------------------------------
+# 超星 / 学习通：任务点、刷课、考试、章节测验
+# ---------------------------------------------------------------------------
+
+
+def _chaoxing_confirm(params: dict[str, Any]) -> bool:
+    """写操作闸门：``confirm`` 填 true/1/yes/确认 才真写。"""
+    return str(params.get("confirm") or "").strip().lower() in {
+        "1", "true", "yes", "y", "on", "确认", "我确认",
+    }
+
+
+async def _chaoxing_course(adapter: Any, params: dict[str, Any]) -> Any:
+    """按课程号或课程名找课（找不到就报清楚，不做模糊猜测）。"""
+    ref = str(params.get("course") or "").strip()
+    courses = list(await adapter.list_courses())
+    if not courses:
+        raise ActionInputError("学习通没有返回任何课程（会话可能已失效，请重新登录）")
+    if not ref:
+        if len(courses) == 1:
+            return courses[0]
+        names = "、".join(f"{c.name}（{c.remote_id}）" for c in courses[:8])
+        raise ActionInputError(f"请指定课程号或课程名，可选：{names}")
+    for course in courses:
+        if ref == course.remote_id or ref in course.remote_id:
+            return course
+    for course in courses:
+        if ref in (course.name or ""):
+            return course
+    options = "、".join(f"{course.name}（{course.remote_id}）" for course in courses[:8])
+    raise ActionInputError(f"没有找到课程 {ref!r}；可选：{options}")
+
+
+async def _chaoxing_tasks(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """任务点清单（只读）：视频/文档/测验，标出完成状态与时长。"""
+    course = await _chaoxing_course(adapter, params)
+    points = await adapter.automation.task_points(course, only_pending=False)
+    rows = [
+        {
+            "kind": point.kind,
+            "section": point.index_text,
+            "name": point.name,
+            "minutes": round(point.duration / 60) if point.duration else "—",
+            "status": "已完成" if point.passed is True else (
+                "待完成" if point.kind != "quiz" else "测验"
+            ),
+            "chapter_id": point.chapter_id,
+        }
+        for point in points
+    ]
+    pending = sum(1 for point in points if point.passed is not True and point.kind != "quiz")
+    return table(
+        platform=adapter.name,
+        action="tasks",
+        label="任务点",
+        title=f"{course.name} · 任务点 {len(points)} 个（待完成 {pending}）",
+        note="只读。刷课用 study 动作；章节测验用 quiz 动作（chapter_id 就是这里的值）。",
+        columns=[
+            column("kind", "类型"),
+            column("section", "小节"),
+            column("name", "名称"),
+            column("minutes", "时长(分)", mono=True),
+            column("status", "状态"),
+            column("chapter_id", "小节号", mono=True),
+        ],
+        rows=rows,
+        empty_hint="这门课没有可识别的任务点。",
+    )
+
+
+async def _chaoxing_study(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """刷课（写操作）。默认干跑只列计划，``confirm=true`` 才真播。"""
+    course = await _chaoxing_course(adapter, params)
+    limit = _int_param(params, "limit", default=1)
+    kinds = tuple(
+        item.strip() for item in str(params.get("kinds") or "video,document").split(",")
+        if item.strip()
+    )
+    rate = float(params.get("rate") or 2.0)
+    points = await adapter.automation.task_points(course, only_pending=True)
+    targets = [point for point in points if point.kind in kinds]
+    planned = targets[:limit] if limit > 0 else targets
+    rows = [
+        {
+            "kind": point.kind,
+            "section": point.index_text,
+            "name": point.name,
+            "minutes": round(point.duration / 60) if point.duration else "—",
+        }
+        for point in planned
+    ]
+    if not _chaoxing_confirm(params):
+        return table(
+            platform=adapter.name,
+            action="study",
+            label="刷课",
+            title=f"{course.name} · 计划刷 {len(planned)} 个任务点（干跑）",
+            note=(
+                "这是写操作的计划。核对无误后把 confirm 填 true 再执行一次才会真的播放。"
+                "视频按 2 倍速播放、进度由播放器自己上报，完成判定回读平台记录。"
+            ),
+            columns=[
+                column("kind", "类型"),
+                column("section", "小节"),
+                column("name", "名称"),
+                column("minutes", "时长(分)", mono=True),
+            ],
+            rows=rows,
+            empty_hint="没有待完成的任务点。",
+        )
+    result = await adapter.automation.play_course(
+        course,
+        only_pending=True,
+        limit=limit,
+        kinds=kinds,
+        rate=rate,
+        emit=lambda level, message: log.info("[chaoxing] %s %s", level, message),
+    )
+    return detail(
+        platform=adapter.name,
+        action="study",
+        label="刷课",
+        title=f"{course.name} · {result['summary']}",
+        note="完成判定以回读 isPassed / 章节树为准；播完但平台没记账会标「部分」。",
+        fields=[_field("处理任务点", len(result["steps"]))],
+        sections=[
+            _text_section(
+                "明细",
+                "\n".join(
+                    f"[{step['status']}] {step['section']} {step['task']} "
+                    f"{step['detail']}（{step['seconds']:.0f}s）"
+                    for step in result["steps"]
+                ) or "—",
+            )
+        ],
+    )
+
+
+async def _chaoxing_exams(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """考试 / 作业列表（只读），含状态、截止时间与已回显的分数。"""
+    course = await _chaoxing_course(adapter, params)
+    items = await adapter.automation.list_exams(course)
+    rows = [
+        {
+            "title": item.title,
+            "status": {"todo": "待做", "done": "已完成", "expired": "已过期"}.get(
+                item.status, item.status
+            ),
+            "end_time": item.end_time_text or "—",
+            "score": item.score_text or "—",
+            "mobile": "只允许手机APP" if item.mobile_only else "",
+            "exam_id": item.exam_id,
+        }
+        for item in items
+    ]
+    return table(
+        platform=adapter.name,
+        action="exams",
+        label="考试 / 作业",
+        title=f"{course.name} · {len(items)} 场",
+        note="只读。做考试用 exam 动作（exam_id 就是这里的值，默认干跑）。",
+        columns=[
+            column("title", "名称"),
+            column("status", "状态"),
+            column("end_time", "截止"),
+            column("score", "分数"),
+            column("mobile", "限制"),
+            column("exam_id", "考试号", mono=True),
+        ],
+        rows=rows,
+        empty_hint="这门课没有考试/作业。",
+    )
+
+
+async def _chaoxing_exam(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """做一场考试（写操作）：默认干跑只作答不交卷，confirm=true 才交卷。"""
+    course = await _chaoxing_course(adapter, params)
+    exam_id = str(params.get("exam_id") or "").strip()
+    if not exam_id:
+        raise ActionInputError("需要 exam_id（先用 exams 动作列出考试号）")
+    confirm = _chaoxing_confirm(params)
+    result = await adapter.automation.run_exam(
+        course,
+        exam_id=exam_id,
+        title=str(params.get("title") or ""),
+        relation_id=str(params.get("relation_id") or ""),
+        confirm=confirm,
+        emit=lambda level, message: log.info("[chaoxing] %s %s", level, message),
+    )
+    return _exam_detail(adapter.name, result, confirm=confirm)
+
+
+async def _chaoxing_quiz(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """做章节测验（写操作）：默认干跑填卷+核验，confirm=true 才交卷。"""
+    course = await _chaoxing_course(adapter, params)
+    chapter_id = str(params.get("chapter") or "").strip()
+    if not chapter_id:
+        raise ActionInputError("需要 chapter（章节测验的小节 id，先用 tasks 动作查看）")
+    confirm = _chaoxing_confirm(params)
+    result = await adapter.automation.run_section_quiz(
+        course, chapter_id=chapter_id, confirm=confirm,
+        emit=lambda level, message: log.info("[chaoxing] %s %s", level, message),
+    )
+    return _exam_detail(adapter.name, result, confirm=confirm)
+
+
+def _exam_detail(platform: str, result: dict[str, Any], *, confirm: bool) -> dict[str, Any]:
+    fields = [
+        _field("题数", len(result.get("items") or [])),
+        _field(
+            "作答",
+            sum(1 for item in result.get("items") or [] if item.get("answer")),
+        ),
+        _field("交卷", "已交卷" if result.get("submitted") else "未交卷（干跑）"),
+    ]
+    if result.get("score_text"):
+        fields.append(_field("分数", result["score_text"]))
+    elif result.get("submit_note"):
+        fields.append(_field("备注", result["submit_note"]))
+    rows = "\n".join(
+        f"{item['number']}. {item['type']} → {item['answer'] or '（未答）'}"
+        f"（{item['confidence']:.2f} {item['source']}）"
+        + (f"  ⚠ {item['unsupported']}" if item.get("unsupported") else "")
+        for item in result.get("items") or []
+    )
+    note = (
+        "已交卷，分数来自平台回显。" if result.get("submitted")
+        else "干跑：已填卷并核验，但**没有交卷**。确认无误后把 confirm 填 true 再执行一次。"
+        if not confirm else "交卷流程已执行，详见备注。"
+    )
+    return detail(
+        platform=platform,
+        action="exam" if confirm else "exam",
+        label="考试 / 测验",
+        title=f"{result.get('title') or '考试'} · {result.get('summary', '')}",
+        note=note,
+        fields=fields,
+        sections=[_text_section("逐题结果", rows or "—")],
+    )
+
+
+def _int_param(params: dict[str, Any], name: str, *, default: int = 0) -> int:
+    raw = str(params.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ActionInputError(f"{name} 必须是整数，收到 {raw!r}") from exc
+
+
+def _register_chaoxing() -> None:
+    register(
+        ActionSpec(
+            platform="chaoxing",
+            name="tasks",
+            label="任务点",
+            description="某门课的视频/文档/测验任务点与完成状态（只读）",
+            params=(ActionParam("course", "课程号或课程名", required=True),),
+        ),
+        _chaoxing_tasks,
+    )
+    register(
+        ActionSpec(
+            platform="chaoxing",
+            name="study",
+            label="刷课",
+            description="播放视频/阅读文档（★ 写操作；默认干跑，confirm=true 才真播）",
+            params=(
+                ActionParam("course", "课程号或课程名", required=True),
+                ActionParam("limit", "本次处理几个", type="int", hint="默认 1"),
+                ActionParam("kinds", "类型", hint="默认 video,document"),
+                ActionParam("rate", "倍速", hint="默认 2（平台上限）"),
+                ActionParam("confirm", "确认", hint="true 才真的播放"),
+            ),
+            mutates=True,
+        ),
+        _chaoxing_study,
+    )
+    register(
+        ActionSpec(
+            platform="chaoxing",
+            name="exams",
+            label="考试/作业",
+            description="某门课的考试与作业列表（只读，含分数与截止时间）",
+            params=(ActionParam("course", "课程号或课程名", required=True),),
+        ),
+        _chaoxing_exams,
+    )
+    register(
+        ActionSpec(
+            platform="chaoxing",
+            name="exam",
+            label="做考试",
+            description="作答并交卷（★ 写操作；默认干跑，confirm=true 才交卷）",
+            params=(
+                ActionParam("course", "课程号或课程名", required=True),
+                ActionParam("exam_id", "考试号", required=True),
+                ActionParam("title", "名称", hint="只用于显示"),
+                ActionParam("relation_id", "作答记录号"),
+                ActionParam("confirm", "确认", hint="true 才交卷（不可逆）"),
+            ),
+            mutates=True,
+        ),
+        _chaoxing_exam,
+    )
+    register(
+        ActionSpec(
+            platform="chaoxing",
+            name="quiz",
+            label="章节测验",
+            description="做章节测验（★ 写操作；默认干跑，confirm=true 才交卷）",
+            params=(
+                ActionParam("course", "课程号或课程名", required=True),
+                ActionParam("chapter", "小节 id", required=True),
+                ActionParam("confirm", "确认", hint="true 才交卷（不可逆）"),
+            ),
+            mutates=True,
+        ),
+        _chaoxing_quiz,
+    )

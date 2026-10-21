@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import http.cookiejar
 import os
+from pathlib import Path
 from typing import Any
 
 from kedaibiao.browser.capture import parse_cookie_header
@@ -40,9 +41,17 @@ COOKIE_DOMAIN = ".chaoxing.com"
 #: 用来区分「整串 cookie」和「一个普通字符串」的特征项
 _COOKIE_MARKERS = ("fid=", "_uid=", "UID=", "uf=", "ws=", "p_auth_token=")
 
+#: 浏览器 UA —— 学习通前置的 tengine 会直接 403 掉非浏览器 UA（实测 httpx/urllib 默认
+#: UA 一律 403，带上 Chrome UA 就 200），所以只读请求也必须伪装成浏览器。
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
 _HTML_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
     "Referer": "https://i.chaoxing.com/",
+    "User-Agent": BROWSER_UA,
 }
 
 
@@ -192,9 +201,15 @@ class ChaoxingAdapter(PlatformAdapter):
             or env_cookie
         ).strip()
         if not raw:
+            username = str(credentials.username or "").strip()
+            password = str(credentials.password or "")
+            if username and password:
+                ok = await self._login_with_password(username, password)
+                if not ok:
+                    raise ChaoxingLoginError("学习通账密登录没有成功（可能被风控要求验证码）")
+                return True
             raise ChaoxingLoginError(
-                "学习通没有账密登录路径（扫码/验证码由人完成）。请在控制台「账号」页"
-                "添加账号后，把浏览器里的 Cookie 整串贴到密码栏登录一次，"
+                "学习通需要账号密码，或把浏览器里的 Cookie 整串贴到密码栏登录一次，"
                 f"或设置环境变量 {COOKIE_ENV}。"
             )
         self.adopt_cookies(raw, username=credentials.username)
@@ -218,6 +233,57 @@ class ChaoxingAdapter(PlatformAdapter):
         return True
 
     # -- 数据 -------------------------------------------------------------
+
+    # -- 浏览器自动化入口 -------------------------------------------------
+
+    def saved_state_path(self) -> Path:
+        """浏览器登录态的落盘位置（账密登录一次，之后刷课/考试都复用它）。"""
+        base = self.ctx.environ.get("KEDAIBIAO_SESSION_DIR") or "data/sessions"
+        return Path(base) / "chaoxing.storage_state.json"
+
+    def answerer(self) -> Any:
+        """作答器：优先大模型（能读公式截图），兜底规则答题器。"""
+        from kedaibiao.tasks.answerer import ChainAnswerer, RuleAnswerer  # noqa: PLC0415
+        from kedaibiao.tasks.llm import build_llm_answerer  # noqa: PLC0415
+
+        chain: list[Any] = []
+        llm = build_llm_answerer(dict(self.ctx.environ or {}))
+        if llm is not None:
+            chain.append(llm)
+        chain.append(RuleAnswerer())
+        return ChainAnswerer(chain, min_confidence=0.0)
+
+    @property
+    def automation(self) -> ChaoxingAutomation:
+        """刷课 / 刷题 / 考试的门面（每次都新建，无状态）。"""
+        return ChaoxingAutomation(self)
+
+    async def _login_with_password(self, username: str, password: str) -> bool:
+        """账密登录：起无头浏览器走登录页，成功后把 storage_state 落盘。"""
+        from kedaibiao.browser.pw import PwBrowser, PwConfig  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing import login as login_mod  # noqa: PLC0415
+
+        state_path = self.saved_state_path()
+        async with PwBrowser(PwConfig(headless=True)) as browser:
+            page = await browser.new_page()
+            await login_mod.login_with_password(page, username, password)
+            await browser.save_state(state_path)
+            cookies = await browser.cookies()
+        pairs = {
+            str(item.get("name", "")): str(item.get("value", ""))
+            for item in cookies
+            if item.get("name")
+        }
+        installed = install_cookies(self.ctx, pairs)
+        self._logged_in = True
+        self._username = username
+        self._probe_ok = None
+        self.log.info(
+            "学习通账密登录成功：装 %d 条 cookie，会话已保存到 %s",
+            installed,
+            state_path,
+        )
+        return True
 
     async def list_courses(self) -> list[Course]:
         if not await self.is_logged_in():
@@ -268,3 +334,224 @@ class ChaoxingAdapter(PlatformAdapter):
                 return works
             self.log.debug("作业入口 %d 未解析出条目（HTTP %s）", index, status)
         return []
+
+
+# ---------------------------------------------------------------------------
+# 浏览器自动化（刷课 / 刷题 / 考试）—— 控制台「刷课」与「考试」入口都走这里
+# ---------------------------------------------------------------------------
+
+
+def _storage_state_from_header(header: str, *, domain: str = COOKIE_DOMAIN) -> dict[str, Any]:
+    """把整串 cookie 变成 Playwright ``storage_state``（浏览器直接复用登录态）。"""
+    cookies = parse_cookie_header(header)
+    return {
+        "cookies": [
+            {
+                "name": name,
+                "value": value,
+                "domain": domain,
+                "path": "/",
+                "expires": -1,
+                "httpOnly": False,
+                "secure": True,
+                "sameSite": "Lax",
+            }
+            for name, value in cookies.items()
+        ],
+        "origins": [],
+    }
+
+
+class ChaoxingAutomation:
+    """学习通页面自动化的门面：刷课、章节测验、考试。
+
+    单独一个类而不是塞进适配器：这些动作都要起浏览器、跑几分钟，与「读课程
+    列表」那种一次 GET 的语义不同，放在一起会让适配器越来越难读。
+    """
+
+    def __init__(self, adapter: ChaoxingAdapter) -> None:
+        self.adapter = adapter
+
+    def _config(self, *, storage_state: dict[str, Any] | str | None = None) -> Any:
+        from kedaibiao.browser.pw import PwConfig  # noqa: PLC0415 - 可选依赖
+
+        state = storage_state
+        if state is None:
+            saved = self.adapter.saved_state_path()
+            if saved and saved.is_file():
+                state = str(saved)
+            else:
+                state = _storage_state_from_header(self.adapter._jar_header())
+        return PwConfig(headless=True, storage_state=state)
+
+    async def _page(self, browser: Any) -> Any:
+        page = await browser.new_page()
+        from kedaibiao.platforms.chaoxing import login as login_mod  # noqa: PLC0415
+
+        await login_mod.ensure_login(page, state_path=self.adapter.saved_state_path())
+        return page
+
+    def _ids(self, course: Course) -> tuple[str, str, str]:
+        raw = course.raw or {}
+        return (
+            str(raw.get("courseid", "")),
+            str(raw.get("clazzid", "")),
+            str(raw.get("cpi", "")),
+        )
+
+    async def task_points(self, course: Course, *, only_pending: bool = True) -> list[Any]:
+        from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing.study import ChaoxingStudy  # noqa: PLC0415
+
+        course_id, clazz_id, cpi = self._ids(course)
+        async with PwBrowser(self._config()) as browser:
+            page = await self._page(browser)
+            study = ChaoxingStudy(
+                page, course_id=course_id, clazz_id=clazz_id, cpi=cpi
+            )
+            await study.open_course()
+            return await study.task_points(only_pending=only_pending)
+
+    async def play_course(
+        self,
+        course: Course,
+        *,
+        only_pending: bool = True,
+        limit: int = 0,
+        kinds: tuple[str, ...] = ("video", "document"),
+        rate: float = 2.0,
+        doc_seconds: float = 0.0,
+        emit: Any | None = None,
+    ) -> dict[str, Any]:
+        from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing.study import ChaoxingStudy  # noqa: PLC0415
+
+        course_id, clazz_id, cpi = self._ids(course)
+        async with PwBrowser(self._config()) as browser:
+            page = await self._page(browser)
+            study = ChaoxingStudy(
+                page,
+                course_id=course_id,
+                clazz_id=clazz_id,
+                cpi=cpi,
+                emit=emit,
+                rate=rate,
+            )
+            report = await study.run(
+                kinds=kinds,
+                limit=limit,
+                only_pending=only_pending,
+                doc_seconds=doc_seconds,
+            )
+        return {
+            "course": course.name,
+            "summary": report.summary(),
+            "steps": [
+                {
+                    "task": step.task.name,
+                    "kind": step.task.kind,
+                    "section": step.task.index_text,
+                    "status": step.status,
+                    "detail": step.detail,
+                    "seconds": round(step.seconds, 1),
+                }
+                for step in report.steps
+            ],
+        }
+
+    async def list_exams(self, course: Course) -> list[Any]:
+        from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing.quizrun import ChaoxingQuiz  # noqa: PLC0415
+
+        course_id, clazz_id, cpi = self._ids(course)
+        async with PwBrowser(self._config()) as browser:
+            page = await self._page(browser)
+            runner = ChaoxingQuiz(
+                page, course_id=course_id, clazz_id=clazz_id, cpi=cpi
+            )
+            return await runner.list_exams()
+
+    async def run_exam(
+        self,
+        course: Course,
+        *,
+        exam_id: str,
+        title: str = "",
+        relation_id: str = "",
+        confirm: bool = False,
+        emit: Any | None = None,
+    ) -> dict[str, Any]:
+        from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing.quiz import ExamItem  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing.quizrun import ChaoxingQuiz  # noqa: PLC0415
+
+        course_id, clazz_id, cpi = self._ids(course)
+        item = ExamItem(
+            title=title or exam_id,
+            status="todo",
+            exam_id=exam_id,
+            relation_id=relation_id,
+            action="goTest",
+        )
+        async with PwBrowser(self._config()) as browser:
+            page = await self._page(browser)
+            runner = ChaoxingQuiz(
+                page,
+                course_id=course_id,
+                clazz_id=clazz_id,
+                cpi=cpi,
+                answerer=self.adapter.answerer(),
+                emit=emit,
+            )
+            report = await runner.run_exam(item, confirm=confirm)
+        return _report_dict(report)
+
+    async def run_section_quiz(
+        self,
+        course: Course,
+        *,
+        chapter_id: str,
+        confirm: bool = False,
+        emit: Any | None = None,
+    ) -> dict[str, Any]:
+        from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
+        from kedaibiao.platforms.chaoxing.quizrun import ChaoxingQuiz  # noqa: PLC0415
+
+        course_id, clazz_id, cpi = self._ids(course)
+        async with PwBrowser(self._config()) as browser:
+            page = await self._page(browser)
+            runner = ChaoxingQuiz(
+                page,
+                course_id=course_id,
+                clazz_id=clazz_id,
+                cpi=cpi,
+                answerer=self.adapter.answerer(),
+                emit=emit,
+            )
+            report = await runner.run_section_quiz(chapter_id, confirm=confirm)
+        return _report_dict(report)
+
+
+def _report_dict(report: Any) -> dict[str, Any]:
+    """把 QuizReport 转成控制台能直接渲染的纯数据。"""
+    return {
+        "title": report.title,
+        "summary": report.summary(),
+        "submitted": report.submitted,
+        "score": report.score,
+        "score_text": report.score_text,
+        "submit_note": report.submit_note,
+        "items": [
+            {
+                "number": item.number,
+                "type": item.type_name,
+                "answer": item.answer,
+                "confidence": round(item.confidence, 2),
+                "source": item.source,
+                "verified": item.verified,
+                "unsupported": item.unsupported,
+                "text": item.text[:120],
+            }
+            for item in report.items
+        ],
+    }
