@@ -335,3 +335,35 @@ python3 scripts/ui_smoke_next.py --base http://127.0.0.1:8765 \
 ```
 
 三个脚本都在 `scripts/`，退出码 0/1，可进 CI。
+
+
+---
+
+## 附录：东软「重新登录后仍不行」诊断（2026-10-21 11:40）
+
+用户重新登录后仍报错，逐层验证：
+
+| 验证项 | 结果 | 说明 |
+| --- | --- | --- |
+| 账号库 `last_login_at` | 2026-10-21 11:37:51，`last_login_ok=1` | 登录确实成功 |
+| 会话文件 | 已更新（mtime 11:37:51），新 `access_token`，过期 12:40 | 会话写盘正确 |
+| `GET /system/user/profile/get` | ✅ 200 | **token 有效** |
+| `GET /system/tenant/app/option` | ✅ 200 | 匿名接口正常 |
+| `GET /teachmanager/teach-dropdown/getTeachTermDropDown` | ❌ `{"code":500,"msg":"系统异常"}` | 重试 3 次稳定复现 |
+| `POST /teachmanager/teach-arrangement-stu/page`（用已知 termId） | ❌ code=500 | 绕过学期下拉也一样 |
+| `POST /teachmanager/teach-course-res-stu/study-task/page` | ❌ code=500 | 同上 |
+| 去掉 `Id-Code` / `Tenant-Id` 请求头再试 | ❌ 全 500 | 不是签名或租户头的问题 |
+
+**结论：登录没问题，是东软 `teachmanager` 模块整体在报服务端 500。**
+`system` 域能通、`teachmanager` 域全挂，且与请求头无关 —— 这不是本地配置或代码能修的。
+
+代码侧已改进错误文案（不再让用户以为要重登）：
+
+```
+neusoft 接口调用失败：code=500 系统异常 @ /teachmanager/teach-dropdown/getTeachTermDropDown
+这是**平台侧该模块报错**（服务端 500），不是登录失效、也不是本地配置问题。
+可以先在东软网页版 / App 里点一下同样的功能确认：那边也报错就是平台在修，等一会儿再试；
+那边正常说明是接口变了，需要重新抓包对齐。
+```
+
+排查方法已沉淀：**先用 `system/profile/get` 判断 token 是否有效**，再看是不是 `teachmanager` 整域挂掉。

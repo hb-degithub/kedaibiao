@@ -166,6 +166,14 @@ def _friendly_platform_error(platform: str, exc: BaseException) -> str:
             "\n该平台的业务接口要求**浏览器会话 cookie**（csrf 与浏览器上下文绑定，"
             "密码登录只解决身份层）。需要用浏览器导出 cookie 的方式接入。"
         )
+    # 「code=500 系统异常」是**平台业务模块**在报错，跟登录态无关。
+    # 不说清楚的话用户会反复去重新登录 —— 实际重登一百次也没用。
+    if "系统异常" in message or "code=500" in message:
+        message += (
+            "\n这是**平台侧该模块报错**（服务端 500），不是登录失效、也不是本地配置问题。"
+            "\n可以先在东软网页版 / App 里点一下同样的功能确认：那边也报错就是平台在修，等一会儿再试；"
+            "那边正常说明是接口变了，需要重新抓包对齐。"
+        )
     return message
 
 
