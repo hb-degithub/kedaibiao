@@ -207,6 +207,8 @@ a { color: inherit; text-decoration: none; }
 .plat-pill .dot.off { background: var(--danger); opacity: .8; }
 
 .top-right { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 0 auto; min-width: 0; }
+/* 「更多」只给手机端用；桌面端三件套（主题 / 身份 / 退出）直接放顶栏 */
+#more-btn { display: none; }
 .conn {
   display: inline-flex; align-items: center; gap: 6px;
   color: var(--fg-mute); font-size: 12px;
@@ -325,10 +327,12 @@ a { color: inherit; text-decoration: none; }
   gap: 8px; padding: 0 4px; color: var(--fg-mute); font-size: 11px;
   white-space: nowrap;
 }
-.shell.rail-min .rail-label,
-.shell.rail-min .nav-item .lbl,
-.shell.rail-min .nav-item .count,
-.shell.rail-min .rail-tip { display: none; }
+@media (min-width: 721px) {
+  .shell.rail-min .rail-label,
+  .shell.rail-min .nav-item .lbl,
+  .shell.rail-min .nav-item .count,
+  .shell.rail-min .rail-tip { display: none; }
+}
 .shell.rail-min .nav-item { justify-content: center; padding: 9px 0; }
 .shell.rail-min .rail-foot .btn span { display: none; }
 
@@ -1009,9 +1013,13 @@ pre.code {
 @media (max-width: 720px) {
   .shell, .shell.rail-min {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: var(--top-h) minmax(0, 1fr) 58px;
+    grid-template-rows: var(--top-h) minmax(0, 1fr) 62px;
     grid-template-areas: "top" "main" "rail";
   }
+
+  /* 顶栏：只留「品牌图标 + 平台切换 + 账号 + 更多」 */
+  #theme-btn, #user-chip, #logout-btn { display: none; }
+  #more-btn { display: inline-grid; }
   .topbar { gap: 8px; padding: 0 8px 0 12px; }
   .brand-name, .brand-slug { display: none; }
   .plat-switch { flex: 1 1 auto; min-width: 0; }
@@ -1023,19 +1031,58 @@ pre.code {
   .user-chip #user-name { display: none; }
   .rail {
     flex-direction: row;
-    align-items: center;
-    gap: 2px;
-    padding: 6px 8px;
+    align-items: stretch;
+    gap: 0;
+    padding: 4px 2px;
     border-right: 0;
     border-top: 1px solid var(--line);
     overflow-x: auto;
     overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
   }
+  .rail::-webkit-scrollbar { display: none; }
   .rail-group { flex-direction: row; gap: 2px; }
   .rail-group + .rail-group { margin-top: 0; }
   .rail-foot { margin: 0 0 0 auto; padding: 0; flex-direction: row; }
   .rail-label, .rail-tip { display: none; }
-  .nav-item { padding: 8px 10px; }
+  /* 底部导航：图标在上、文字在下 —— 只有图标认不出是哪个功能 */
+  .nav-item {
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    min-width: 56px;
+    padding: 5px 8px;
+    border-radius: 8px;
+    font-size: 10.5px;
+  }
+  .nav-item .lbl {
+    display: block;
+    flex: 0 0 auto;
+    max-width: 56px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 400;
+  }
+  .nav-item[aria-current="page"] {
+    box-shadow: inset 0 -2px 0 var(--accent);
+    background: transparent;
+    font-weight: 500;
+  }
+  .nav-item .ico { width: 18px; height: 18px; }
+  .nav-item .count {
+    position: absolute;
+    top: 2px;
+    right: 6px;
+    min-width: 14px;
+    padding: 0 3px;
+    font-size: 9.5px;
+    line-height: 13px;
+  }
+  .nav-item { position: relative; }
+  .rail-group { align-items: stretch; }
+  .rail-foot { display: none; }
   .page { padding: 14px 14px 40px; }
   .page-title { font-size: 18px; }
   .page-head { gap: 8px; }
@@ -1045,6 +1092,64 @@ pre.code {
   .split { gap: 12px; }
   .drawer-panel { width: 100%; }
   .login-form-wrap { padding: 24px 18px 40px; }
+
+  /* 检查器底部按钮手机上不换行：横着排、可滑，避免「关闭」被挤到第二行 */
+  .drawer-foot {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .drawer-foot::-webkit-scrollbar { display: none; }
+  .drawer-foot > * { flex: 0 0 auto; }
+
+  /* 表格在窄屏会被压成「每列一个字宽」—— 给一个最小宽度，
+     让它超出容器后横向滚动（.tbl-wrap 已经是 overflow-x:auto） */
+  .tbl {
+    min-width: 640px;
+    width: auto;
+  }
+  .tbl th, .tbl td { white-space: nowrap; }
+  /* 光给 max-width 不够：列宽会被压到几十 px，于是「课程」整列竖排成一个字一行。
+     必须给 min-width 兜底，长内容仍然换行（240px 内放得下两三个词）。 */
+  .tbl td.wrap {
+    min-width: 150px;
+    max-width: 240px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .tbl td { vertical-align: top; }
+  /* 「作业/任务（全部课程）—— 2908 项」这类长标题允许换行，别撑破 */
+  .panel-head { flex-wrap: wrap; }
+  .panel-head h2 { overflow-wrap: anywhere; }
+
+  /* 宽表格：右侧渐隐，提示还能横着滑 */
+  .tbl-wrap {
+    position: relative;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tbl-wrap::after {
+    content: "";
+    position: sticky;
+    right: 0;
+    top: 0;
+    float: right;
+    width: 18px;
+    height: 100%;
+    margin-left: -18px;
+    pointer-events: none;
+    background: linear-gradient(to right, transparent, var(--surface) 70%);
+  }
+  .panel-body .tbl-wrap::after { background: linear-gradient(to right, transparent, var(--surface) 70%); }
+
+  /* 详情里的长 ID（course-v2:…）不要撑出三行 */
+  .def dd { max-width: 62%; }
+  .drawer-body .def dd { max-width: 58%; overflow-wrap: anywhere; }
+
+  /* 页头在手机上把副标题与动作分开排 */
+  .page-head { align-items: flex-start; }
+  .page-actions { width: 100%; justify-content: flex-start; }
   .page-sub .crumb-sep { display: none; }
   .page-sub { gap: 6px; }
 }

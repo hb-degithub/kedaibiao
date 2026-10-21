@@ -778,6 +778,56 @@ class Matrix:
             ok, reason = False, self.rec.summary()
         self._add("交互/左轨折叠（≤1080px → rail-min）", ok, reason)
 
+    # -- 3.5 手机端适配 ---------------------------------------------------
+
+    def run_mobile(self) -> None:
+        """手机端专项：底部导航要有文字、顶栏收进「更多」、表格不被压扁。"""
+        print("\n=== 3.5 手机端适配 ===")
+        self.mock.reset()
+        self.rec.reset()
+        self.ensure_closed()
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.goto_fresh("overview", None)
+        self.page.wait_for_timeout(600)
+
+        labels = [t.strip() for t in self.page.locator(".nav-item .lbl").all_inner_texts()]
+        visible = [t for t in labels if t]
+        self._add("手机端/底部导航显示文字标签", len(visible) >= 8, f"可见 {len(visible)} 个")
+
+        ok = self.page.is_visible("#more-btn")
+        self._add("手机端/顶栏有「更多」按钮", ok, "" if ok else "不可见")
+        if ok:
+            self.page.click("#more-btn")
+            self.page.wait_for_timeout(350)
+            n = self.page.locator("#more-menu .rowx-title").count()
+            self._add("手机端/「更多」菜单有主题·刷新·退出", n >= 3, f"{n} 项")
+            self.page.keyboard.press("Escape")
+
+        # 表格不能被压成「每列一个字」：容器要能横滑、首列要有合理宽度。
+        # 必须给「有数据」的 mock —— 空表时页面走空状态，根本没有 .tbl 可量。
+        self.mock.reset()
+        self.mock.action_rows = list(RICH_ROWS)
+        self.rec.reset()
+        self.goto_fresh("assignments", "unipus")
+        self.page.wait_for_timeout(1500)
+        metrics = self.page.evaluate(
+            """() => {
+                 const w = document.querySelector('main .tbl-wrap');
+                 const td = document.querySelector('main .tbl tbody td');
+                 return {
+                   canScroll: w ? w.scrollWidth > w.clientWidth : null,
+                   cellW: td ? Math.round(td.getBoundingClientRect().width) : 0,
+                   overflow: document.documentElement.scrollWidth - window.innerWidth,
+                 };
+               }"""
+        )
+        self._add("手机端/宽表格可横滑", metrics["canScroll"] is True, str(metrics))
+        self._add("手机端/表格首列不塌陷（≥120px）", metrics["cellW"] >= 120,
+                  f"首列 {metrics['cellW']}px")
+        self._add("手机端/页面无横向溢出", metrics["overflow"] <= 1, f"{metrics['overflow']}px")
+
+        self.page.set_viewport_size({"width": 1440, "height": 1000})
+
     # -- 4. 响应式 -------------------------------------------------------
 
     def run_responsive(self) -> None:
@@ -934,6 +984,7 @@ def main() -> int:
         matrix.run_matrix()
         matrix.run_states()
         matrix.run_interactions()
+        matrix.run_mobile()
         matrix.run_responsive()
         matrix.run_anonymous(browser)
 

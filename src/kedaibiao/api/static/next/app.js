@@ -437,6 +437,7 @@
     state.page = r.page;
     state.platform = r.platform;
     closeInspector();
+    closeMoreMenu();
     clearTimers();
     assignmentsReload = null;
     /* 动作清单是异步拉的：等它到手再判断「这页能不能用」。
@@ -915,6 +916,58 @@
       loadGlobals().then(renderPage);
     });
     return sel;
+  }
+
+  /* 手机端「更多」菜单：顶栏放不下主题、身份、退出，收进这里。
+     桌面端这个按钮是隐藏的，菜单也不会被打开。 */
+  function openMoreMenu() {
+    var menu = $('more-menu');
+    if (!menu) { return; }
+    clear(menu);
+    var u = state.user || {};
+
+    var head = el('div', 'menu-head');
+    head.appendChild(el('span', '', u.username || '未登录'));
+    head.appendChild(pill(state.isSuper ? '超管' : (u.role === 'user' ? '普通用户' : dash(u.role)),
+      state.isSuper ? 'pill-accent' : 'pill-mute'));
+    menu.appendChild(head);
+
+    var list = el('div', 'menu-list');
+    function item(label, hint, onClick) {
+      var row = el('button', 'menu-row');
+      row.type = 'button';
+      row.setAttribute('role', 'menuitem');
+      var main = el('div', 'menu-row-main');
+      main.appendChild(el('div', 'rowx-title', label));
+      if (hint) { main.appendChild(el('div', 'rowx-meta', hint)); }
+      row.appendChild(main);
+      row.addEventListener('click', onClick);
+      list.appendChild(row);
+    }
+    item('切换深浅色', '当前：' + (state.theme === 'light' ? '浅色' : '深色'), function () {
+      closeMoreMenu();
+      toggleTheme();
+    });
+    item('刷新', '重读平台与运行状态', function () {
+      closeMoreMenu();
+      loadGlobals().then(function () { toast('已刷新'); renderPage(); });
+    });
+    if (state.superadmin !== false && state.isSuper) {
+      item('用户管理', '超管', function () { closeMoreMenu(); go('users'); });
+    }
+    item('退出登录', '清会话', function () { closeMoreMenu(); doLogout(); });
+    menu.appendChild(list);
+
+    menu.hidden = false;
+    var btn = $('more-btn');
+    if (btn) { btn.setAttribute('aria-expanded', 'true'); }
+  }
+
+  function closeMoreMenu() {
+    var menu = $('more-menu');
+    if (menu) { menu.hidden = true; }
+    var btn = $('more-btn');
+    if (btn) { btn.setAttribute('aria-expanded', 'false'); }
   }
 
   function renderRail() {
@@ -5502,6 +5555,14 @@
     var theme = $('theme-btn');
     if (theme) { theme.addEventListener('click', toggleTheme); }
 
+    var moreBtn = $('more-btn');
+    if (moreBtn) {
+      moreBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        if ($('more-menu').hidden) { openMoreMenu(); } else { closeMoreMenu(); }
+      });
+    }
+
     var acctInfo = $('acct-info');
     if (acctInfo) {
       acctInfo.addEventListener('click', function (ev) {
@@ -5515,9 +5576,18 @@
     }
     document.addEventListener('click', function (ev) {
       var menu = $('acct-menu');
-      if (!menu || menu.hidden) { return; }
-      if (menu.contains(ev.target) || (acctInfo && acctInfo.contains(ev.target))) { return; }
-      closeAcctMenu();
+      if (menu && !menu.hidden) {
+        if (!(menu.contains(ev.target) || (acctInfo && acctInfo.contains(ev.target)))) {
+          closeAcctMenu();
+        }
+      }
+      var more = $('more-menu');
+      if (more && !more.hidden) {
+        var mb = $('more-btn');
+        if (!(more.contains(ev.target) || (mb && mb.contains(ev.target)))) {
+          closeMoreMenu();
+        }
+      }
     });
 
     var close = $('inspector-close');
@@ -5569,6 +5639,7 @@
       if (ev.key === 'Escape') {
         if (!$('palette').hidden) { closePalette(); return; }
         if ($('acct-menu') && !$('acct-menu').hidden) { closeAcctMenu(); return; }
+        if ($('more-menu') && !$('more-menu').hidden) { closeMoreMenu(); return; }
         if (!$('inspector').hidden) { closeInspector(); }
         return;
       }
