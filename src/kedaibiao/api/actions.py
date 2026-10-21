@@ -1256,6 +1256,10 @@ async def _pinco_learning(adapter: Any, params: dict[str, Any]) -> dict[str, Any
             "只读。品课的「学习任务」就是课程材料（PPT/PDF/视频）：没有题目，"
             "也不会提交任何内容。「来源」列是平台原始 materialSource/media.type 码，"
             "语义未确认，只如实展示。"
+            + (
+                "学习通的作业/测验/考试来自课程页「考试」tab（含状态与已回显分数）。"
+                if name == "chaoxing" else ""
+            )
             + _skipped_note(failures, len(courses))
         ),
         columns=[
@@ -2452,7 +2456,11 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
     courses = list(await adapter.list_courses())
     only = str(params.get("course") or "").strip()
     if only:
-        courses = [c for c in courses if c.remote_id == only]
+        # 课程号可能带班级后缀（学习通是 ``courseid:clazzid``），两种写法都认
+        courses = [
+            c for c in courses
+            if c.remote_id == only or c.remote_id.split(":")[0] == only
+        ]
         if not courses:
             raise ActionInputError(f"没有找到课程号 {only!r}")
 
@@ -2470,6 +2478,7 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
             failures.append(f"{course.name or course.remote_id}（{error}）")
             continue
         for item in items:
+            raw = item.raw or {}
             rows.append(
                 {
                     "course": course.name or course.remote_id,
@@ -2480,10 +2489,8 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
                     "title": item.title,
                     "kind": _KIND_LABEL.get(item.kind, item.kind.value),
                     "deadline": _fmt_deadline(item.deadline) or "—",
-                    "state": (
-                        ("已完成" if item.finished else "未完成")
-                        if with_state else "—"
-                    ),
+                    "state": _assignment_state(item, with_state=with_state),
+                    "score": str(raw.get("score_text") or ""),
                 }
             )
 
@@ -2496,10 +2503,15 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
         note=(
             "只读数据，不会提交任何内容。"
             + (
-                "状态列按逐组回读的 progress/v2 判定（已完成 = 平台已记账）。"
-                if with_state else
-                "状态列默认不读：平台目录本身没有完成度，这里显示「—」；"
-                "要看真实状态请传 with_state=1（逐组回读，慢但准）。"
+                "学习通的作业/测验/考试来自课程页「考试」tab，"
+                "状态与分数是平台自己回的（不需要回读）。"
+                if name == "chaoxing" else
+                (
+                    "状态列按逐组回读的 progress/v2 判定（已完成 = 平台已记账）。"
+                    if with_state else
+                    "状态列默认不读：平台目录本身没有完成度，这里显示「—」；"
+                    "要看真实状态请传 with_state=1（逐组回读，慢但准）。"
+                )
             )
             + _skipped_note(failures, len(courses))
         ),
@@ -2510,7 +2522,8 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
             column("kind", "类型"),
             column("deadline", "截止"),
             column("state", "状态"),
-        ],
+        ]
+        + ([column("score", "分数")] if any(row.get("score") for row in rows) else []),
         rows=rows,
         empty_hint="这些课程下没有作业 / 任务。",
     )
@@ -2670,6 +2683,20 @@ def ensure_generic_actions(platform: str) -> None:
 # ---------------------------------------------------------------------------
 # 超星 / 学习通：任务点、刷课、考试、章节测验
 # ---------------------------------------------------------------------------
+
+
+def _assignment_state(item: Any, *, with_state: bool) -> str:
+    """作业行的状态文案：能确定就说确定，不能就显示「—」。"""
+    raw = item.raw or {}
+    status = str(raw.get("status") or "").strip()
+    if status:
+        # 平台自己给了状态（学习通：考试 tab 的待做/已完成/已过期）
+        return {"done": "已完成", "expired": "已过期", "todo": "未完成"}.get(
+            status, "未完成" if not item.finished else "已完成"
+        )
+    if with_state:
+        return "已完成" if item.finished else "未完成"
+    return "—"
 
 
 def _chaoxing_confirm(params: dict[str, Any]) -> bool:

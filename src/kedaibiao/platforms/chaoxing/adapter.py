@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import http.cookiejar
 import os
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from kedaibiao.browser.capture import parse_cookie_header
-from kedaibiao.core.models import Assignment, Course, Credentials
+from kedaibiao.core.models import Assignment, Course, Credentials, TaskKind
 from kedaibiao.platforms.base import AdapterContext, Capabilities, PlatformAdapter
 from kedaibiao.platforms.chaoxing import endpoints, parsing
 
@@ -53,6 +55,31 @@ _HTML_HEADERS = {
     "Referer": "https://i.chaoxing.com/",
     "User-Agent": BROWSER_UA,
 }
+
+
+def _parse_deadline(text: str) -> Any | None:
+    """把「2026-10-25 22:00:00.0」这类截止时间文本解析成 datetime。"""
+    raw = (text or "").strip()
+    if not raw or "剩余" in raw or "已过期" in raw:
+        return None
+    match = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?", raw)
+    if not match:
+        return None
+    year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    hour = int(match.group(4) or 0)
+    minute = int(match.group(5) or 0)
+    try:
+        return datetime(year, month, day, hour, minute)
+    except ValueError:
+        return None
+
+
+def _deadline_from_onclick(raw: str) -> Any | None:
+    """从 ``goTest(...,'2026-10-25 22:00:00.0',...)`` 里兜底取截止时间。"""
+    if not raw:
+        return None
+    match = re.search(r"'(\d{4}-\d{1,2}-\d{1,2}[^']*)'", raw)
+    return _parse_deadline(match.group(1)) if match else None
 
 
 class ChaoxingError(RuntimeError):
@@ -333,7 +360,51 @@ class ChaoxingAdapter(PlatformAdapter):
             if works:
                 return works
             self.log.debug("作业入口 %d 未解析出条目（HTTP %s）", index, status)
-        return []
+        # 学习通的「作业」实际挂在课程页的**考试** tab（exam-ans/exam-list）里，
+        # 老的 work/list 接口对它基本恒返回「暂无作业」。所以 HTTP 侧没解析到，
+        # 就用浏览器读一次考试列表 —— 这样控制台「作业」页才不是空的。
+        return await self._assignments_from_exam_list(course)
+
+    async def _assignments_from_exam_list(self, course: Course) -> list[Assignment]:
+        """把课程页「考试」tab 里的作业/测验/考试映射成 ``Assignment``。"""
+        items = await self.automation.list_exams(course)
+        out: list[Assignment] = []
+        for item in items:
+            if not item.title:
+                continue
+            title = item.title
+            kind = (
+                TaskKind.EXAM
+                if any(word in title for word in ("测验", "测试", "考试", "阶段测验"))
+                else TaskKind.HOMEWORK
+            )
+            deadline = _parse_deadline(item.end_time_text) or _deadline_from_onclick(
+                item.raw_onclick
+            )
+            finished = item.status == "done"
+            out.append(
+                Assignment(
+                    remote_id=item.exam_id or item.title,
+                    title=title,
+                    kind=kind,
+                    course_name=course.name,
+                    deadline=deadline,
+                    progress=1.0 if finished else 0.0,
+                    finished=finished,
+                    raw={
+                        "status": item.status,
+                        "mobile_only": item.mobile_only,
+                        "score": item.score,
+                        "score_text": item.score_text,
+                        "end_time_text": item.end_time_text,
+                        "action": item.action,
+                        "exam_id": item.exam_id,
+                        "relation_id": item.relation_id,
+                    },
+                )
+            )
+        self.log.info("学习通考试列表：%s 共 %d 条", course.name, len(out))
+        return out
 
 
 # ---------------------------------------------------------------------------
