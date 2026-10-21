@@ -64,6 +64,10 @@ class NeusoftClient:
         #: 自动重登用的凭据。账号库不存密码，所以这里通常只在本次进程内有效。
         self._username = ""
         self._password = ""
+        #: 最近一次 refresh 失败的原因（给上层拼错误文案用）。
+        #: 平台对失效的 refresh_token 回的是 401「账号未登录」—— 这跟凭据写错
+        #: 是两回事，文案上要能区分开，否则用户会去改密码。
+        self.refresh_error = ""
 
     # -- 会话 -------------------------------------------------------------
 
@@ -283,12 +287,15 @@ class NeusoftClient:
                 allow_reauth=False,
             )
         except NeusoftError as exc:
+            self.refresh_error = str(exc)
             log.info("刷新令牌失败，交回调用方处理: %s", exc)
             return False
         renewed = Session.from_payload(payload)
         if not renewed.access_token:
-            log.info("刷新令牌返回里没有 accessToken，按失败处理")
+            self.refresh_error = "刷新令牌返回里没有 accessToken"
+            log.info(self.refresh_error)
             return False
+        self.refresh_error = ""
         # 平台可能只回 accessToken，其它字段沿用旧会话
         renewed.user_id = renewed.user_id or self.session.user_id
         renewed.refresh_token = renewed.refresh_token or self.session.refresh_token

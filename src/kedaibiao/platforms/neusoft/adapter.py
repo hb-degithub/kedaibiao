@@ -144,11 +144,16 @@ class NeusoftAdapter(PlatformAdapter):
         """
         if await self.is_logged_in():
             return True
-        if await self.client.refresh():
+        renewed = await self.client.refresh()
+        if renewed:
             # 续期成功后要再确认一次：拿到 token ≠ 真能用
             if await self.is_logged_in():
                 return True
-        self.log.info("会话失效且无法续期，重新登录: %s", self.name)
+        else:
+            self.log.info(
+                "东软会话已过期，且刷新令牌也失效（%s）—— 需要重新登录一次",
+                self.client.refresh_error or "平台拒绝刷新",
+            )
         return await self.login(credentials)
 
     def export_session(self) -> dict[str, Any] | None:
