@@ -54,6 +54,8 @@ PUBLIC_PATHS = {
     # 旧版控制台保留在 /classic；/next 作为别名，老书签不失效。
     "/classic", "/classic/index.html", "/next",
     "/api/auth/login", "/api/auth/me",
+    # 健康检查：排障时先确认服务活着（不返回任何数据）
+    "/healthz",
 }
 PUBLIC_PREFIXES = ("/static/",)
 CSP = (
@@ -292,6 +294,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._error(500, f"{type(exc).__name__}: {exc}", "internal")
 
     def _route_get(self, path: str, viewer: Viewer) -> None:
+        if path == "/healthz":
+            return self._json(200, {"ok": True, "service": "kedaibiao-console"})
         svc = self.service
         # / 与 /next = 新版控制台（同一份外壳，资源在 /static/next/）
         if path in ("/", "/index.html", "/next"):
