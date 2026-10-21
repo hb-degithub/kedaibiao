@@ -2853,7 +2853,10 @@
 
     var actions = [];
     if (!canSubmit) {
-      actions.push(pill('该平台未声明提交能力', 'pill-warn'));
+      /* 学习通没有通用提交链路，但有自己的作答动作：别让用户以为「不能交」 */
+      actions.push(pill(
+        platName === 'chaoxing' ? '提交走「工具 · 做考试」' : '该平台未声明提交能力',
+        platName === 'chaoxing' ? 'pill-mute' : 'pill-warn'));
     }
     if (plat.native_submit_flow) {
       actions.push(btn('一键全部提交', 'btn-sm', function () { openBatchSubmit(platName); }));
@@ -2982,6 +2985,12 @@
               var id = assignmentIdOf(row);
               if (!id) { return el('span', 'hint-text', '—'); }
               if (!canSubmit) {
+                if (platName === 'chaoxing') {
+                  var own = el('span', 'hint-text', '用「工具 · 做考试」');
+                  own.title = '学习通的作业/测验/考试在「工具」页用「做考试」「章节测验」动作'
+                    + '作答并交卷（默认干跑，确认后才交）';
+                  return own;
+                }
                 var why = caps.submit !== true
                   ? '该平台未声明提交能力'
                   : '该平台没有取题能力，通用提交会失败（改用平台自己的动作）';
