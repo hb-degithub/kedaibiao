@@ -2424,7 +2424,9 @@
     body.appendChild(secStatus);
 
     var actions = el('div', 'auto-foot');
-    var dryBtn = btn('干跑作答', 'btn-primary btn-sm', function () { start(false); });
+    var dryBtn = btn('干跑作答', 'btn-primary btn-sm', function () {
+      Promise.resolve(start(false)).catch(function () { /* 错误已写进日志 */ });
+    });
     var liveBtn = btnArmored('交卷', '确认：交卷不可逆', 'btn-danger btn-sm', function () {
       return start(true);
     });
@@ -2507,6 +2509,12 @@
       dryBtn.disabled = busy;
       liveBtn.disabled = busy;
       stopBtn.hidden = !busy;
+      if (!busy) {
+        /* btnArmored 点击后会把标签改成「执行中…」，跑完必须自己复位 */
+        dryBtn.textContent = '干跑作答';
+        liveBtn.textContent = '交卷';
+        liveBtn.classList.remove('btn-primary');
+      }
     }
 
     function start(confirm) {
@@ -2531,7 +2539,7 @@
       }
       appendLog({ level: 'info', text: '$ POST /api/platforms/' + platName + '/jobs ' +
         truncate(JSON.stringify(payload), 180) });
-      post('/api/platforms/' + encodeURIComponent(platName) + '/jobs', payload)
+      return post('/api/platforms/' + encodeURIComponent(platName) + '/jobs', payload)
         .then(function (job) {
           currentJobId = job.job_id;
           stateText.textContent = '任务 ' + currentJobId + ' 运行中…';
@@ -2551,11 +2559,17 @@
             },
             onDone: function (state) {
               setBusy(false);
+              if (state.score_text) {
+                scoreBox.hidden = false;
+                scoreBox.textContent = '交卷结果：' + state.score_text;
+              }
               if (state.status === 'failed') {
                 stateText.textContent = '失败：' + (state.error || '未知错误');
                 stateText.className = 'pill pill-danger';
               } else {
-                stateText.textContent = state.submitted ? '已交卷' : '干跑完成';
+                stateText.textContent = state.submitted
+                  ? '已交卷 · ' + (state.score_text || '平台未回显分数')
+                  : '干跑完成';
                 stateText.className = state.submitted ? 'pill pill-ok' : 'pill pill-mute';
                 if (!state.submitted) {
                   appendLog({ level: 'info', text: '→ 干跑完成：题目已填好并核验。确认无误后点「交卷」。' });
