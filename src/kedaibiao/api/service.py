@@ -1541,6 +1541,9 @@ class ConsoleService:
 
             confirm = _truthy(params.get("confirm"))
             force = _truthy(params.get("force"))
+            captcha_mode = str(params.get("captcha_mode") or "").strip().lower()
+            if captcha_mode not in {"", "auto", "human"}:
+                raise RuntimeError("captcha_mode 只能是 auto / human")
             if action == "study":
                 kinds = tuple(
                     item.strip()
@@ -1573,6 +1576,7 @@ class ConsoleService:
                         on_items=lambda items: self._job_update(job_id, items=items),
                         force=force,
                         retake=_truthy(params.get("retake")),
+                        captcha_mode=captcha_mode,
                     )
                 )
                 self._chaoxing_finish(job_id, result, confirm=confirm)
@@ -1586,6 +1590,7 @@ class ConsoleService:
                         on_items=lambda items: self._job_update(job_id, items=items),
                         force=force,
                         retake=_truthy(params.get("retake")),
+                        captcha_mode=captcha_mode,
                     )
                 )
                 self._chaoxing_finish(job_id, result, confirm=confirm)

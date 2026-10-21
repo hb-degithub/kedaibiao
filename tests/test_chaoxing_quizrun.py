@@ -143,13 +143,16 @@ class _FakeFrame:
         return self.png
 
 
-def _runner(answerer=None, *, use_ocr: bool | None = None) -> quizrun.ChaoxingQuiz:
+def _runner(
+    answerer=None, *, use_ocr: bool | None = None, captcha_mode: str | None = None
+) -> quizrun.ChaoxingQuiz:
     return quizrun.ChaoxingQuiz(
         None,  # type: ignore[arg-type]
         course_id="c",
         clazz_id="z",
         answerer=answerer,
         use_ocr=use_ocr,
+        captcha_mode=captcha_mode,
     )
 
 
@@ -285,3 +288,13 @@ def test_submit_block_reason_blocks_blank_submission() -> None:
 
 def test_submit_block_reason_force_bypasses() -> None:
     assert quizrun.submit_block_reason([_item(1), _item(2)], force=True) == ""
+
+
+def test_captcha_mode_selection(monkeypatch) -> None:
+    """滑块策略可选：auto（默认）/ human；也能用环境变量设默认值。"""
+    monkeypatch.delenv("KEDAIBIAO_CHAXING_CAPTCHA", raising=False)
+    assert _runner().captcha_mode == "auto"
+    assert _runner(captcha_mode="human").captcha_mode == "human"
+    assert _runner(captcha_mode="whatever").captcha_mode == "auto"
+    monkeypatch.setenv("KEDAIBIAO_CHAXING_CAPTCHA", "human")
+    assert _runner().captcha_mode == "human"

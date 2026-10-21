@@ -712,6 +712,7 @@ class ChaoxingAutomation:
         on_items: Any | None = None,
         force: bool = False,
         retake: bool = False,
+        captcha_mode: str = "",
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.quiz import ExamItem  # noqa: PLC0415
@@ -737,6 +738,7 @@ class ChaoxingAutomation:
                 cpi=cpi,
                 answerer=self.adapter.answerer(),
                 emit=emit,
+                captcha_mode=captcha_mode,
             )
             report = await runner.run_exam(
                 item, confirm=confirm, on_items=on_items, force=force
@@ -752,6 +754,7 @@ class ChaoxingAutomation:
         emit: Any | None = None,
         on_items: Any | None = None,
         force: bool = False,
+        captcha_mode: str = "",
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.quizrun import ChaoxingQuiz  # noqa: PLC0415
@@ -766,6 +769,7 @@ class ChaoxingAutomation:
                 cpi=cpi,
                 answerer=self.adapter.answerer(),
                 emit=emit,
+                captcha_mode=captcha_mode,
             )
             report = await runner.run_section_quiz(
                 chapter_id, confirm=confirm, on_items=on_items, force=force

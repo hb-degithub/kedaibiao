@@ -2440,6 +2440,23 @@
     [dryBtn, liveBtn, stopBtn].forEach(function (node) { actions.appendChild(node); });
     body.appendChild(actions);
 
+    /* 滑块验证策略：自动解 / 人工拖（记住上次选择） */
+    var captchaMode = el('select', 'input');
+    ['auto', 'human'].forEach(function (value) {
+      var option = el('option', '', value === 'auto' ? '自动过滑块（推荐）' : '人工过滑块（我手动拖）');
+      option.value = value;
+      captchaMode.appendChild(option);
+    });
+    captchaMode.value = readCaptchaMode();
+    captchaMode.onchange = function () { saveCaptchaMode(captchaMode.value); };
+    var verifyField = el('div', 'field');
+    verifyField.appendChild(el('span', 'field-label', '滑块验证'));
+    verifyField.appendChild(captchaMode);
+    verifyField.appendChild(el('span', 'hint-text', '人工：遇安全验证暂停等你拖（需要 --show 启动、有可见窗口）'));
+    var secVerify = el('div', 'section');
+    secVerify.appendChild(verifyField);
+    body.appendChild(secVerify);
+
     /* 考试信息：时间窗口 + 剩余提交次数（进面板就查，不开始作答） */
     var metaGrid = el('div', '');
     var secMeta = el('div', 'section');
@@ -2467,6 +2484,18 @@
 
     var currentJobId = '';
     var watcher = null;
+
+    function readCaptchaMode() {
+      try {
+        var value = window.localStorage.getItem('kdb.chaoxing.captcha');
+        return value === 'human' ? 'human' : 'auto';
+      } catch (e) { return 'auto'; }
+    }
+
+    function saveCaptchaMode(value) {
+      try { window.localStorage.setItem('kdb.chaoxing.captcha', value === 'human' ? 'human' : 'auto'); }
+      catch (e) { /* 无痕模式等拿不到 localStorage 就只在本次生效 */ }
+    }
 
     function metaValue(data) {
       if (!data) { return '—'; }
@@ -2599,6 +2628,7 @@
       };
       if (confirm && blocked) { payload.force = true; }
       if (target.retake) { payload.retake = true; }
+      payload.captcha_mode = captchaMode.value === 'human' ? 'human' : 'auto';
       if (target.relation_id) { payload.relation_id = String(target.relation_id); }
       if (target.action === 'quiz') {
         payload.chapter = String(target.id || '').replace(/^quiz:/, '');

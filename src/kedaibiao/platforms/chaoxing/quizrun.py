@@ -216,6 +216,7 @@ class ChaoxingQuiz:
         emit: Callable[[str, str], None] | None = None,
         human_gate: Callable[[str, str], Any] | None = None,
         use_ocr: bool | None = None,
+        captcha_mode: str | None = None,
     ) -> None:
         self.page = page
         self.course_id = str(course_id)
@@ -234,6 +235,13 @@ class ChaoxingQuiz:
                 "0", "false", "no", "off",
             }
         self.use_ocr = bool(use_ocr)
+        #: 滑块验证策略：``auto`` 自动解（失败再交人工），``human`` 直接等人工
+        mode = str(captcha_mode or "").strip().lower()
+        if not mode:
+            import os  # noqa: PLC0415
+
+            mode = os.environ.get("KEDAIBIAO_CHAXING_CAPTCHA", "auto").strip().lower()
+        self.captcha_mode = "human" if mode == "human" else "auto"
         self._questions: dict[str, quiz_mod.Question] = {}
         #: 已经点过「我已阅读并同意」的页面 URL（同一个页面不能点第二次，会取消勾选）
         self._agreed: set[str] = set()
@@ -512,7 +520,25 @@ class ChaoxingQuiz:
         )
 
     async def _solve_captcha(self) -> None:
-        """解超星风控滑块；自动解不开就交人工。"""
+        """解超星风控滑块。
+
+        策略由 ``captcha_mode`` 决定：
+
+        - ``auto``（默认）：先自动解（拼图轮廓 + 拖拽），解不开再交人工；
+        - ``human``：不尝试自动解，直接暂停等人工在可见窗口里拖
+          （``--show`` 打开窗口，或控制台里点「我已完成认证」）。
+        """
+        if self.captcha_mode == "human":
+            self.emit("warn", "滑块验证设为人工：请在弹出的窗口里拖动滑块")
+            handled = await self._wait_human(
+                "captcha", "请在可见的浏览器窗口里完成滑块验证，完成后点「继续」"
+            )
+            if not handled:
+                raise PwError("滑块验证需要人工完成（当前策略：人工），未完成")
+            if not await self._wait_captcha_done():
+                raise PwError("滑块安全验证没有通过，请重试")
+            await asyncio.sleep(1.5)
+            return
         self.emit("info", "检测到「安全验证」滑块，尝试自动求解…")
         solved = False
         with contextlib.suppress(Exception):
