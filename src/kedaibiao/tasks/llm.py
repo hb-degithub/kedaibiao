@@ -285,7 +285,7 @@ def _render_question(index: int, question: Question) -> str:
 _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 #: 只认 http(s) 图片地址。data URL 直接放行没有意义（上层拿到的就是 URL）。
-_URL_PREFIXES = ("http://", "https://")
+_URL_PREFIXES = ("http://", "https://", "data:image/")
 
 
 def _raw_images(question: Question) -> dict[str, Any]:
@@ -723,7 +723,23 @@ class VisionAnswerer(LLMAnswerer):
     # -- 视觉链路 ---------------------------------------------------------
 
     async def _download_image(self, url: str) -> tuple[str, bytes] | None:
-        """下载一张题面图。任何失败都返回 ``None``（跳过这一张，不炸整题）。"""
+        """下载一张题面图。任何失败都返回 ``None``（跳过这一张，不炸整题）。
+
+        除了 http(s)，也接受 ``data:image/...;base64,...`` —— 学习通走 OCR 时
+        题面是**页面截图**（本地字节），不需要再下载一次。
+        """
+        if url.startswith("data:image/"):
+            try:
+                header, _, payload = url.partition(",")
+                mime = header[len("data:"):].split(";")[0] or "image/png"
+                body = base64.b64decode(payload)
+            except Exception as exc:  # noqa: BLE001 - 坏 data URL 当作没有这张图
+                log.debug("题面截图 data URL 解析失败: %s", exc)
+                return None
+            if not body or len(body) > self.config.max_image_bytes:
+                log.warning("题面截图过大或为空（%d 字节），跳过", len(body))
+                return None
+            return mime, body
         headers = {
             "User-Agent": self.config.user_agent,
             "Referer": IMAGE_REFERER,

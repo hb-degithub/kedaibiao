@@ -217,13 +217,15 @@ class TestImageExtraction(unittest.TestCase):
     def test_non_http_urls_ignored(self) -> None:
         question = q(
             images=(
-                "data:image/png;base64,AAAA",
+                "data:image/png;base64,AAAA",  # 学习通 OCR 的页面截图，要保留
                 "/relative/x.png",
                 "ftp://x/y.png",
                 STEM_IMG,
             )
         )
-        self.assertEqual(image_urls(question), [STEM_IMG])
+        self.assertEqual(
+            image_urls(question), ["data:image/png;base64,AAAA", STEM_IMG]
+        )
 
     def test_malformed_raw_tolerated(self) -> None:
         broken = Question(stem="题", raw={"images": 123, "option_images": "junk"})

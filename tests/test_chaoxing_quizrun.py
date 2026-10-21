@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from kedaibiao.core.models import Answer, AnswerSource
+from kedaibiao.core.models import Answer, AnswerSource, QuestionType
 from kedaibiao.platforms.chaoxing import quiz as quiz_mod
 from kedaibiao.platforms.chaoxing import quizrun
 
@@ -129,3 +129,68 @@ def test_parse_score_text_variants() -> None:
     # 「满分 100.0」不是得分，不能误判
     assert quizrun.parse_score_text("题量: 5 满分: 100.0")[0] is None
     assert quizrun.parse_score_text("")[0] is None
+
+
+class _FakeFrame:
+    """假的题目帧：只提供截图能力。"""
+
+    def __init__(self, png: bytes = b"\x89PNG\r\n\x1a\nfake") -> None:
+        self.png = png
+        self.calls: list[str] = []
+
+    async def screenshot_bytes(self, selector: str = "", **_kw: object) -> bytes:
+        self.calls.append(selector)
+        return self.png
+
+
+def _runner(answerer=None, *, use_ocr: bool | None = None) -> quizrun.ChaoxingQuiz:
+    return quizrun.ChaoxingQuiz(
+        None,  # type: ignore[arg-type]
+        course_id="c",
+        clazz_id="z",
+        answerer=answerer,
+        use_ocr=use_ocr,
+    )
+
+
+def test_ocr_core_question_turns_screenshot_into_image_question() -> None:
+    """OCR 方案：题面来自「题目截图的 data URL」，不是 DOM 文本。"""
+    runner = _runner(use_ocr=True)
+    frame = _FakeFrame()
+    core = asyncio.run(
+        runner._ocr_core_question(
+            frame,
+            "#question210547688",
+            type_name="单选题",
+            number=1,
+            letters=["A", "B"],
+            option_texts=["甲", "乙"],
+        )
+    )
+    assert core is not None
+    assert frame.calls == ["#question210547688"]
+    assert core.raw["images"][0].startswith("data:image/png;base64,")
+    assert core.options == ["A. 甲", "B. 乙"]
+    assert core.type is QuestionType.SINGLE
+    assert "截图" in core.stem
+
+
+def test_ocr_supported_requires_image_capable_answerer() -> None:
+    class _TextOnly:
+        async def answer(self, questions):  # pragma: no cover - 不会被调用
+            return []
+
+    assert _runner(_TextOnly(), use_ocr=True)._ocr_supported() is False
+    assert _runner(_TextOnly(), use_ocr=False)._ocr_supported() is False
+
+    class _Vision(_TextOnly):
+        supports_images = True
+
+    assert _runner(_Vision(), use_ocr=True)._ocr_supported() is True
+
+
+def test_use_ocr_defaults_on_and_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("KEDAIBIAO_CHAXING_OCR", raising=False)
+    assert _runner().use_ocr is True
+    monkeypatch.setenv("KEDAIBIAO_CHAXING_OCR", "0")
+    assert _runner().use_ocr is False

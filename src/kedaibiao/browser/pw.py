@@ -225,6 +225,23 @@ class _FrameOps:
             " })()"
         )
 
+    async def screenshot_bytes(self, selector: str = "", *, full_page: bool = False) -> bytes:
+        """截图为 PNG 字节：给了选择器就只截该元素，否则截整页/整帧。
+
+        学习通的题面走 OCR 时用这个：把「题目 + 选项」那一块截下来交给视觉模型，
+        完全绕开字体混淆（伪汉字）和公式图片。
+        """
+        try:
+            if selector:
+                locator = self.raw.locator(selector).first
+                await locator.scroll_into_view_if_needed(timeout=5000)
+                return await locator.screenshot(type="png")
+            if full_page:
+                return await self.raw.screenshot(type="png", full_page=True)
+            return await self.raw.screenshot(type="png")
+        except Exception as exc:  # noqa: BLE001
+            raise PwError(f"截图失败（{selector or '整页'}）: {exc}") from exc
+
     async def wait_for(
         self,
         selector: str,

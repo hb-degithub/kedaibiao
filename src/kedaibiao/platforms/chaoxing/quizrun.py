@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -176,6 +177,7 @@ class ChaoxingQuiz:
         answerer: Any | None = None,
         emit: Callable[[str, str], None] | None = None,
         human_gate: Callable[[str, str], Any] | None = None,
+        use_ocr: bool | None = None,
     ) -> None:
         self.page = page
         self.course_id = str(course_id)
@@ -185,6 +187,15 @@ class ChaoxingQuiz:
         self._emit = emit or (lambda level, message: log.info("%s", message))
         #: 需要人工认证（人脸/验证码）时的钩子：``await human_gate(kind, message) -> bool``
         self.human_gate = human_gate
+        #: 题面走 OCR（页面截图 + 视觉模型）：学习通的字体混淆/公式图靠它最稳。
+        #: 默认开；``KEDAIBIAO_CHAXING_OCR=0`` 可关掉退回纯 DOM 解析。
+        if use_ocr is None:
+            import os  # noqa: PLC0415
+
+            use_ocr = os.environ.get("KEDAIBIAO_CHAXING_OCR", "1") not in {
+                "0", "false", "no", "off",
+            }
+        self.use_ocr = bool(use_ocr)
         self._questions: dict[str, quiz_mod.Question] = {}
 
     def emit(self, level: str, message: str) -> None:
@@ -491,6 +502,60 @@ class ChaoxingQuiz:
         )
         return str(label or "")
 
+    @staticmethod
+    def _png_data_url(png: bytes) -> str:
+        return "data:image/png;base64," + base64.b64encode(png).decode()
+
+    def _ocr_supported(self) -> bool:
+        """作答器能不能读图（能读图才值得截图）。"""
+        return bool(self.use_ocr and getattr(self.answerer, "supports_images", False))
+
+    async def _ocr_core_question(
+        self,
+        page: Any,
+        selector: str,
+        *,
+        type_name: str,
+        number: int = 0,
+        letters: list[str] | None = None,
+        option_texts: list[str] | None = None,
+    ) -> CoreQuestion | None:
+        """把一道题**截图**成一张图，作为视觉模型的题面来源（OCR 方案）。
+
+        为什么是 OCR 而不是解析 DOM：学习通题面用子集字体把常用字换成伪汉字，
+        公式还是图片；直接读文本要靠字形比对解码，遇到字体一变就得重来。
+        截图交给视觉模型则一次覆盖「字体混淆 + 公式图 + 排版」三件事。
+
+        选项字母仍取自 DOM（点击要按字母点），文本只作为辅助提示；图里有完整题面。
+        """
+        try:
+            png = await page.screenshot_bytes(selector)
+        except PwError as exc:
+            log.debug("题目截图失败（%s）: %s", selector, exc)
+            return None
+        if not png:
+            return None
+        options: list[str] = []
+        for index, letter in enumerate(letters or []):
+            text = (option_texts or [""] * len(letters))[index] if option_texts else ""
+            options.append(f"{letter}. {text}".strip())
+        stem = (
+            f"下面这张截图是第 {number} 题（{type_name or '选择题'}）。"
+            "请先识别图片里的题干与选项，再给出正确答案。"
+            if number else
+            "下面这张截图是一道题。请先识别图片里的题干与选项，再给出正确答案。"
+        )
+        return CoreQuestion(
+            stem=stem,
+            type=_QTYPE_MAP.get(
+                {"单选题": 0, "多选题": 1, "填空题": 2, "判断题": 3}.get(type_name, -1),
+                QuestionType.UNKNOWN,
+            ),
+            options=options,
+            remote_id=f"ocr-{number or selector}",
+            raw={"images": [self._png_data_url(png)]},
+        )
+
     async def _exam_answer(self, page: Any, info: dict[str, Any]) -> PlanItem:
         """答当前这一题并填进页面，返回计划项。"""
         qtype_name = str(info.get("type") or "")
@@ -518,21 +583,33 @@ class ChaoxingQuiz:
         if question_type is None:
             plan.unsupported = f"暂不支持的考试题型：{qtype_name or '未知'}"
             return plan
-        raw: dict[str, Any] = {"images": list(info.get("images") or [])}
-        option_images = {
-            index: opt.get("images") or []
-            for index, opt in enumerate(options)
-            if opt.get("images")
-        }
-        if option_images:
-            raw["option_images"] = option_images
-        core_question = CoreQuestion(
-            stem=plan.text or "（题面是图片）",
-            type=question_type,
-            options=[(opt.get("text") or opt.get("label") or "") for opt in options],
-            remote_id=qid,
-            raw=raw,
-        )
+        core_question: CoreQuestion | None = None
+        if self._ocr_supported() and options:
+            # OCR 方案：整道题截一张图，题干/公式/选项都交给视觉模型识别
+            core_question = await self._ocr_core_question(
+                page,
+                ".questionLi",
+                type_name=qtype_name,
+                number=plan.number,
+                letters=[str(opt.get("label") or "") for opt in options],
+                option_texts=[str(opt.get("text") or "") for opt in options],
+            )
+        if core_question is None:
+            raw: dict[str, Any] = {"images": list(info.get("images") or [])}
+            option_images = {
+                index: opt.get("images") or []
+                for index, opt in enumerate(options)
+                if opt.get("images")
+            }
+            if option_images:
+                raw["option_images"] = option_images
+            core_question = CoreQuestion(
+                stem=plan.text or "（题面是图片）",
+                type=question_type,
+                options=[(opt.get("text") or opt.get("label") or "") for opt in options],
+                remote_id=qid,
+                raw=raw,
+            )
         answer: Answer | None = None
         if self.answerer is not None:
             produced = await self.answerer.answer([core_question])
@@ -782,15 +859,32 @@ class ChaoxingQuiz:
             raw=raw,
         )
 
-    async def plan(self, work: quiz_mod.Work) -> list[PlanItem]:
-        """每题调用作答器，得到字母/文本；不碰页面。"""
+    async def plan(
+        self, work: quiz_mod.Work, *, frame: Any | None = None
+    ) -> list[PlanItem]:
+        """每题调用作答器，得到字母/文本。
+
+        ``frame`` 给了且开了 OCR：逐题按 ``#question<qid>`` 截图，交给视觉模型
+        识别题面（字体混淆、公式图都不怕）；截图失败才退回 DOM 解析文本。
+        """
         items: list[PlanItem] = []
         answerable = [q for q in work.questions if not q.unsupported]
         answers: dict[str, Answer] = {}
         if self.answerer is not None and answerable:
-            produced = await self.answerer.answer(
-                [self._core_question(question) for question in answerable]
-            )
+            cores: list[CoreQuestion] = []
+            for question in answerable:
+                core: CoreQuestion | None = None
+                if frame is not None and self._ocr_supported() and question.qid:
+                    core = await self._ocr_core_question(
+                        frame,
+                        f"#question{question.qid}",
+                        type_name=question.type_name,
+                        number=question.number,
+                        letters=[opt.letter for opt in question.options],
+                        option_texts=[opt.text for opt in question.options],
+                    )
+                cores.append(core or self._core_question(question))
+            produced = await self.answerer.answer(cores)
             for question, answer in zip(answerable, produced, strict=True):
                 answers[question.qid] = answer
         for question in work.questions:
@@ -1013,7 +1107,7 @@ class ChaoxingQuiz:
             f"章节测验「{work.title or chapter_id}」：{len(work.questions)} 题"
             f"（字体解码{'已启用' if work.deobfuscated else '未启用'}）",
         )
-        report.items = await self.plan(work)
+        report.items = await self.plan(work, frame=frame)
         filled = await self.fill(frame, report.items)
         await self.verify(frame, report.items)
         if confirm and filled == 0:
