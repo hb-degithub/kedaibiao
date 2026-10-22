@@ -335,12 +335,15 @@ class ChaoxingQuiz:
     #: 进入考试时可能弹出超星自己的「安全验证」滑块（captcha.chaoxing.com）。
     #: 这是风控触发，不是人脸；按仓库纪律**不代过**，交给人工在可见窗口里拖。
     _CAPTCHA_JS = """(() => {
-        const captcha = document.getElementById('captcha');
-        if (captcha && captcha.style.display !== 'none'
-            && (captcha.offsetWidth || 0) > 0) return true;
+        // 注意：考试须知模板里永远有一个 display:block 的 #captcha 容器，
+        // 只看它会把「没有验证码」误判成有。真正的滑块在 #eject 里，且要有图。
         const eject = document.getElementById('eject');
-        return !!eject && (eject.offsetWidth || 0) > 0
-            && window.getComputedStyle(eject).display !== 'none';
+        if (!eject) return false;
+        const style = window.getComputedStyle(eject);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (!(eject.offsetWidth || eject.offsetHeight)) return false;
+        return !!eject.querySelector(
+            '#cx_imgBg, .cx_imgBg, .cx_comImageValidate, .cx_slider_indicator');
     })()"""
 
     async def _page_has_captcha(self) -> bool:
@@ -392,7 +395,6 @@ class ChaoxingQuiz:
             # 直接拼 examnotes URL 会落到「查看答案」页（0 题），所以照平台的做法点它。
             notes_page = await self._open_notes_via_list(item)
             if notes_page is not None:
-                notes_page = await self._ensure_notes_page(notes_page)
                 self.emit("info", f"已通过列表里的「重考」入口打开：{item.title}")
         if notes_page is None:
             url = EXAM_NOTES_URL.format(
@@ -405,17 +407,33 @@ class ChaoxingQuiz:
             notes_page = self.page
         else:
             self.page = notes_page
+        if item.retake:
+            # 重考可能先落到「交卷结果页」，要在那里点「重考」才会进带 reset=true 的须知页
+            self.page = await self._ensure_notes_page(self.page)
+            notes_page = self.page
         self.emit("info", f"考试须知：{item.title}（{item.status}）")
         # 重考 / 首次进入都走同一套：同意 → 开始 →（可能先弹安全验证）→ 确认进入 → 答题页。
-        # 注意别在滑块还挂着的时候反复点「开始」——每点一次就是一张新验证码，
-        # 连续几次就会被风控盯上，越点越出不来。
+        # 关键：点完「开始」后页面要过几秒才弹滑块/确认层，必须**轮询等**，
+        # 不能看一眼没有就往下走；也别在滑块还挂着时反复点「开始」（每点一次是新验证码）。
         captcha_solves = 0
         for attempt in range(3):
+            if item.retake:
+                # 点完「进入考试」后可能又落回结果页 —— 那里要再点一次「重考」才行
+                self.page = await self._ensure_notes_page(self.page)
             await self._ensure_agreement()
             if not await self._start_clicked() and not await self._page_has_captcha():
+                clicked = False
                 with contextlib.suppress(PwError):
-                    await self.page.click("#startBtn", timeout=8000)
-                await asyncio.sleep(2.5)
+                    clicked = bool(
+                        await self.page.eval(
+                            "(() => { const b = document.getElementById('startBtn');"
+                            " if (!b || !(b.offsetWidth || 0)) return false;"
+                            " b.click(); return true; })()"
+                        )
+                    )
+                if clicked:
+                    self.emit("info", "已点「开始考试 / 开始重考」，等待滑块或确认层…")
+                await asyncio.sleep(1.5)
             if await self._page_has_face_capture():
                 handled = await self._wait_human(
                     "face", "考试要求人脸识别：请完成认证后再继续"
@@ -424,35 +442,37 @@ class ChaoxingQuiz:
                     raise PwError(
                         "考试要求人脸识别，未完成认证（可用 --show 在有摄像头的机器上跑）"
                     )
-            if await self._page_has_captcha():
-                if captcha_solves >= 2:
-                    handled = await self._wait_human(
-                        "captcha",
-                        "安全验证连续失败（可能触发风控）：请在可见窗口里手动完成滑块后继续",
-                    )
-                    if not handled:
-                        raise PwError(
-                            "安全验证连续两次未通过，已停止（避免风控升级）。"
-                            "请用 --show 打开窗口人工完成，或过一会儿再试。"
+            # 轮询最多 ~30 秒：滑块 / 确认层 / 答题页，哪个先出现就处理哪个。
+            # 这里只做「查一眼」，不要调用会阻塞 9 秒的轮询版本，否则一次循环就卡死。
+            for _ in range(24):
+                await asyncio.sleep(1.2)
+                if await self._page_has_captcha():
+                    if captcha_solves >= 2:
+                        handled = await self._wait_human(
+                            "captcha",
+                            "安全验证连续失败（可能触发风控）：请手动完成滑块后继续",
                         )
-                    await self._wait_captcha_done()
-                else:
-                    captcha_solves += 1
-                    await self._solve_captcha()
-                await asyncio.sleep(2)
-            if await self._confirm_enter_dialog():
-                answer_page = await self._pick_answer_page()
+                        if not handled:
+                            raise PwError(
+                                "安全验证连续两次未通过，已停止（避免风控升级）。"
+                                "请用 --show 打开窗口人工完成，或过一会儿再试。"
+                            )
+                        await self._wait_captcha_done()
+                    else:
+                        captcha_solves += 1
+                        await self._solve_captcha()
+                    continue
+                if await self._confirm_enter_visible():
+                    await self._confirm_enter_dialog()
+                    break
+                answer_page = await self._pick_answer_page(timeout=1.5)
                 if answer_page is not None:
                     return answer_page
-                await asyncio.sleep(3)
-                answer_page = await self._pick_answer_page()
-                if answer_page is not None:
-                    return answer_page
-            answer_page = await self._pick_answer_page()
+            answer_page = await self._pick_answer_page(timeout=8)
             if answer_page is not None:
                 return answer_page
             self.emit("info", f"还没进到答题页（第 {attempt + 1} 次尝试），继续…")
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
         raise PwError("进入考试后没有找到答题页（可能被风控/需要人脸）")
 
     async def _ensure_notes_page(self, page: PwPage) -> PwPage:
@@ -623,6 +643,15 @@ class ChaoxingQuiz:
             self._agreed.add(url)
         await asyncio.sleep(0.6)
 
+    async def _confirm_enter_visible(self) -> bool:
+        """确认层现在在不在（只查一次，不轮询）。"""
+        return bool(
+            await self.page.eval(
+                "(() => { const el = document.getElementById('tabIntoexam2');"
+                " return !!(el && (el.offsetWidth || 0) > 0); })()"
+            )
+        )
+
     async def _confirm_enter_dialog(self) -> bool:
         """点掉「本次考试答题时长…」确认层里的「进入考试/继续考试」。"""
         script = (
@@ -650,7 +679,7 @@ class ChaoxingQuiz:
             await asyncio.sleep(1.5)
         return False
 
-    async def _pick_answer_page(self) -> PwPage | None:
+    async def _pick_answer_page(self, *, timeout: float = 30.0) -> PwPage | None:
         """在已打开的页面里找答题页（新标签或当前页跳转两种都可能）。"""
         context = getattr(self.page.raw, "context", None)
         pages = list(getattr(context, "pages", []) or [])
@@ -663,7 +692,7 @@ class ChaoxingQuiz:
                 continue
             if "reVersionTestStartNew" in url or "/test/" in url:
                 return PwPage(raw_page)
-        deadline = time.time() + 30
+        deadline = time.time() + float(timeout)
         while time.time() < deadline:
             pages = list(getattr(context, "pages", []) or [])
             for raw_page in pages:

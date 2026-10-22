@@ -44,6 +44,20 @@ def as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def as_float(value: Any, default: float | None = None) -> float | None:
+    """把可能是字符串／整数的分数字段读成 ``float``；读不出来给默认值。"""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def as_list(value: Any) -> list[Any]:
     """三态字段（数组 / 逗号串 / null）统一成列表。"""
     if value is None or value == "":

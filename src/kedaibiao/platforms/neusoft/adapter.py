@@ -52,7 +52,13 @@ from kedaibiao.platforms.neusoft import endpoints as ep
 from kedaibiao.platforms.neusoft import homework, resources, study, terms
 from kedaibiao.platforms.neusoft.client import NeusoftClient
 from kedaibiao.platforms.neusoft.errors import NeusoftApiError, NeusoftError
-from kedaibiao.platforms.neusoft.models import NeusoftCourse, Resource, Session, Term
+from kedaibiao.platforms.neusoft.models import (
+    NeusoftCourse,
+    Resource,
+    Session,
+    Term,
+    as_str,
+)
 
 log = logging.getLogger(__name__)
 
@@ -274,6 +280,58 @@ class NeusoftAdapter(PlatformAdapter):
             self._papers[test_id] = paper
         return paper
 
+    async def fetch_score(self, assignment_id: str) -> dict[str, Any]:
+        """回读某次作答的成绩（**只读**）。
+
+        数据来源是同一张试卷结构：交卷后平台会把每题批改结果写回
+        ``paperQuestion.candidateScore`` / ``questionScore``，把它们加起来就是
+        本次得分。所以这里**每次都重新取卷**（不能吃 ``_papers`` 缓存 —— 缓存
+        是交卷前那一份，里面根本没有分数）。
+
+        平台还没批改时逐题分数全是 ``null``：这时如实返回 ``graded=False``，
+        不拿「0 分」冒充成绩。
+        """
+        test_id = str(assignment_id or "").strip()
+        if not test_id:
+            raise NeusoftError("fetch_score 需要 testId（学习任务里的 ctlId）")
+        payload = await self.client.request(
+            "GET", ep.EXAM_PAPER, params={"testId": test_id}
+        )
+        paper = homework.parse_paper(payload, test_id=test_id)
+        rows: list[dict[str, Any]] = []
+        earned = 0.0
+        full = 0.0
+        scored = 0
+        for item in paper.questions:
+            if item.candidate_score is not None:
+                scored += 1
+            earned += float(item.candidate_score or 0.0)
+            full += float(item.question_score or 0.0)
+            rows.append(
+                {
+                    "no": item.question_no,
+                    "type": homework.core_question_type(item.question_type).value,
+                    "stem": item.stem[:80],
+                    "answer": ",".join(item.candidate_answer),
+                    "score": item.candidate_score,
+                    "full": item.question_score,
+                }
+            )
+        graded = scored > 0
+        return {
+            "test_id": test_id,
+            "name": as_str(payload.get("name")) if isinstance(payload, dict) else "",
+            "graded": graded,
+            "scored_questions": scored,
+            "question_count": len(rows),
+            "earned": round(earned, 2),
+            "full": round(full, 2),
+            "score_pct": (
+                round(earned / full * 100, 1) if full > 0 and graded else None
+            ),
+            "rows": rows,
+        }
+
     async def submit(
         self, assignment: Assignment, answers: list[Answer]
     ) -> SubmissionResult:
@@ -308,11 +366,17 @@ class NeusoftAdapter(PlatformAdapter):
         # 那种情况下再 PUT 一次 submit 就是重复交卷，可能被平台记成异常；
         # 这里如实按「已交卷」返回，不再补一刀。
         if saved.get("isSubmitPaper"):
+            score = await self._score_after_submit(assignment.remote_id)
             return SubmissionResult(
                 assignment_id=assignment.remote_id,
                 ok=True,
-                message=f"已交卷（保存草稿时平台同时受理了提交：isSubmitPaper={saved.get('isSubmitPaper')}）",
-                raw={**saved, "server_finish": True},
+                message=(
+                    "已交卷（保存草稿时平台同时受理了提交："
+                    f"isSubmitPaper={saved.get('isSubmitPaper')}）"
+                    + _score_sentence(score)
+                ),
+                score=(score or {}).get("score_pct"),
+                raw={**saved, "server_finish": True, "score": score},
             )
         if not self.allow_submit:
             self.log.warning(SUBMIT_BLOCKED_MESSAGE)
@@ -323,12 +387,26 @@ class NeusoftAdapter(PlatformAdapter):
                 raw=saved,
             )
         await homework.submit_paper(self.client, entered.history_id, confirm=True)
+        score = await self._score_after_submit(assignment.remote_id)
         return SubmissionResult(
             assignment_id=assignment.remote_id,
             ok=True,
-            message="已交卷（写路径 [B]，建议到平台确认成绩）",
-            raw={**saved, "server_finish": True},
+            message="已交卷（写路径 [B]，建议到平台确认成绩）" + _score_sentence(score),
+            score=(score or {}).get("score_pct"),
+            raw={**saved, "server_finish": True, "score": score},
         )
+
+    async def _score_after_submit(self, test_id: str) -> dict[str, Any] | None:
+        """交卷后立刻回读一次成绩（**尽力而为**）。
+
+        为什么不让失败冒泡：交卷已经成功了，成绩读不到只是「还没出分」或
+        「会话被平台吊销」，不该把一次成功的交卷报成失败。
+        """
+        try:
+            return await self.fetch_score(test_id)
+        except Exception as exc:  # noqa: BLE001 - 读分失败不影响交卷结果
+            self.log.info("交卷后回读成绩失败（不影响交卷结果）: %s", exc)
+            return None
 
     # -- 刷课 -------------------------------------------------------------
 
@@ -519,6 +597,18 @@ def _answer_text(answer: Answer, item: homework.PaperQuestion) -> str:
     if choices:
         return ",".join(item.choices[index].choice_id for index in choices)
     return answer.text.strip()
+
+
+def _score_sentence(score: dict[str, Any] | None) -> str:
+    """交卷回执里那句话：出分了就报分，没出分就说清楚还没批改。"""
+    if not score:
+        return "；成绩这次没回读到（可稍后用「成绩」动作再查）"
+    if not score.get("graded"):
+        return "；平台还没批改，暂时没有分数（稍后用「成绩」动作再查）"
+    return (
+        f"；回读得分 {score.get('earned')}/{score.get('full')}"
+        f"（{score.get('score_pct')}%）"
+    )
 
 
 __all__ = [

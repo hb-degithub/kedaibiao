@@ -96,6 +96,27 @@ class FakeAdapter:
         )
         return True
 
+    async def fetch_score(self, assignment_id: str) -> dict[str, object]:
+        self.score_calls.append(assignment_id)
+        return dict(SCORE_DATA)
+
+
+#: 成绩回读的返回形状（与 ``NeusoftAdapter.fetch_score`` 一致）
+SCORE_DATA = {
+    "test_id": "2113088013664448514",
+    "name": "期末测试",
+    "graded": True,
+    "scored_questions": 2,
+    "question_count": 2,
+    "earned": 30.0,
+    "full": 40.0,
+    "score_pct": 75.0,
+    "rows": [
+        {"no": "1", "type": "single", "stem": "题一", "answer": "B", "score": 10.0, "full": 10.0},
+        {"no": "2", "type": "single", "stem": "题二", "answer": "A", "score": 20.0, "full": 30.0},
+    ],
+}
+
 
 class ActionRegistryTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -103,10 +124,11 @@ class ActionRegistryTest(unittest.TestCase):
 
     def test_registers_readonly_and_mutating(self) -> None:
         specs = {spec.name: spec for spec in actions.register_platform("neusoft")}
-        for name in ("resources", "attendance", "study", "sign"):
+        for name in ("resources", "attendance", "score", "study", "sign"):
             self.assertIn(name, specs)
         self.assertFalse(specs["resources"].mutates)
         self.assertFalse(specs["attendance"].mutates)
+        self.assertFalse(specs["score"].mutates, "成绩回读是只读动作")
         self.assertTrue(specs["study"].mutates)
         self.assertTrue(specs["sign"].mutates)
 
@@ -116,6 +138,49 @@ class ActionRegistryTest(unittest.TestCase):
         self.assertEqual(required, {"course"})
         required = {p.name for p in specs["sign"].params if p.required}
         self.assertEqual(required, {"attendance_id"})
+        required = {p.name for p in specs["score"].params if p.required}
+        self.assertEqual(required, {"assignment_id"})
+
+
+class ScoreActionTest(unittest.IsolatedAsyncioTestCase):
+    """成绩动作：给出「得分/满分 + 逐题得分」，没批改时明说没出分。"""
+
+    async def asyncSetUp(self) -> None:
+        load_builtin_actions()
+        self.adapter = FakeAdapter()
+        self.adapter.score_calls = []
+
+    async def test_score_envelope(self) -> None:
+        handler = actions.get_handler("neusoft", "score")
+        env = await handler(self.adapter, {"assignment_id": "2113088013664448514"})
+        self.assertEqual(env["kind"], "detail")
+        self.assertEqual(self.adapter.score_calls, ["2113088013664448514"])
+        fields = {f["label"]: f["value"] for f in env["fields"]}
+        self.assertIn("30.0 / 40.0", fields["成绩"])
+        self.assertIn("75.0", fields["成绩"])
+        table = next(s for s in env["sections"] if s["kind"] == "table")
+        self.assertEqual(len(table["rows"]), 2)
+        self.assertEqual(table["rows"][0]["answer"], "B")
+        self.assertEqual(table["rows"][1]["score"], 20.0)
+
+    async def test_score_requires_assignment_id(self) -> None:
+        handler = actions.get_handler("neusoft", "score")
+        with self.assertRaises(ActionInputError):
+            await handler(self.adapter, {})
+
+    async def test_not_graded_says_so(self) -> None:
+        not_graded = dict(SCORE_DATA, graded=False, earned=0.0, score_pct=None,
+                          scored_questions=0)
+        self.adapter.fetch_score = lambda _aid: _async(not_graded)  # type: ignore[method-assign]
+        handler = actions.get_handler("neusoft", "score")
+        env = await handler(self.adapter, {"assignment_id": "x"})
+        fields = {f["label"]: f["value"] for f in env["fields"]}
+        self.assertIn("还没批改", fields["成绩"])
+        self.assertIn("还没批改", env["note"])
+
+
+async def _async(value: object) -> object:
+    return value
 
 
 class ResourceActionTest(unittest.IsolatedAsyncioTestCase):

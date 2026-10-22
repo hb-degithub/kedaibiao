@@ -2232,6 +2232,69 @@ async def _neusoft_attendance(adapter: Any, params: dict[str, Any]) -> dict[str,
     )
 
 
+async def _neusoft_score(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """回读某次作答的成绩（只读）。
+
+    数据就是那张试卷的批改结果：交卷后平台把每题 ``candidateScore`` 写回，
+    累加即得分。所以这里不碰任何写接口，**也不拿 0 分冒充成绩** ——
+    还没批改时如实说「还没出分」。
+    """
+    assignment_id = str(params.get("assignment_id") or "").strip()
+    if not assignment_id:
+        raise ActionInputError("需要任务号（作业列表里那一列）")
+
+    data = await adapter.fetch_score(assignment_id)
+    graded = bool(data.get("graded"))
+    earned = data.get("earned")
+    full = data.get("full")
+    pct = data.get("score_pct")
+    fields = [
+        _field("任务号", assignment_id),
+        _field(
+            "成绩",
+            f"{earned} / {full}（{pct}%）" if graded else "平台还没批改，暂无分数",
+        ),
+        _field("已批改题数", f"{data.get('scored_questions')} / {data.get('question_count')}"),
+    ]
+    rows = [
+        {
+            "no": row.get("no"),
+            "type": row.get("type"),
+            "stem": row.get("stem"),
+            "answer": row.get("answer") or "—",
+            "score": "—" if row.get("score") is None else row.get("score"),
+            "full": "—" if row.get("full") is None else row.get("full"),
+        }
+        for row in data.get("rows") or []
+    ]
+    return detail(
+        platform=adapter.name,
+        action="score",
+        label="成绩",
+        title=f"{data.get('name') or assignment_id} · 成绩",
+        note=(
+            "只读：这份成绩是从试卷结构里回读的（每题 candidateScore 之和）。"
+            if graded
+            else "只读。平台还没批改这份卷子，所以现在没有分数 —— 过一会儿再看。"
+        ),
+        fields=fields,
+        sections=[
+            _table_section(
+                "逐题得分",
+                [
+                    column("no", "题号", mono=True),
+                    column("type", "题型"),
+                    column("stem", "题干"),
+                    column("answer", "提交的答案"),
+                    column("score", "得分", mono=True),
+                    column("full", "满分", mono=True),
+                ],
+                rows,
+            )
+        ],
+    )
+
+
 async def _neusoft_sign(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     """提交签到（写操作，不可逆）。"""
     attendance_id = str(params.get("attendance_id") or "").strip()
@@ -2303,6 +2366,16 @@ def _register_neusoft() -> None:
             params=(ActionParam("term", "学期号", hint="留空 = 最新学期"),),
         ),
         _neusoft_attendance,
+    )
+    register(
+        ActionSpec(
+            platform="neusoft",
+            name="score",
+            label="成绩",
+            description="回读某次作答的成绩（只读；没批改时会明说）",
+            params=(ActionParam("assignment_id", "任务号", required=True),),
+        ),
+        _neusoft_score,
     )
     register(
         ActionSpec(

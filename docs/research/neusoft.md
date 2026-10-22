@@ -274,6 +274,22 @@ PUT  /web-api/smartexam/test/student/submit?historyId=  # 不可逆
 
 ---
 
+## 5.6 成绩回读（只读）
+
+没有单独的「查分」接口可依；成绩就在**同一张试卷结构**里：交卷并被批改后，
+`paperQuestion.candidateScore` / `questionScore` 会被写回，累加即本次得分。
+
+```
+GET /web-api/smartexam/test/student/paper?testId=    # 再取一次，看 candidateScore
+```
+
+- 交卷前这两个字段是 `null`（实测），所以「0 分」和「还没批改」必须分开报 ——
+  `candidateScore` 全为 `null` 时只能说「平台还没批改」，不能报 0 分；
+- 控制台动作 `score`（只读）走这条路径，返回「得分/满分 + 逐题得分」；
+  交卷成功后也会**尽力回读一次**并把结果写进回执（读不到不影响交卷结论）；
+- 交卷后会话可能被平台吊销（实测：交卷成功后紧接着的读请求 401），
+  这时成绩要等重新登录后再查。
+
 ## 6. 考勤 `[A]`
 
 ```

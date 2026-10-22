@@ -32,7 +32,7 @@ from kedaibiao.core.models import Question, QuestionType
 from kedaibiao.platforms.neusoft import endpoints as ep
 from kedaibiao.platforms.neusoft.client import NeusoftClient
 from kedaibiao.platforms.neusoft.errors import NeusoftError, NeusoftProtocolError
-from kedaibiao.platforms.neusoft.models import as_int, as_list, as_str
+from kedaibiao.platforms.neusoft.models import as_float, as_int, as_list, as_str
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +106,9 @@ class PaperQuestion:
     #: 三态字段（数组 / 逗号串 / null）统一成元组
     candidate_answer: tuple[str, ...] = ()
     standard_answer: tuple[str, ...] = ()
+    #: 批改后才有的分数（未批改时平台给 null）
+    candidate_score: float | None = None
+    question_score: float | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -490,6 +493,8 @@ def _paper_question(
         choices=tuple(choices),
         candidate_answer=_answer_values(inner.get("candidateAnswer")),
         standard_answer=_answer_values(inner.get("standardAnswer")),
+        candidate_score=as_float(inner.get("candidateScore")),
+        question_score=as_float(inner.get("questionScore")),
         raw={**dict(inner), "_outer": dict(outer)},
     )
 

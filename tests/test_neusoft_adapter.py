@@ -368,6 +368,113 @@ class SubmitGateTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transport.requests, [])
 
 
+class ScoreReadbackTest(unittest.IsolatedAsyncioTestCase):
+    """成绩回读：交卷后每题的 candidateScore 累加，没批改时如实说「还没出分」。"""
+
+    def _transport(self, *, graded: bool) -> FakeTransport:
+        transport = FakeTransport()
+        transport.json("POST", "/answer/save", {"isSubmitPaper": None})
+        transport.json("PUT", "/student/submit", {"ok": True})
+        judge_choices = [
+            {"choiceId": "A", "choiceContent": "正确"},
+            {"choiceId": "B", "choiceContent": "错误"},
+        ]
+        transport.json(
+            "GET",
+            "/paper",
+            {
+                "id": "paper-1",
+                "name": "期末测试",
+                "paperParts": [
+                    {
+                        "paperQuestionList": [
+                            {
+                                "id": "row-1",
+                                "paperId": "paper-1",
+                                "questionType": "3",
+                                "paperQuestion": {
+                                    "questionNo": 1,
+                                    "questionType": "3",
+                                    "stemText": "判断题一",
+                                    "choices": judge_choices,
+                                    "candidateScore": 10 if graded else None,
+                                    "questionScore": 10,
+                                },
+                            },
+                            {
+                                "id": "row-2",
+                                "paperId": "paper-1",
+                                "questionType": "1",
+                                "paperQuestion": {
+                                    "questionNo": 2,
+                                    "questionType": "1",
+                                    "stemText": "单选题二",
+                                    "choices": [
+                                        {"choiceId": "A", "choiceContent": "甲"},
+                                        {"choiceId": "B", "choiceContent": "乙"},
+                                    ],
+                                    "candidateScore": 0 if graded else None,
+                                    "questionScore": 10,
+                                    "candidateAnswer": "A",
+                                },
+                            },
+                        ]
+                    }
+                ],
+            },
+        )
+        transport.json(
+            "GET", "/enter", {"candidateId": "cand1", "historyId": "hist1", "testId": TEST_ID}
+        )
+        return transport
+
+    async def test_fetch_score_sums_graded_questions(self) -> None:
+        adapter = make_adapter(self._transport(graded=True))
+        out = await adapter.fetch_score(TEST_ID)
+        self.assertTrue(out["graded"])
+        self.assertEqual(out["earned"], 10.0)
+        self.assertEqual(out["full"], 20.0)
+        self.assertEqual(out["score_pct"], 50.0)
+        self.assertEqual(out["scored_questions"], 2)
+        self.assertEqual(out["name"], "期末测试")
+        self.assertEqual([row["no"] for row in out["rows"]], ["1", "2"])
+
+    async def test_fetch_score_reports_not_graded_without_faking_zero(self) -> None:
+        adapter = make_adapter(self._transport(graded=False))
+        out = await adapter.fetch_score(TEST_ID)
+        self.assertFalse(out["graded"])
+        self.assertIsNone(out["score_pct"], "没批改不能报 0 分")
+        self.assertEqual(out["scored_questions"], 0)
+
+    async def test_submit_message_carries_score_when_graded(self) -> None:
+        adapter = make_adapter(
+            self._transport(graded=True), environ={"KEDAIBIAO_NEUSOFT_ALLOW_SUBMIT": "1"}
+        )
+        result = await adapter.submit(
+            Assignment(remote_id=TEST_ID, title="作业一"),
+            [Answer(question=Question(stem="判断题一", remote_id="row-1"), choices=[0])],
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.score, 50.0)
+        self.assertIn("回读得分 10.0/20.0", result.message)
+
+    async def test_submit_survives_score_readback_failure(self) -> None:
+        """成绩读不到不该把成功的交卷报成失败。"""
+        transport = self._transport(graded=True)
+
+        async def boom(*_args, **_kwargs):
+            raise RuntimeError("还没出分")
+
+        adapter = make_adapter(transport, environ={"KEDAIBIAO_NEUSOFT_ALLOW_SUBMIT": "1"})
+        adapter.fetch_score = boom  # type: ignore[method-assign]
+        result = await adapter.submit(
+            Assignment(remote_id=TEST_ID, title="作业一"),
+            [Answer(question=Question(stem="判断题一", remote_id="row-1"), choices=[0])],
+        )
+        self.assertTrue(result.ok)
+        self.assertIn("没回读到", result.message)
+
+
 class PlaybackTest(unittest.IsolatedAsyncioTestCase):
     def _transport(self, *, status: int) -> FakeTransport:
         transport = FakeTransport()

@@ -2007,6 +2007,7 @@ class ConsoleService:
                         emit=emit,
                         on_items=lambda items: self._job_update(job_id, items=items),
                         force=force,
+                        retake=_truthy(params.get("retake")),
                         captcha_mode=captcha_mode,
                         human_gate=human_gate,
                         on_page=on_page,
@@ -2137,8 +2138,8 @@ class ConsoleService:
     def chaoxing_captcha(self, job_id: str) -> dict[str, Any] | None:
         """把当前页面上的滑块验证码「拆出来」：背景图/拼图链接 + 缺口位置。
 
-        给控制台用的：手机上截图看不清时，可以直接打开原图；也可以按算出来的
-        缺口位置一键拖（人只负责点按钮）。
+        验证码可能在主页面，也可能在 iframe 里（超星的 captcha 有时是独立 frame），
+        所以逐个 frame 找；找到后用 frame 的位置把坐标换算回整页视图。
         """
         info = self._chaoxing_live.get(job_id)
         if not info or info.get("loop") is None:
@@ -2146,36 +2147,71 @@ class ConsoleService:
         loop = info["loop"]
         page = info["page"]
 
-        async def collect() -> dict[str, Any] | None:
-            from kedaibiao.platforms.chaoxing import captcha as captcha_mod  # noqa: PLC0415
-
-            data = await page.eval(
+        async def find_in_frame(frame: Any) -> dict[str, Any] | None:
+            return await frame.evaluate(
                 """(() => {
                     const bg = document.getElementById('cx_imgBg');
                     const small = document.querySelector('.cx_imgBtn img');
                     const handle = document.querySelector('.cx_rightBtn');
                     if (!bg || !small || !handle) return null;
-                    const match = /url\\("?([^")]+)"?\\)/.exec(bg.style.backgroundImage || '');
+                    const raw = bg.style.backgroundImage || '';
+                    let url = '';
+                    if (raw.indexOf('url(') === 0) {
+                        url = raw.slice(4);
+                        if (url.endsWith(')')) { url = url.slice(0, -1); }
+                        url = url.replace(/^["']|["']$/g, '');
+                    }
                     const box = (el) => {
                         const b = el.getBoundingClientRect();
                         return {x: b.x, y: b.y, w: b.width, h: b.height};
                     };
                     return {
-                        bgUrl: match ? match[1] : '',
+                        bgUrl: url,
                         smallUrl: small.src || '',
-                        bg: box(bg),
-                        handle: box(handle),
+                        bg: box(bg), handle: box(handle),
                     };
                 })()"""
             )
-            if not data or not data.get("bgUrl"):
+
+        async def collect() -> dict[str, Any] | None:
+            from kedaibiao.platforms.chaoxing import captcha as captcha_mod  # noqa: PLC0415
+
+            for _ in range(4):
+                data = None
+                offset_x = 0.0
+                offset_y = 0.0
+                frames = [page.raw.main_frame] + [
+                    raw for raw in page.raw.frames if raw is not page.raw.main_frame
+                ]
+                for raw_frame in frames:
+                    try:
+                        found = await find_in_frame(raw_frame)
+                    except Exception:  # noqa: BLE001 - frame 正在跳转
+                        continue
+                    if not found or not found.get("bgUrl"):
+                        continue
+                    data = found
+                    if raw_frame is not page.raw.main_frame:
+                        try:
+                            element = await raw_frame.frame_element()
+                            box = await element.bounding_box()
+                            if box:
+                                offset_x = float(box.get("x") or 0.0)
+                                offset_y = float(box.get("y") or 0.0)
+                        except Exception:  # noqa: BLE001
+                            offset_x = offset_y = 0.0
+                    break
+                if data:
+                    break
+                await asyncio.sleep(1.0)
+            if not data:
                 return None
             context = page.raw.context
             big = await (await context.request.get(data["bgUrl"], timeout=20000)).body()
             small = await (await context.request.get(data["smallUrl"], timeout=20000)).body()
             try:
                 gap = captcha_mod.find_gap_offset(big, small)
-            except Exception:  # noqa: BLE001 - 算不出来就只给图，不影响人工拖
+            except Exception:  # noqa: BLE001 - 算不出来就只给图
                 gap = 0
             bg_w = float(data["bg"].get("w") or 320) or 320
             viewport = getattr(page.raw, "viewport_size", None) or {
@@ -2191,14 +2227,14 @@ class ConsoleService:
                 "bg_width": bg_w,
                 "bg_image": "data:image/jpeg;base64," + base64.b64encode(big).decode(),
                 "piece_image": "data:image/png;base64," + base64.b64encode(small).decode(),
-                "handle_nx": (handle["x"] + handle["w"] / 2) / vw,
-                "handle_ny": (handle["y"] + handle["h"] / 2) / vh,
+                "handle_nx": (offset_x + handle["x"] + handle["w"] / 2) / vw,
+                "handle_ny": (offset_y + handle["y"] + handle["h"] / 2) / vh,
                 "gap_ratio": gap / bg_w,
             }
 
         try:
             future = asyncio.run_coroutine_threadsafe(collect(), loop)
-            return future.result(timeout=20)
+            return future.result(timeout=25)
         except Exception as exc:  # noqa: BLE001
             log.debug("读取滑块验证码失败: %s", exc)
             return None
