@@ -22,6 +22,20 @@ python3 scripts/pinco_submit_capture.py --url '<作业页 URL>'
 #    看到「已抓取 …」即成功；文件在 data/recon/pinco/submit-capture-*.json
 ```
 
+### 如果浏览器里打不开作业页（或想用自己日常用的 Chrome 抓）
+
+DevTools → Network（勾 Preserve log）→ 正常点一次「提交」→ 右键
+**Save all as HAR with content**，然后：
+
+```bash
+python3 scripts/pinco_submit_capture.py --har ~/Downloads/pinco-submit.har --check
+```
+
+`--check` 会把 HAR 里的提交请求与 ``PincoAdapter._submit_payload`` 期望的
+字段逐项对比，直接告诉你「缺什么 / 多什么 / 响应码怎么判」。
+**要注意：HAR 是「真的已经交上去了」才有的** —— 这条路线无法中止请求，
+只适合你本来就打算交的那次作业。
+
 `--headless` 只适合页面上有自动提交按钮的场景；默认有头，方便你手动点。
 
 ## 安全边界
@@ -147,6 +161,126 @@ def _summary(record: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# HAR 模式：用户在自己浏览器里抓下来的报文（无法中止，只做离线核对）
+# ---------------------------------------------------------------------------
+
+
+def _payload_of(record: dict[str, Any]) -> dict[str, Any] | None:
+    body = record.get("post_data") or ""
+    try:
+        parsed = json.loads(body)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def har_submit_records(har: dict[str, Any]) -> list[dict[str, Any]]:
+    """从 HAR 里挑出提交类请求（只看 ``actionName``）。"""
+    records: list[dict[str, Any]] = []
+    entries = ((har.get("log") or {}).get("entries")) or []
+    for entry in entries:
+        request = entry.get("request") or {}
+        url = str(request.get("url") or "")
+        name = action_of(url)
+        if name not in SUBMIT_ACTIONS:
+            continue
+        response = entry.get("response") or {}
+        content = response.get("content") or {}
+        records.append(
+            {
+                "captured_at": str(entry.get("startedDateTime") or ""),
+                "action": name,
+                "url": url,
+                "method": request.get("method"),
+                "headers": {
+                    str(h.get("name")): str(h.get("value"))
+                    for h in (request.get("headers") or [])
+                    if isinstance(h, dict)
+                },
+                "post_data": (request.get("postData") or {}).get("text"),
+                "response_status": response.get("status"),
+                "response_body": content.get("text"),
+            }
+        )
+    return records
+
+
+def check_against_adapter(record: dict[str, Any]) -> list[str]:
+    """把抓到的提交报文与 ``PincoAdapter._submit_payload`` 的期望逐项对比。
+
+    只做「结构对比」，不改任何东西；结论仍然要人看一眼再决定开不开闸门。
+    """
+    from kedaibiao.platforms.pinco import endpoints as pinco_ep
+
+    lines: list[str] = []
+    payload = _payload_of(record)
+    if payload is None:
+        return ["⚠️ 请求体不是 JSON 对象，无法对比（先看原始 post_data）"]
+
+    expected_top = {pinco_ep.FIELD_STUDENT_HOMEWORK_ID, pinco_ep.FIELD_ANSWERS}
+    actual_top = set(payload)
+    missing = sorted(expected_top - actual_top)
+    extra = sorted(actual_top - expected_top)
+    lines.append(f"{'✅' if not missing else '⚠️'} 顶层必填：缺 {missing or '无'}")
+    lines.append(f"{'✅' if not extra else 'ℹ️'} 顶层额外字段：{extra or '无'}")
+
+    answers = payload.get(pinco_ep.FIELD_ANSWERS)
+    if isinstance(answers, list):
+        lines.append(f"✅ answers 是数组，长度 {len(answers)}")
+        if answers and isinstance(answers[0], dict):
+            keys = sorted(answers[0])
+            expected_answer = {pinco_ep.FIELD_QUESTION_ID, pinco_ep.FIELD_ANSWER_CONTENT}
+            miss = sorted(expected_answer - set(keys))
+            lines.append(
+                f"{'✅' if not miss else '⚠️'} 单题字段：缺 {miss or '无'}；实际 {keys}"
+            )
+    else:
+        lines.append(f"⚠️ answers 不是数组：{type(answers).__name__}")
+
+    status = record.get("response_status")
+    body = record.get("response_body")
+    parsed_body: Any = None
+    if isinstance(body, str) and body:
+        try:
+            parsed_body = json.loads(body)
+        except (TypeError, ValueError):
+            parsed_body = None
+    code = parsed_body.get("statusCode") if isinstance(parsed_body, dict) else "（非 JSON）"
+    lines.append(f"ℹ️ 响应 HTTP {status}，成功判据看 statusCode：{code}")
+    return lines
+
+
+def run_har(args: argparse.Namespace) -> int:
+    har_path = Path(args.har)
+    if not har_path.is_file():
+        print(f"{PREFIX} 找不到 HAR：{har_path}", file=sys.stderr)
+        return 3
+    try:
+        har = json.loads(har_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"{PREFIX} HAR 读不出来：{exc}", file=sys.stderr)
+        return 3
+
+    records = har_submit_records(har)
+    if not records:
+        print(f"{PREFIX} HAR 里没有提交类请求（{sorted(SUBMIT_ACTIONS)}）", file=sys.stderr)
+        return 4
+
+    out_dir = Path(args.out) if args.out else har_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for index, record in enumerate(records, start=1):
+        path = out_dir / f"submit-har-{index}.json"
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n{PREFIX} 提交请求 #{index} → {path}")
+        print(_summary(record))
+        if args.check:
+            for line in check_against_adapter(record):
+                print("  " + line)
+    print(f"\n{PREFIX} 共 {len(records)} 条提交请求；核对结构后决定是否开闸门。")
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
@@ -229,7 +363,12 @@ def run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="品课提交报文抓取（抓取即中止，不真的提交）")
-    parser.add_argument("--url", required=True, help="作业页完整 URL（浏览器地址栏复制）")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--url", help="作业页完整 URL（浏览器地址栏复制）")
+    source.add_argument("--har", help="已经抓好的 HAR 文件（DevTools 导出）")
+    parser.add_argument(
+        "--check", action="store_true", help="HAR 模式下额外与适配器期望字段逐项对比"
+    )
     parser.add_argument("--session", help="品课 cookie 快照路径；默认自动找控制台落盘的那份")
     parser.add_argument("--out", help="抓取结果目录；默认 data/recon/pinco")
     parser.add_argument(
@@ -248,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.block_other_writes = not args.allow_other_writes
     try:
-        return run(args)
+        return run_har(args) if args.har else run(args)
     except Exception as exc:  # noqa: BLE001 - 脚本边界：把异常变成可读退出码
         print(f"{PREFIX} 失败：{type(exc).__name__}: {exc}", file=sys.stderr)
         return 3

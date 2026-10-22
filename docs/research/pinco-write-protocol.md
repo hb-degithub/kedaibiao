@@ -360,6 +360,18 @@ H5 判成功的写法是 `code === 200`，与 Web RPC 家族「`statusCode` 为 
 > # 结果：data/recon/pinco/submit-capture-<时间戳>.json（已 gitignore，含本人作答内容，不要提交）
 > ```
 >
+> **如果浏览器里打不开作业页**（例如 Flutter 壳需要原生 bridge、SPA 在无头环境渲染空白，
+> 2026-10-22 在服务器上实测两种前端都是空页），改用自己日常的浏览器抓 HAR：
+>
+> ```bash
+> # DevTools → Network（勾 Preserve log）→ 正常点一次提交 → 右键 Save all as HAR with content
+> python3 scripts/pinco_submit_capture.py --har ~/Downloads/pinco-submit.har --check
+> ```
+>
+> `--check` 会把 HAR 里的提交报文与 `PincoAdapter._submit_payload` 的期望字段逐项对比
+> （缺什么 / 多什么 / 响应 `statusCode`）。注意 **HAR 路线无法中止请求**：它只适合
+> 「本来就打算交掉」的那一次作业。
+>
 > 拿到样本后按 C1 的验收点核对：URL 里的 `actionName`、请求体顶层键、答案字段的
 > 编码形态、响应成功形状。三项都对上，再把 `PincoAdapter.submit_payload_confirmed`
 > 改成 `True`，并先跑一次「计划 → 复核 → 提交」核对平台侧确实落库。
