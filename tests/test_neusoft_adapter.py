@@ -344,6 +344,22 @@ class SubmitGateTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.ok)
         self.assertTrue(any(path.endswith(ep.EXAM_SUBMIT) for path in transport.paths()))
 
+    async def test_save_that_already_submitted_does_not_submit_twice(self) -> None:
+        """协议档案 §5.3：``isSubmitPaper`` 非空 = 服务端顺手交了卷，不能再 PUT 一次。"""
+        transport = self._transport()
+        transport.json("POST", "/answer/save", {"isSubmitPaper": "1"})
+        adapter = make_adapter(transport, environ={"KEDAIBIAO_NEUSOFT_ALLOW_SUBMIT": "1"})
+        result = await adapter.submit(
+            Assignment(remote_id=TEST_ID, title="作业一"),
+            [Answer(question=Question(stem="题", remote_id="p1"), choices=[0])],
+        )
+        self.assertTrue(result.ok)
+        self.assertIn("isSubmitPaper", result.message)
+        self.assertFalse(
+            any(path.endswith(ep.EXAM_SUBMIT) for path in transport.paths()),
+            "保存已经交卷了，不该再发一次 submit",
+        )
+
     async def test_no_answers_returns_failure_without_requests(self) -> None:
         transport = self._transport()
         adapter = make_adapter(transport)

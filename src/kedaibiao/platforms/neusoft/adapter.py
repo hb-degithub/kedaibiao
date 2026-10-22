@@ -304,6 +304,16 @@ class NeusoftAdapter(PlatformAdapter):
                 message="没有一条答案能映射到平台题目（题干/选项对不上）",
             )
         saved = await homework.save_answers(self.client, entered, rows)
+        # 协议档案 §5.3：保存返回体里 ``isSubmitPaper`` 非空 = 服务端**顺手交了卷**。
+        # 那种情况下再 PUT 一次 submit 就是重复交卷，可能被平台记成异常；
+        # 这里如实按「已交卷」返回，不再补一刀。
+        if saved.get("isSubmitPaper"):
+            return SubmissionResult(
+                assignment_id=assignment.remote_id,
+                ok=True,
+                message=f"已交卷（保存草稿时平台同时受理了提交：isSubmitPaper={saved.get('isSubmitPaper')}）",
+                raw={**saved, "server_finish": True},
+            )
         if not self.allow_submit:
             self.log.warning(SUBMIT_BLOCKED_MESSAGE)
             return SubmissionResult(
@@ -317,7 +327,7 @@ class NeusoftAdapter(PlatformAdapter):
             assignment_id=assignment.remote_id,
             ok=True,
             message="已交卷（写路径 [B]，建议到平台确认成绩）",
-            raw=saved,
+            raw={**saved, "server_finish": True},
         )
 
     # -- 刷课 -------------------------------------------------------------

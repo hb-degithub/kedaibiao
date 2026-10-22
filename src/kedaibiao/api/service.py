@@ -3227,7 +3227,10 @@ class ConsoleService:
             if not confirm:
                 plan["submitted"] = False
                 note = "这是干跑结果，没有向平台提交任何内容。确认无误后带 confirm=true 再调用。"
-                gate = _text_or_empty(getattr(adapter, "submit_gate_hint", ""))
+                gate = ""
+                if getattr(adapter, "allow_submit", True) is False:
+                    # 只有这个平台「真的会被闸门拦住」时才提示，否则说明是错的。
+                    gate = _text_or_empty(getattr(adapter, "submit_gate_hint", ""))
                 if gate:
                     # 这个平台「真提交」只会存草稿：必须在点击之前说清楚，
                     # 否则用户会以为按钮没生效。
