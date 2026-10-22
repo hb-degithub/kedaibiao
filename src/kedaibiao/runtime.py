@@ -22,7 +22,13 @@ from kedaibiao.config.settings import Settings, load_settings, resolve_environ
 from kedaibiao.core.events import EventBus
 from kedaibiao.core.scheduler import Scheduler
 from kedaibiao.net.http import HttpClient, UrllibTransport
-from kedaibiao.notify.base import ConsoleNotifier, Notifier, NullNotifier, WebhookNotifier
+from kedaibiao.notify.base import (
+    ConsoleNotifier,
+    EmailNotifier,
+    Notifier,
+    NullNotifier,
+    WebhookNotifier,
+)
 from kedaibiao.platforms.base import AdapterContext, PlatformAdapter
 from kedaibiao.tasks.answerer import BankAnswerer, ChainAnswerer, RuleAnswerer
 from kedaibiao.tasks.llm import build_llm_answerer
@@ -33,16 +39,32 @@ log = logging.getLogger(__name__)
 NOTIFY_WEBHOOK_ENV = "KEDAIBIAO_NOTIFY_WEBHOOK_URL"
 
 
-def build_notifier(settings: Settings) -> Notifier:
+def build_notifier(
+    settings: Settings, *, environ: dict[str, str] | None = None
+) -> Notifier:
+    """按 ``notify`` 装配通知渠道。
+
+    ``environ`` 传 ``.env`` 合并后的环境（与凭据/配置同一份）—— 否则
+    ``.env`` 里配的 webhook / SMTP 永远读不到，只有真实环境变量生效。
+    """
+    env = dict(os.environ) if environ is None else dict(environ)
     kind = (settings.notify or "console").strip().lower()
     if kind == "null":
         return NullNotifier()
     if kind == "webhook":
-        url = os.environ.get(NOTIFY_WEBHOOK_ENV, "")
+        url = env.get(NOTIFY_WEBHOOK_ENV, "")
         if not url:
             log.warning("%s 未设置，webhook 通知降级为控制台", NOTIFY_WEBHOOK_ENV)
             return ConsoleNotifier()
         return WebhookNotifier(url)
+    if kind == "email":
+        notifier = EmailNotifier.from_environ(env)
+        if notifier is None:
+            log.warning(
+                "邮件通知缺少 KEDAIBIAO_SMTP_HOST / KEDAIBIAO_SMTP_TO，降级为控制台"
+            )
+            return ConsoleNotifier()
+        return notifier
     return ConsoleNotifier()
 
 
@@ -245,7 +267,7 @@ def build_runtime(
     bus = EventBus()
     bank = QuestionBank(settings.db_path)
     store = ProgressStore(settings.db_path)
-    notifier = build_notifier(settings)
+    notifier = build_notifier(settings, environ=resolved_env)
 
     # 答题链顺序：题库（最可靠）→ 大模型（会用外部 API，未配置则跳过）→ 规则兜底。
     # 规则放最后：它只会瞎猜，置信度刻意压低，用来避免「整份一题都不答」。

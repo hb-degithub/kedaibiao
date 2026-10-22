@@ -10,7 +10,7 @@
 平台差异全部关在适配器里，核心调度一行都不用改。
 
 **当前状态：v0.1.0 —— 框架 + 6 个真实平台适配器。** 核心层与题库层零第三方依赖，
-离线单测全绿（`pytest -q` 2075 项 / 约 30 秒；`make test` 走 unittest，1964 项）；
+离线单测全绿（`pytest -q` 2087 项 / 约 30 秒；`make test` 走 unittest，1976 项）；
 U校园、东软智慧教育、超星学习通、iTEST、批改网、希沃品课均已接入。
 每个平台「实测到哪一步、哪些只有静态证据」写在
 [docs/verification/](docs/verification/) 与 [docs/research/](docs/research/) 里 ——
@@ -309,14 +309,14 @@ PYTHONPATH=src python3 -m kedaibiao web
 改完前端想确认没写坏交互，跑自带的测试（都不碰真实平台账号）：
 
 ```bash
-timeout 600 .venv/bin/python -m pytest -q            # 2075 单测（约 30 秒，离线）
+timeout 600 .venv/bin/python -m pytest -q            # 2087 单测（约 30 秒，离线）
 python3 scripts/api_matrix_check.py                  # 后端路由/安全/并发 125 项（自起临时服务）
 python3 scripts/ui_matrix_check.py  --base http://127.0.0.1:8765 --username admin --password '…'
 python3 scripts/ui_smoke_next.py    --base http://127.0.0.1:8765 --username admin --password '…'
 ```
 
 最近一次全面测试的结果与发现见 [docs/testing-report-2026-10-21.md](docs/testing-report-2026-10-21.md)
-（报告写于 1722 单测时点，此后单测已增长到 2075）。
+（报告写于 1722 单测时点，此后单测已增长到 2087）。
 
 ### 平台只读动作（CLI）
 
@@ -632,6 +632,30 @@ make install-browser   # playwright + chromium，浏览器型平台需要
 `Credentials.__repr__` 被重写为屏蔽密码，`.env`、`data/`、`*.storage_state.json`、
 `*.cookies.json` 全在 `.gitignore` 里 —— 凭据和登录态永远不进版本库。
 
+### 跑批通知
+
+无人值守跑批必须能「叫醒人」，通知渠道按 `notify` 配置（`.env` 或环境变量）：
+
+| 渠道 | 配置 | 说明 |
+| --- | --- | --- |
+| `console`（默认） | — | 打到日志 |
+| `webhook` | `KEDAIBIAO_NOTIFY_WEBHOOK_URL` | 任意 JSON 接收端：Server 酱 / 钉钉 / 飞书 / Bark |
+| `email` | `KEDAIBIAO_SMTP_*` | SMTP 邮件（标准库 `smtplib`，无第三方依赖） |
+| `null` | — | 关闭 |
+
+邮件渠道的最小配置：
+
+```bash
+KEDAIBIAO_NOTIFY=email
+KEDAIBIAO_SMTP_HOST=smtp.example.com
+KEDAIBIAO_SMTP_TO=you@example.com
+KEDAIBIAO_SMTP_USER=bot@example.com
+KEDAIBIAO_SMTP_PASSWORD=…        # 授权码，只在本机 .env 里
+```
+
+必填项缺失会自动**降级为控制台**并告警；发送失败只记日志、返回失败，不影响跑批；
+日志与异常文案里不出现密码。定时任务（`schedule`）走同一条通知链。
+
 ### 仓库里不会出现的东西（隐私边界）
 
 仓库要公开发布，所以**真实账号数据一律不进版本库**：
@@ -830,7 +854,7 @@ extra 目前没用到 —— 控制台是标准库 `http.server`，存储是 `sq
         不会真的交），抓到一次真实报文并核对字段后再开 `submit_payload_confirmed`
   - [ ] 剩余：口语评测（U校园）、上传题、纯学习组 —— 只有模块与闸门，线上行为未实测
 - [x] **M3 调度与观测**：Web 控制台（v2 `/` + v1 `/classic`，接口共用）、
-      通知渠道（console / webhook，Server 酱 · 钉钉 · 飞书 · Bark 都能套）、执行留痕与题库
+      通知渠道（console / webhook / SMTP 邮件，Server 酱 · 钉钉 · 飞书 · Bark 都能套）、执行留痕与题库
   - [x] 定时跑批（2026-10-22）：`[[schedule.jobs]]` + `kedaibiao schedule`，
         web 启动时自动拉起、退出自动停；默认关闭、默认干跑、任务串行
   - [x] 失败重试面板（2026-10-22）：运行日志页把最近失败按平台聚合，提供「干跑重跑 / 真跑重跑」；真跑需二次确认，语义是重跑整条流水线、已完成作业跳过（`skip_finished=true`）
