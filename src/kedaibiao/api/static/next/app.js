@@ -5459,6 +5459,67 @@
 
     function guard() { return seq === state.pageSeq && active; }
 
+    /* 失败重试：把最近 50 条里的失败按平台聚合，一键重跑该平台。
+       语义是「重跑流水线」而不是「重放那一条」—— 已完成的作业会被跳过
+       （pipeline 默认 skip_finished=true），所以按钮旁明确写了这句话。 */
+    function retryPlatform(platform, live) {
+      if (live) {
+        var ok = window.confirm(
+          '真跑：会对「' + platform + '」重新执行一次流水线。\n' +
+          '已完成的作业会跳过；剩余未完成 / 上次失败的会**真实提交**，且不可撤销。\n确定继续？'
+        );
+        if (!ok) { return; }
+      }
+      post('/api/run', { platform: platform, live: !!live, limit: 0, kinds: [] })
+        .then(function (job) {
+          toast((live ? '真跑' : '干跑') + '已启动：' + ((job && job.job_id) || ''));
+          show(active, true);
+        })
+        .catch(function (e) {
+          toast('重跑失败：' + ((e && e.message) || e));
+        });
+    }
+
+    function retryPanel(runs) {
+      var failed = runs.filter(function (r) { return r.status === 'failed'; });
+      if (!failed.length) { return null; }
+      var byPlatform = {};
+      failed.forEach(function (run) {
+        var key = run.platform || '（未知平台）';
+        (byPlatform[key] = byPlatform[key] || []).push(run);
+      });
+      var list = el('div', 'list');
+      Object.keys(byPlatform).sort().forEach(function (name) {
+        var items = byPlatform[name];
+        var row = el('div', 'rowx');
+        row.appendChild(el('span', 'mark err'));
+        var main = el('div', 'rowx-main');
+        var title = el('div', 'rowx-title');
+        title.appendChild(el('span', '', name));
+        title.appendChild(pill(items.length + ' 条失败', 'pill-warn'));
+        main.appendChild(title);
+        var ids = items.map(function (r) {
+          return r.assignment_id || ('#' + r.id);
+        });
+        var preview = ids.slice(0, 6).join(' · ') + (ids.length > 6 ? ' …' : '');
+        main.appendChild(el('div', 'rowx-meta', truncate(preview, 120)));
+        row.appendChild(main);
+        var side = el('div', 'rowx-side');
+        side.appendChild(btn('干跑重跑', 'btn-sm', function () {
+          retryPlatform(name, false);
+        }));
+        side.appendChild(btn('真跑重跑', 'btn-sm btn-ghost', function () {
+          retryPlatform(name, true);
+        }));
+        row.appendChild(side);
+        list.appendChild(row);
+      });
+      return panel('失败重试', list, {
+        flush: true,
+        aside: pill('已完成的会跳过', 'pill-mute')
+      });
+    }
+
     function loadRuns(silent) {
       return get('/api/runs', { limit: 50, platform: state.platform }).then(function (body) {
         if (seq !== state.pageSeq || active !== 'runs') { return; }
@@ -5508,6 +5569,8 @@
             row.appendChild(side);
             list.appendChild(row);
           });
+          var retry = retryPanel(runs);
+          if (retry) { box.appendChild(retry); }
           box.appendChild(panel('跑批历史', list, {
             flush: true,
             aside: pill(runs.length + ' 条', 'pill-mute')

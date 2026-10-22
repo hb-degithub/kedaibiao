@@ -285,6 +285,7 @@ PYTHONPATH=src python3 -m kedaibiao web
 - 详情一律进右侧检查器（作业详情支持上一条/下一条），说明文字收进页脚折叠块，
   表格只用于横向对比；
 - 刷课（教材树 + 参数 + 日志流）与 iTEST 一键自动化都在作业页内就地展开，不再另开页面；
+- 运行日志页新增「失败重试」：最近失败的作业按平台聚合，可一键重跑（干跑 / 真跑分开，真跑要确认）；
 - 统一的 loading / empty / gate / error 四态；`⌘K` 命令面板；深色为主、可切浅色。
 
 设计说明与扩展方式见 [docs/web-console-v2-layout.md](docs/web-console-v2-layout.md)。
@@ -832,7 +833,7 @@ extra 目前没用到 —— 控制台是标准库 `http.server`，存储是 `sq
       通知渠道（console / webhook，Server 酱 · 钉钉 · 飞书 · Bark 都能套）、执行留痕与题库
   - [x] 定时跑批（2026-10-22）：`[[schedule.jobs]]` + `kedaibiao schedule`，
         web 启动时自动拉起、退出自动停；默认关闭、默认干跑、任务串行
-  - [ ] 失败重试面板：重试策略已在 `core/scheduler.py`，缺可视化
+  - [x] 失败重试面板（2026-10-22）：运行日志页把最近失败按平台聚合，提供「干跑重跑 / 真跑重跑」；真跑需二次确认，语义是重跑整条流水线、已完成作业跳过（`skip_finished=true`）
 - [x] **M4 多平台**：适配器契约已被 **6 个平台**验证（U校园、东软、超星、iTEST、批改网、
       希沃品课），新增平台不需要改核心调度
 
