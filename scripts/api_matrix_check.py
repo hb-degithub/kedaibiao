@@ -341,7 +341,11 @@ def expect(
     if resp.status >= 400 and (
         not isinstance(data, dict) or "error" not in data or "kind" not in data
     ):
-        raise AssertionError(f"错误响应不符合契约（缺 error/kind）: {resp.snippet()}")
+        # 例外：二进制/纯文本路由（如学习通前台画面 /live 的 JPEG 帧）没有 JSON 契约，
+        # 它的 404 只回 ``no frame``。仅放行这类 media 类型的错误响应，别把契约放宽到 JSON 路由。
+        ctype = resp.headers.get("content-type", "")
+        if not ("text/plain" in ctype or ctype.startswith("image/")):
+            raise AssertionError(f"错误响应不符合契约（缺 error/kind）: {resp.snippet()}")
     # 静态资源（HTML/JS/CSS）没有 JSON body；API 的 2xx 必须是 JSON
     if (resp.status < 400 and not isinstance(data, (dict, list))
             and "json" in resp.headers.get("content-type", "")):
@@ -382,6 +386,10 @@ GET_CASES: list[tuple[str, set[int], str | None, bool]] = [
     ("/api/platforms/ghost/actions", {404}, "unknown_platform", True),
     ("/api/platforms/ghost/logs", {404}, "unknown_platform", True),
     ("/api/platforms/ghost/course-tree?course=x", {404}, "unknown_platform", True),
+    # 学习通前台画面 / 滑块验证码：任务态路由，没有这个任务时不碰浏览器。
+    # /live 的 404 是纯文本 ``no frame``（图片路由没有 JSON 契约，见 expect 的例外）。
+    ("/api/platforms/chaoxing/live?job=nope", {404}, None, True),
+    ("/api/platforms/chaoxing/captcha?job=nope", {200}, None, True),
     # 聚合只读
     ("/api/overview", {200}, None, True),
     ("/api/overview?platform=" + FAKE, {200}, None, True),
@@ -426,6 +434,8 @@ POST_CASES: list[tuple[str, dict[str, Any], set[int], str | None, bool]] = [
     # 品课
     ("/api/platforms/pinco/plan", {}, {400}, "no_credentials", True),
     ("/api/platforms/pinco/submit-reviewed", {}, {400}, "bad_request", True),
+    # 学习通人工过滑块/点击：没有对应的前台任务时服务层直接回 ok=false，不触达浏览器
+    ("/api/platforms/chaoxing/pointer", {}, {200}, None, True),
     # 任务控制
     ("/api/jobs/j-404/cancel", {}, {404}, "not_found", True),
     # 刷课（闸门在平台能力上，不会真的起后台任务）
