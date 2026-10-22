@@ -1678,3 +1678,9 @@ pre.code {
 /* 待人工确认计数：还有几题没处理完时高亮，全部处理完转成绿色 */
 .plan-pending { color: var(--warn); font-weight: 600; }
 .plan-pending-done { color: var(--ok); }
+
+/* ---- LLM 配置中心的注意事项：默认展开的清单（不是折叠页脚） ---- */
+.notes { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 7px; }
+.notes li { font-size: 12.5px; line-height: 1.6; }
+.notes li strong { color: var(--fg); font-weight: 600; }
+.notes li span { color: var(--fg-mute); }
