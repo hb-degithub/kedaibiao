@@ -830,10 +830,11 @@ class TestSanitizedFixtures(unittest.TestCase):
             any("示例大学" in text or "示例学校" in text for text in texts.values()),
             "学校名应脱敏为「示例大学」",
         )
-        self.assertFalse(
-            any("示例" in text for text in texts.values()),
-            "年级 / 班级串应脱敏，不得保留「示例」这类原始标记",
-        )
+        # 年级 / 班级串一律脱敏：fixture 里不应再出现「NN级」这种原始标记
+        grade_re = re.compile(r"(?<![0-9])[0-9]{2}级")
+        for name, text in texts.items():
+            with self.subTest(fixture=name):
+                self.assertEqual(grade_re.findall(text), [], "年级标记应脱敏")
 
     def test_write_page_fixtures_exist(self) -> None:
         # task-6 的两个新样本必须在库里（verifier 要定向复核）
