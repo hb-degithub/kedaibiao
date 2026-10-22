@@ -719,6 +719,9 @@ class ConsoleService:
         #: 每次都重跑答题链的话，模型可能给出**另一套**答案 —— 人确认过的东西
         #: 就作废了，而且低置信度题的集合还可能变，门槛会莫名其妙地又亮一次。
         self._submit_plans: dict[str, dict[str, Any]] = {}
+        #: 定时跑批器（``tasks/schedule.py``）。只有 web 进程里才会启动，
+        #: 其它入口（CLI/测试）保持为 None，``schedule_status`` 也能照常读配置。
+        self._schedule_runner: Any = None
         # 动作与适配器注册表都是进程级的，重复登记会覆盖，这里调用是幂等的。
         # 必须显式调用：程序化使用 ConsoleService 时不会经过 CLI 的 main()，
         # 否则会出现「平台数 0」这种看起来像坏了的结果。
@@ -1104,6 +1107,90 @@ class ConsoleService:
             platforms.append(row)
 
         return {"bank": bank, "platforms": platforms}
+
+    # -- 定时跑批 ---------------------------------------------------------
+
+    def start_schedule(self) -> dict[str, Any]:
+        """按配置启动后台跑批线程（配置未启用时什么都不做）。
+
+        返回值给启动脚本用：``{enabled, started, jobs, tick, error}``。
+        配置写错不抛 —— 控制台必须能起来，错误放进 ``error`` 让人看见。
+        """
+        from kedaibiao.tasks.schedule import (
+            ScheduleConfigError,
+            ScheduleRunner,
+            execute_job,
+            load_plan,
+        )
+
+        with self._lock:
+            if self._schedule_runner is not None:
+                return {**self._schedule_runner.status(), "started": True}
+        try:
+            plan = load_plan(self.root)
+        except ScheduleConfigError as exc:
+            self._schedule_error = str(exc)
+            return {"enabled": False, "started": False, "jobs": [], "error": str(exc)}
+
+        if not plan.enabled or not plan.jobs:
+            return {
+                "enabled": plan.enabled,
+                "started": False,
+                "tick": plan.tick,
+                "jobs": [],
+                "error": "",
+            }
+
+        runner = ScheduleRunner(plan, lambda job: execute_job(self.root, job))
+        runner.start()
+        with self._lock:
+            self._schedule_runner = runner
+        return {**runner.status(), "started": True, "error": ""}
+
+    def stop_schedule(self) -> None:
+        with self._lock:
+            runner = self._schedule_runner
+            self._schedule_runner = None
+        if runner is not None:
+            runner.stop()
+
+    def schedule_status(self) -> dict[str, Any]:
+        """定时跑批的只读快照。没启动时也返回配置本身（``running=False``）。"""
+        with self._lock:
+            runner = self._schedule_runner
+        if runner is not None:
+            return runner.status()
+
+        from kedaibiao.tasks.schedule import ScheduleConfigError, load_plan
+
+        try:
+            plan = load_plan(self.root)
+        except ScheduleConfigError as exc:
+            return {
+                "enabled": False, "running": False, "tick": 0.0, "triggered": 0,
+                "jobs": [], "error": str(exc),
+            }
+        return {
+            "enabled": plan.enabled,
+            "running": False,
+            "tick": plan.tick,
+            "triggered": 0,
+            "jobs": [
+                {
+                    "name": job.name,
+                    "platform": job.platform,
+                    "every_seconds": job.every_seconds,
+                    "live": job.live,
+                    "limit": job.limit,
+                    "kinds": sorted(k.value for k in job.kinds),
+                    "enabled": job.enabled,
+                    "last_run_at": None,
+                    "last_error": "",
+                }
+                for job in plan.jobs
+            ],
+            "error": "",
+        }
 
     def settings_view(self) -> dict[str, Any]:
         """设置页数据。**只列环境变量的键名，绝不返回值。**"""

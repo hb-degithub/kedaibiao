@@ -480,9 +480,20 @@ class TestAllowedHosts(unittest.TestCase):
         self.assertEqual(allowed, {
             "127.0.0.1", "127.0.0.1:8765",
             "localhost", "localhost:8765",
-            "::1", "::1:8765",
+            # IPv6 的 Host 头按 RFC 3986 必须带方括号，浏览器/curl 都发 `[::1]:8765`
+            "::1", "[::1]", "[::1]:8765",
         })
         self.assertNotIn("100.112.224.1", allowed)
+
+    def test_ipv6_bracketed_forms_are_accepted(self) -> None:
+        allowed = build_allowed_hosts("::1", 8765)
+        self.assertIn("[::1]:8765", allowed, "curl -g 'http://[::1]:8765/' 发的是这个")
+        self.assertIn("localhost:8765", allowed, "同机用 IPv4 名字访问也要能用")
+
+    def test_ipv6_wildcard_needs_explicit_name(self) -> None:
+        self.assertEqual(build_allowed_hosts("::", 8765), set())
+        allowed = build_allowed_hosts("::", 8765, ["box.local"])
+        self.assertEqual(allowed, {"box.local", "box.local:8765"})
 
     def test_specific_ip_includes_hostname_and_loopback(self) -> None:
         allowed = build_allowed_hosts("100.112.224.1", 8765, ["hb-mini.tailf4741f.ts.net"])
@@ -499,6 +510,109 @@ class TestAllowedHosts(unittest.TestCase):
 
     def test_empty_host_treated_as_loopback(self) -> None:
         self.assertIn("127.0.0.1:1", build_allowed_hosts("", 1))
+
+
+class TestScheduleApi(ServerTestBase):
+    """``GET /api/schedule``：只读快照，未配置时也要能正常返回。"""
+
+    def test_default_returns_plan_without_jobs(self) -> None:
+        status, body, _ = self.call("/api/schedule")
+        self.assertEqual(status, 200, body)
+        payload = json.loads(body)
+        self.assertFalse(payload["enabled"])
+        self.assertFalse(payload["running"])
+        self.assertEqual(payload["jobs"], [])
+        self.assertEqual(payload["error"], "")
+
+    def test_reports_configured_jobs(self) -> None:
+        (self.root / "config" / "local.toml").write_text(
+            "[kedaibiao]\n"
+            f'db_url = "sqlite:///{self.root}/api.db"\n'
+            f'session_dir = "{self.root}/sessions"\n'
+            'notify = "null"\n'
+            "\n[schedule]\n"
+            "enabled = false\n"
+            "tick = 15\n"
+            "[[schedule.jobs]]\n"
+            'name = "daily"\n'
+            'platform = "fake"\n'
+            'every = "6h"\n'
+            "live = false\n",
+            encoding="utf-8",
+        )
+        service = ConsoleService(root=self.root)
+        payload = service.schedule_status()
+        self.assertFalse(payload["enabled"])
+        self.assertEqual(payload["tick"], 15.0)
+        self.assertEqual([job["name"] for job in payload["jobs"]], ["daily"])
+        self.assertEqual(payload["jobs"][0]["every_seconds"], 21600)
+        self.assertFalse(payload["jobs"][0]["live"], "默认必须干跑")
+
+    def test_broken_config_is_reported_not_raised(self) -> None:
+        (self.root / "config" / "local.toml").write_text(
+            "[schedule]\n[[schedule.jobs]]\nname = \"x\"\nplatform = \"fake\"\n"
+            "every = \"0\"\n",
+            encoding="utf-8",
+        )
+        service = ConsoleService(root=self.root)
+        payload = service.schedule_status()
+        self.assertIn("every", payload["error"])
+
+
+class TestIpv6Binding(ServerTestBase):
+    """IPv6 监听：默认的 ThreadingHTTPServer 只认 AF_INET，绑 ``::1`` 会直接失败。"""
+
+    def test_split_host_port(self) -> None:
+        from kedaibiao.api.server import split_host_port
+
+        self.assertEqual(split_host_port("::1"), ("::1", None))
+        self.assertEqual(split_host_port("[::1]:8765"), ("::1", 8765))
+        self.assertEqual(split_host_port("127.0.0.1:9000"), ("127.0.0.1", 9000))
+        self.assertEqual(split_host_port("example.com"), ("example.com", None))
+
+    def test_is_ipv6_host(self) -> None:
+        from kedaibiao.api.server import is_ipv6_host
+
+        self.assertTrue(is_ipv6_host("::1"))
+        self.assertTrue(is_ipv6_host("::"))
+        self.assertFalse(is_ipv6_host("127.0.0.1"))
+        self.assertFalse(is_ipv6_host("localhost"))
+
+    def test_binds_and_serves_on_loopback_v6(self) -> None:
+        import socket
+
+        from kedaibiao.api.server import make_server
+
+        service = ConsoleService(root=self.root)
+        try:
+            httpd = make_server(service, host="::1", port=0)
+        except OSError as exc:  # 没开 IPv6 的机器上跳过，而不是假绿
+            self.skipTest(f"本机不支持 IPv6 回环：{exc}")
+        try:
+            port = httpd.server_address[1]
+            self.assertEqual(httpd.address_family, socket.AF_INET6)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            # 用不需要登录的静态入口验证「Host 白名单 + IPv6 绑定」都通了：
+            # 若方括号形式没被接受，这里会是 403（Host 被拒）而不是 200。
+            status, body, headers = self._get_via_socket(port, "[::1]")
+            self.assertEqual(status, 200, body[:200])
+            self.assertIn("text/html", headers.get("Content-Type", ""))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    @staticmethod
+    def _get_via_socket(port: int, host_header: str) -> tuple[int, bytes, dict[str, str]]:
+        import http.client
+
+        conn = http.client.HTTPConnection("::1", port, timeout=10)
+        try:
+            conn.request("GET", "/", headers={"Host": f"{host_header}:{port}"})
+            response = conn.getresponse()
+            return response.status, response.read(), dict(response.getheaders())
+        finally:
+            conn.close()
 
 
 class TestPlatformScopedRoutes(ServerTestBase):

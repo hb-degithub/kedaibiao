@@ -1548,6 +1548,60 @@
 
   /* ================================================================ 概览 */
 
+  /* 定时跑批状态：只读快照，失败就显示「读不到」而不是假装没有任务 */
+  function loadSchedule(host, seq) {
+    function fmtEvery(seconds) {
+      var n = Number(seconds) || 0;
+      if (n % 86400 === 0) { return (n / 86400) + ' 天'; }
+      if (n % 3600 === 0) { return (n / 3600) + ' 小时'; }
+      if (n % 60 === 0) { return (n / 60) + ' 分钟'; }
+      return n + ' 秒';
+    }
+    get('/api/schedule').then(function (s) {
+      if (seq !== state.pageSeq) { return; }
+      clear(host);
+      if (s && s.error) {
+        host.appendChild(stateBlock('error', '定时配置有误', s.error));
+        return;
+      }
+      var jobs = (s && s.jobs) || [];
+      if (!jobs.length) {
+        host.appendChild(stateBlock('', '没有定时任务',
+          '在 config/local.toml 里加 [[schedule.jobs]]；默认关闭、默认干跑。'));
+        return;
+      }
+      var list = el('div', 'list');
+      jobs.forEach(function (job) {
+        var row = el('div', 'rowx');
+        var tone = job.enabled ? (job.live ? 'warn' : 'ok') : '';
+        row.appendChild(el('span', 'mark ' + tone));
+        var main = el('div', 'rowx-main');
+        var title = el('div', 'rowx-title');
+        title.appendChild(el('span', '', job.name));
+        title.appendChild(pill(job.platform, 'pill-mute'));
+        if (job.live) { title.appendChild(pill('真跑', 'pill-warn')); }
+        main.appendChild(title);
+        var meta = el('div', 'rowx-meta');
+        meta.appendChild(el('span', '', '每 ' + fmtEvery(job.every_seconds)));
+        meta.appendChild(el('span', '', job.enabled ? '已启用' : '已停用'));
+        if (job.last_run_at) {
+          meta.appendChild(el('span', '', '上次 ' + elapsed(job.last_run_at, null)));
+        }
+        if (job.last_error) {
+          meta.appendChild(el('span', '', truncate(job.last_error, 60)));
+        }
+        main.appendChild(meta);
+        row.appendChild(main);
+        list.appendChild(row);
+      });
+      host.appendChild(list);
+    }).catch(function (e) {
+      if (seq !== state.pageSeq) { return; }
+      clear(host);
+      host.appendChild(stateBlock('', '定时状态读不到', String((e && e.message) || e)));
+    });
+  }
+
   function pageOverview(page, seq) {
     var o = state.overview;
     var scopeName = state.platform ? platformLabel(state.platform) : '全部平台';
@@ -1634,6 +1688,14 @@
 
     main.appendChild(panel('平台能力', capBody, { aside: pill(state.platform || '全部平台', 'pill-mute') }));
 
+
+    /* --- 右侧：定时跑批（异步读 /api/schedule，不阻塞首屏） --- */
+    var schedBox = el('div', '');
+    schedBox.appendChild(loadingBlock());
+    aside.appendChild(panel('定时跑批', schedBox, {
+      aside: pill('…', 'pill-mute')
+    }));
+    loadSchedule(schedBox, seq);
 
     /* --- 右侧：运行参数 / 依赖 / 题库摘要 --- */
     aside.appendChild(panel('运行参数', defs([
