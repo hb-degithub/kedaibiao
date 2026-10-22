@@ -804,6 +804,15 @@ class ConsoleService:
         "timeout": "KEDAIBIAO_LLM_TIMEOUT",
         "temperature": "KEDAIBIAO_LLM_TEMPERATURE",
         "user_agent": "KEDAIBIAO_LLM_USER_AGENT",
+        # 读图（OCR）单独一套：模型与网关/密钥都可以和主模型不同
+        "ocr_model": "KEDAIBIAO_LLM_OCR_MODEL",
+        "ocr_base_url": "KEDAIBIAO_LLM_OCR_BASE_URL",
+        "ocr_api_key": "KEDAIBIAO_LLM_OCR_API_KEY",
+        # 低置信度升级：低于阈值改问第二个模型
+        "escalate_threshold": "KEDAIBIAO_LLM_ESCALATE_THRESHOLD",
+        "fallback_model": "KEDAIBIAO_LLM_FALLBACK_MODEL",
+        "fallback_base_url": "KEDAIBIAO_LLM_FALLBACK_BASE_URL",
+        "fallback_api_key": "KEDAIBIAO_LLM_FALLBACK_API_KEY",
     }
 
     def _llm_overrides(self) -> dict[str, str]:
@@ -838,6 +847,16 @@ class ConsoleService:
             "api_key_set": bool(cfg.api_key),
             "timeout": cfg.timeout,
             "temperature": cfg.temperature,
+            # 读图（OCR）配置：模型名可公开，密钥只说有没有设
+            "ocr_model": cfg.vision_model,
+            "ocr_api_base": cfg.vision_base_url or cfg.base_url,
+            "ocr_api_key_set": bool(cfg.vision_api_key or cfg.api_key),
+            # 低置信度升级
+            "escalate_threshold": cfg.escalate_threshold,
+            "escalate_enabled": cfg.escalate_enabled,
+            "fallback_model": cfg.fallback_model,
+            "fallback_api_base": cfg.fallback_base_url or cfg.base_url,
+            "fallback_api_key_set": bool(cfg.fallback_api_key or cfg.api_key),
             # 控制台可改：这些字段被界面覆盖了（其余取 .env）
             "editable": True,
             "override_fields": from_console,
@@ -888,6 +907,59 @@ class ConsoleService:
                 updates["llm.api_key"] = key
         if payload.get("clear_api_key"):
             removals.append("llm.api_key")
+
+        for name in ("ocr_model", "fallback_model"):
+            if name in payload:
+                value = str(payload.get(name) or "").strip()
+                if value:
+                    updates[f"llm.{name}"] = value
+                else:
+                    removals.append(f"llm.{name}")
+
+        for name in ("ocr_base_url", "fallback_base_url"):
+            if name not in payload:
+                continue
+            value = str(payload.get(name) or "").strip()
+            if value and not re.match(r"^https?://", value):
+                raise ConsoleError(
+                    f"{name} 必须 http:// 或 https:// 开头", kind="bad_request", status=400
+                )
+            if value:
+                updates[f"llm.{name}"] = value.rstrip("/")
+            else:
+                removals.append(f"llm.{name}")
+
+        for name in ("ocr_api_key", "fallback_api_key"):
+            if name not in payload:
+                continue
+            value = str(payload.get(name) or "").strip()
+            if value:
+                updates[f"llm.{name}"] = value
+        for flag, name in (
+            ("clear_ocr_api_key", "ocr_api_key"),
+            ("clear_fallback_api_key", "fallback_api_key"),
+        ):
+            if payload.get(flag):
+                removals.append(f"llm.{name}")
+
+        # 阈值：0 = 关闭升级；上限 1（置信度本身就在 0~1）
+        if "escalate_threshold" in payload:
+            raw = payload.get("escalate_threshold")
+            try:
+                threshold = float(raw)
+            except (TypeError, ValueError):
+                raise ConsoleError(
+                    "escalate_threshold 必须是数字", kind="bad_request", status=400
+                ) from None
+            if not (0.0 <= threshold <= 1.0):
+                raise ConsoleError(
+                    "escalate_threshold 要在 0~1 之间（0 = 关闭升级）",
+                    kind="bad_request", status=400,
+                )
+            if threshold <= 0:
+                removals.append("llm.escalate_threshold")
+            else:
+                updates["llm.escalate_threshold"] = f"{threshold:g}"
 
         for name, low, high in (("timeout", 1.0, 600.0), ("temperature", 0.0, 2.0)):
             if name not in payload:

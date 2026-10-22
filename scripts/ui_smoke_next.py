@@ -551,18 +551,18 @@ def main() -> int:
         result.check(signin_calls[-1].get("confirm") in (1, "1"), "确认后 confirm=1")
         result.check("签到成功" in page.locator("main").inner_text(), "签到结果显示成功")
 
-        print("· 工具页只列没有专属入口的动作")
-        page.goto(entry + "/#/tools/neusoft", wait_until="domcontentloaded")
-        page.wait_for_selector("main .tabs .tab", timeout=10_000)
-        page.wait_for_timeout(400)
-        tabs = [t.inner_text() for t in page.locator("main .tabs .tab").all()]
-        result.check("刷课" not in tabs and "考勤" not in tabs,
-                     "东软工具页收起刷课/考勤（已有专属页）", f"实际 {tabs}")
-        result.check(page.locator("main .banner").count() >= 1, "有「已收起」提示条")
-        page.get_by_role("button", name="照样显示在工具页").click()
+        print("· 工具页是统一 LLM 配置中心（不放平台相关内容）")
+        page.goto(entry + "/#/tools", wait_until="domcontentloaded")
+        page.wait_for_selector("main", timeout=10_000)
         page.wait_for_timeout(900)
-        tabs2 = [t.inner_text() for t in page.locator("main .tabs .tab").all()]
-        result.check("刷课" in tabs2 and "考勤" in tabs2, "可切回全部动作", f"实际 {tabs2}")
+        main_text = page.locator("main").inner_text()
+        result.check("主模型" in main_text, "工具页有主模型配置")
+        result.check("OCR" in main_text, "工具页有 OCR 模型配置")
+        result.check("低置信度升级" in main_text, "工具页有低置信度升级配置")
+        result.check("置信度阈值" in main_text, "升级阈值可配")
+        result.check("注意事项" in main_text or "只配一处" in main_text, "写了注意事项")
+        result.check(page.locator("main .tabs .tab").count() == 0,
+                     "工具页不再列平台动作（无动作页签）")
 
         print("· 计划页（未实现功能标注）")
         page.goto(entry + "/#/roadmap", wait_until="domcontentloaded")

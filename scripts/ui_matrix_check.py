@@ -103,7 +103,7 @@ STATE_500_CASES: list[tuple[str, str, str]] = [
     ("assignments", "unipus", "/actions/assignments"),
     ("attendance", "neusoft", "/actions/attendance"),
     ("bank", "unipus", "/api/bank"),
-    ("tools", "unipus", "/api/platforms/unipus/actions"),
+    ("tools", "unipus", "/api/settings/llm"),
     ("logs", "unipus", "/api/runs"),
     ("stats", "unipus", "/api/statistics"),
 ]

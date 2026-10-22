@@ -10,7 +10,7 @@
 平台差异全部关在适配器里，核心调度一行都不用改。
 
 **当前状态：v0.1.0 —— 框架 + 6 个真实平台适配器。** 核心层与题库层零第三方依赖，
-离线单测全绿（`pytest -q` 2090 项 / 约 30 秒；`make test` 走 unittest，1979 项）；
+离线单测全绿（`pytest -q` 2108 项 / 约 30 秒；`make test` 走 unittest，1979 项）；
 U校园、东软智慧教育、超星学习通、iTEST、批改网、希沃品课均已接入。
 每个平台「实测到哪一步、哪些只有静态证据」写在
 [docs/verification/](docs/verification/) 与 [docs/research/](docs/research/) 里 ——
@@ -287,8 +287,8 @@ PYTHONPATH=src python3 -m kedaibiao web
 - 导航按平台真实能力裁剪：平台没声明的动作（如 iTEST 的考勤）就不出现对应页面，
   不做好看但点了必然失败的入口；
 - 考勤按平台模型分流：东软是「场次列表 + 逐场签到」，希沃品课是「签到码 → 干跑解析 → 确认签到」；
-- 「工具」页只做兜底：已经有专属页面的动作（刷课 / 考勤 / 签到）默认收起并指路，
-  同一个操作不会有两个按钮；需要时一键切回全量；
+- 「工具」页**不放平台相关内容**，它是全局唯一的 **LLM 配置中心**：主模型、读图 / OCR 模型、
+  低置信度升级（阈值 + 第二个模型）都在这里配，所有平台共用这一份；
 - 详情一律进右侧检查器（作业详情支持上一条/下一条），说明文字收进页脚折叠块，
   表格只用于横向对比；
 - 刷课（教材树 + 参数 + 日志流）与 iTEST 一键自动化都在作业页内就地展开，不再另开页面；
@@ -316,14 +316,14 @@ PYTHONPATH=src python3 -m kedaibiao web
 改完前端想确认没写坏交互，跑自带的测试（都不碰真实平台账号）：
 
 ```bash
-timeout 600 .venv/bin/python -m pytest -q            # 2090 单测（约 30 秒，离线）
+timeout 600 .venv/bin/python -m pytest -q            # 2108 单测（约 30 秒，离线）
 python3 scripts/api_matrix_check.py                  # 后端路由/安全/并发 125 项（自起临时服务）
 python3 scripts/ui_matrix_check.py  --base http://127.0.0.1:8765 --username admin --password '…'
 python3 scripts/ui_smoke_next.py    --base http://127.0.0.1:8765 --username admin --password '…'
 ```
 
 最近一次全面测试的结果与发现见 [docs/testing-report-2026-10-21.md](docs/testing-report-2026-10-21.md)
-（报告写于 1722 单测时点，此后单测已增长到 2090）。
+（报告写于 1722 单测时点，此后单测已增长到 2108）。
 
 ### 平台只读动作（CLI）
 
@@ -638,6 +638,35 @@ make install-browser   # playwright + chromium，浏览器型平台需要
 
 `Credentials.__repr__` 被重写为屏蔽密码，`.env`、`data/`、`*.storage_state.json`、
 `*.cookies.json` 全在 `.gitignore` 里 —— 凭据和登录态永远不进版本库。
+
+### 大模型配置中心（控制台「工具」页）
+
+模型配置是**全局唯一**的：所有平台共用同一份，适配器只声明「会不会用模型」，
+不各自存 key。三个部分：
+
+| 配置 | 作用 | 环境变量 |
+| --- | --- | --- |
+| **① 主模型** | 答题主力（OpenAI 兼容 `/chat/completions`） | `KEDAIBIAO_LLM_BASE_URL` / `_API_KEY` / `_MODEL` |
+| **② 读图 / OCR 模型** | 题面截图、公式图片走多模态；可指向另一家网关/另一把 key | `KEDAIBIAO_LLM_OCR_MODEL` / `_OCR_BASE_URL` / `_OCR_API_KEY` |
+| **③ 低置信度升级** | 置信度低于阈值时，**逐题**再问第二个模型；两边取更可信的那个 | `KEDAIBIAO_LLM_ESCALATE_THRESHOLD` / `_FALLBACK_MODEL` / `_FALLBACK_BASE_URL` / `_FALLBACK_API_KEY` |
+
+```bash
+KEDAIBIAO_LLM_MODEL=deepseek-chat            # 便宜模型答题
+KEDAIBIAO_LLM_OCR_MODEL=qwen-vl-max          # 好的多模态模型读图
+KEDAIBIAO_LLM_ESCALATE_THRESHOLD=0.8         # 0 = 关闭（默认）
+KEDAIBIAO_LLM_FALLBACK_MODEL=deepseek-reasoner  # 不确定的题转强模型
+```
+
+**注意事项**（也写进了页面底部的「注意事项」块）：
+
+- **没配也能跑**：主模型未配置时答题链自动跳过它（题库 → 规则兜底），不会让整个跑批失败；
+- **模型只负责答，不负责交**：答案仍要过最低置信度门槛与 `dry_run`；
+- **升级逐题触发**，不是整份重跑 —— 一份卷子通常只有几道题升级，费用可控；阈值建议 `0.7~0.85`；
+- **第二个模型只有在置信度更高时才替换**主答案，替换后标 `escalated_from`（报告里能看出来）；
+- **第二个模型与主模型相同会被忽略**：重问同一个模型没有意义，只会白花钱；
+- **三个 key 各自独立、只写不读**：`/api/settings/llm` 只返回「已设置 / 未设置」，永远不返回明文；
+- **改完下一轮生效**，配置存本机数据库（不入库、不进 git）；正在跑的任务不受影响；
+- 模型会漏题、会瞎报置信度：置信度已打折（×0.85）后上报，越界选项一律丢弃。
 
 ### 跑批通知
 

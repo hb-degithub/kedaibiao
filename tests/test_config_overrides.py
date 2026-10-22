@@ -100,6 +100,60 @@ class TestLlmConfig(unittest.TestCase):
         self.assertEqual(status["model"], "", "清空后不再有覆盖值")
         self.assertNotIn("model", status["override_fields"])
 
+    # -- OCR / 升级 -------------------------------------------------------
+
+    def test_ocr_and_escalation_fields_roundtrip(self) -> None:
+        self.service.update_llm_config(SUPER, {
+            "base_url": "https://g.example/v1",
+            "model": "cheap",
+            "ocr_model": "qwen-vl-max",
+            "ocr_base_url": "https://ocr.example/v1",
+            "ocr_api_key": "ocr-secret",
+            "escalate_threshold": 0.8,
+            "fallback_model": "reasoner",
+            "fallback_api_key": "fb-secret",
+        })
+        status = self.service.llm_status()
+        self.assertEqual(status["ocr_model"], "qwen-vl-max")
+        self.assertEqual(status["ocr_api_base"], "https://ocr.example/v1")
+        self.assertTrue(status["ocr_api_key_set"])
+        self.assertEqual(status["escalate_threshold"], 0.8)
+        self.assertTrue(status["escalate_enabled"])
+        self.assertEqual(status["fallback_model"], "reasoner")
+        self.assertTrue(status["fallback_api_key_set"])
+        # 两个密钥都只写不读
+        blob = repr(status)
+        self.assertNotIn("ocr-secret", blob)
+        self.assertNotIn("fb-secret", blob)
+
+    def test_threshold_out_of_range_rejected(self) -> None:
+        for bad in (-0.1, 1.5, "abc"):
+            with self.subTest(value=bad), self.assertRaises(ConsoleError) as ctx:
+                self.service.update_llm_config(SUPER, {"escalate_threshold": bad})
+            self.assertEqual(ctx.exception.status, 400)
+
+    def test_threshold_zero_disables_escalation(self) -> None:
+        self.service.update_llm_config(SUPER, {"fallback_model": "big", "escalate_threshold": 0.8})
+        self.assertTrue(self.service.llm_status()["escalate_enabled"])
+        self.service.update_llm_config(SUPER, {"escalate_threshold": 0})
+        status = self.service.llm_status()
+        self.assertFalse(status["escalate_enabled"])
+        self.assertNotIn("escalate_threshold", status["override_fields"], "0 = 删除覆盖")
+
+    def test_clear_extra_keys(self) -> None:
+        self.service.update_llm_config(SUPER, {
+            "model": "m", "ocr_api_key": "a", "fallback_api_key": "b",
+        })
+        self.service.update_llm_config(SUPER, {"clear_ocr_api_key": True})
+        status = self.service.llm_status()
+        self.assertFalse(status["ocr_api_key_set"], "OCR key 清空后应回落到主模型")
+        self.assertTrue(status["fallback_api_key_set"])
+
+    def test_ocr_base_url_validated(self) -> None:
+        with self.assertRaises(ConsoleError) as ctx:
+            self.service.update_llm_config(SUPER, {"ocr_base_url": "ftp://x"})
+        self.assertEqual(ctx.exception.status, 400)
+
     # -- 校验 -------------------------------------------------------------
 
     def test_non_superadmin_is_forbidden(self) -> None:

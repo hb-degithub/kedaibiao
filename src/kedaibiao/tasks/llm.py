@@ -47,7 +47,7 @@ import base64
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from kedaibiao.core.models import Answer, AnswerSource, Question, QuestionType
@@ -132,8 +132,19 @@ class LLMConfig:
     temperature: float = 0.0
     max_batch: int = MAX_BATCH
     user_agent: str = DEFAULT_USER_AGENT
-    #: 视觉模型。留空表示沿用 ``model``（有些网关一个模型文本/图片通吃）。
+    #: 视觉（OCR）模型。留空表示沿用 ``model``（有些网关一个模型文本/图片通吃）。
     vision_model: str = ""
+    #: OCR 独立网关：留空则沿用主模型的 base_url / api_key。
+    #: 为什么允许分开：读图吃 token、贵且慢，常见做法是「便宜模型答题 + 好的多模态模型读图」。
+    vision_base_url: str = ""
+    vision_api_key: str = ""
+    #: 低置信度升级：低于该阈值（0~1）的答案，改问另一个模型。0 = 关闭（默认）。
+    escalate_threshold: float = 0.0
+    #: 升级用的第二个模型；为空则不升级（即使阈值 > 0）。
+    fallback_model: str = ""
+    #: 第二个模型的独立网关：留空则沿用主模型的 base_url / api_key。
+    fallback_base_url: str = ""
+    fallback_api_key: str = ""
     #: 下载题面图片的超时（秒）。
     image_timeout: float = IMAGE_TIMEOUT
     #: 单次视觉请求最多带几张图。
@@ -147,8 +158,55 @@ class LLMConfig:
 
     @property
     def vision_model_name(self) -> str:
-        """视觉请求实际用的模型名：配了 VISION_MODEL 就用它。"""
+        """视觉请求实际用的模型名：配了 OCR / VISION_MODEL 就用它。"""
         return self.vision_model or self.model
+
+    @property
+    def escalate_enabled(self) -> bool:
+        """是否启用「低置信度 → 换模型重问」。"""
+        return bool(self.fallback_model and self.escalate_threshold > 0)
+
+    @property
+    def vision_endpoint(self) -> tuple[str, str]:
+        """视觉请求实际用的 (base_url, api_key)。"""
+        return (
+            (self.vision_base_url or self.base_url).rstrip("/"),
+            self.vision_api_key or self.api_key,
+        )
+
+    def vision_config(self) -> LLMConfig:
+        """按 OCR 覆盖项派生一份视觉专用配置（其余字段沿用主配置）。"""
+        base_url, api_key = self.vision_endpoint
+        return replace(
+            self,
+            base_url=base_url,
+            api_key=api_key,
+            model=self.vision_model_name,
+            vision_base_url="",
+            vision_api_key="",
+        )
+
+    def fallback_config(self) -> LLMConfig | None:
+        """派生第二个模型的配置；没配或与主模型完全相同则返回 ``None``。"""
+        if not self.escalate_enabled:
+            return None
+        base_url = (self.fallback_base_url or self.base_url).rstrip("/")
+        api_key = self.fallback_api_key or self.api_key
+        if (base_url, self.fallback_model) == (self.base_url, self.model):
+            # 同一个模型重问一遍没有意义，只会白花一次钱
+            return None
+        return replace(
+            self,
+            base_url=base_url,
+            api_key=api_key,
+            model=self.fallback_model,
+            # 第二个模型也读图：图题升级时同样需要视觉能力
+            vision_model=self.fallback_model,
+            vision_base_url="",
+            vision_api_key="",
+            fallback_model="",
+            escalate_threshold=0.0,
+        )
 
     @classmethod
     def from_env(cls, environ: dict[str, str]) -> LLMConfig:
@@ -162,7 +220,14 @@ class LLMConfig:
             timeout=float(get("TIMEOUT", "60") or 60),
             temperature=float(get("TEMPERATURE", "0") or 0),
             user_agent=get("USER_AGENT") or DEFAULT_USER_AGENT,
-            vision_model=get("VISION_MODEL"),
+            # OCR_MODEL 是 VISION_MODEL 的别名（新名字更直观，旧键继续兼容）
+            vision_model=get("OCR_MODEL") or get("VISION_MODEL"),
+            vision_base_url=get("OCR_BASE_URL").rstrip("/"),
+            vision_api_key=get("OCR_API_KEY"),
+            escalate_threshold=_float_env(get("ESCALATE_THRESHOLD"), 0.0),
+            fallback_model=get("FALLBACK_MODEL"),
+            fallback_base_url=get("FALLBACK_BASE_URL").rstrip("/"),
+            fallback_api_key=get("FALLBACK_API_KEY"),
             image_timeout=float(get("IMAGE_TIMEOUT", str(IMAGE_TIMEOUT)) or IMAGE_TIMEOUT),
             max_images=int(get("MAX_IMAGES", str(MAX_IMAGES)) or MAX_IMAGES),
             max_image_bytes=int(get("MAX_IMAGE_BYTES", str(MAX_IMAGE_BYTES)) or MAX_IMAGE_BYTES),
@@ -172,15 +237,30 @@ class LLMConfig:
         """给日志/界面看的安全描述 —— **绝不带 api_key**。"""
         if not self.enabled:
             return "未配置"
-        vision = f"（视觉 {self.vision_model}）" if self.vision_model else ""
+        vision = f"（OCR {self.vision_model}）" if self.vision_model else ""
+        extra = ""
+        if self.escalate_enabled:
+            extra = f"，置信度 < {self.escalate_threshold:g} 时转 {self.fallback_model}"
         return (
             f"{self.model}{vision} @ {self.base_url}"
-            f"（key={'已设置' if self.api_key else '未设置'}）"
+            f"（key={'已设置' if self.api_key else '未设置'}）{extra}"
         )
 
 
 class LLMError(Exception):
     pass
+
+
+def _float_env(raw: str, default: float) -> float:
+    """环境变量转浮点；空或非法就回默认值（配置写错不该让整个答题链起不来）。"""
+    text = (raw or "").strip()
+    if not text:
+        return default
+    try:
+        return float(text)
+    except ValueError:
+        log.warning("配置项不是数字 %r，按默认值 %g 处理", raw, default)
+        return default
 
 
 #: JSON 合法的反斜杠转义字符
@@ -807,16 +887,26 @@ class VisionAnswerer(LLMAnswerer):
         body_text = _render_vision_text(
             question, descriptions, skipped=len(candidates) - len(descriptions)
         )
+        # OCR 可以指向另一个网关/密钥：派生一份视觉专用配置，其余字段（超时、
+        # UA、图片上限）沿用主配置。
+        vision = self.config.vision_config()
         payload = {
-            "model": self.config.vision_model_name,
+            "model": vision.model,
             "temperature": self.config.temperature,
             "messages": [
                 {"role": "system", "content": _VISION_SYSTEM_PROMPT},
                 {"role": "user", "content": [{"type": "text", "text": body_text}, *parts]},
             ],
         }
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": self.config.user_agent,
+            "Accept": "application/json, text/plain, */*",
+        }
+        if vision.api_key:
+            headers["Authorization"] = f"Bearer {vision.api_key}"
         response = await self._http().post_json(
-            f"{self.config.base_url}/chat/completions", payload, headers=self._headers()
+            f"{vision.base_url}/chat/completions", payload, headers=headers
         )
         if not response.ok:
             raise LLMError(f"HTTP {response.status}: {response.text()[:200]}")
@@ -844,6 +934,96 @@ class VisionAnswerer(LLMAnswerer):
         return answer
 
 
+class EscalatingAnswerer(Answerer):
+    """先问主模型；**置信度低于阈值**的题再问第二个模型，两边取更可信的那个。
+
+    为什么单独一层而不是塞进 ``LLMAnswerer``：
+    主链路（批量、校验、视觉旁路、降级）已经被大量调用方依赖，升级只是
+    「对少数不确定的题多问一次」，不该改动原有行为。
+
+    三条边界：
+
+    1. **阈值 0 或没配第二个模型 = 完全关闭**，行为与不用这个类一模一样；
+    2. **逐题升级**，不是整份重跑 —— 一份卷子里通常只有几道题不确定，
+       整份重问既慢又费钱；
+    3. 第二个模型失败（网络/解析）只记日志、保留主模型的答案，**不抛异常**；
+       两个模型给同一答案时也保留主模型的来源，不冒充「更可信」。
+    """
+
+    name = "llm-escalate"
+
+    #: 主模型支持读图就沿用（图题升级时第二个模型也要读图）
+    supports_images = True
+
+    def __init__(
+        self,
+        primary: LLMAnswerer,
+        fallback: LLMAnswerer,
+        *,
+        threshold: float,
+    ) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.threshold = threshold
+        self.last_error = ""
+        #: 本次运行升级过多少题（跑批报告里能看出来值不值）
+        self.escalations = 0
+        self.escalated_stems: list[str] = []
+
+    @property
+    def config(self) -> LLMConfig:
+        return self.primary.config
+
+    def _needs_escalation(self, answer: Answer) -> bool:
+        """空答案（没答出来）或置信度低于阈值 → 值得再问一次。"""
+        if not answer.choices and not (answer.text or "").strip():
+            return True
+        return answer.confidence < self.threshold
+
+    @staticmethod
+    def _better(candidate: Answer, current: Answer) -> bool:
+        """候选更可信才替换：置信度更高，或当前根本没答出来。"""
+        if not current.choices and not (current.text or "").strip():
+            return True
+        return candidate.confidence > current.confidence
+
+    async def answer(self, questions: list[Question]) -> list[Answer]:
+        out = list(await self.primary.answer(questions))
+        if self.threshold <= 0 or not questions:
+            return out
+
+        for index, question in enumerate(questions):
+            current = out[index]
+            if not self._needs_escalation(current):
+                continue
+            try:
+                produced = await self.fallback.answer([question])
+            except Exception as exc:  # noqa: BLE001 - 升级失败不能拖垮主链路
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                log.warning("低置信度升级失败，保留主模型答案：%s", self.last_error)
+                continue
+            candidate = produced[0] if produced else None
+            if candidate is None or not self._better(candidate, current):
+                continue
+            # 标出来源：报告与题库里能区分「主模型答的」和「升级后答的」
+            candidate.source = AnswerSource.LLM
+            candidate.raw["escalated_from"] = {
+                "model": self.primary.config.model,
+                "confidence": current.confidence,
+                "threshold": self.threshold,
+            }
+            candidate.raw["escalated_model"] = self.fallback.config.model
+            out[index] = candidate
+            self.escalations += 1
+            self.escalated_stems.append(question.stem[:60])
+            log.info(
+                "置信度 %.2f < %.2f，已转 %s 重答（新置信度 %.2f）",
+                current.confidence, self.threshold,
+                self.fallback.config.model, candidate.confidence,
+            )
+        return out
+
+
 def build_llm_answerer(
     environ: dict[str, str], client: HttpClient | None = None
 ) -> LLMAnswerer | None:
@@ -855,5 +1035,15 @@ def build_llm_answerer(
     config = LLMConfig.from_env(environ)
     if not config.enabled:
         return None
-    return VisionAnswerer(config, client=client)
+    primary = VisionAnswerer(config, client=client)
+
+    fallback_config = config.fallback_config()
+    if fallback_config is None:
+        return primary
+    fallback = VisionAnswerer(fallback_config, client=client)
+    log.info(
+        "低置信度升级已启用：%s → %s（阈值 %.2f）",
+        config.model, fallback_config.model, config.escalate_threshold,
+    )
+    return EscalatingAnswerer(primary, fallback, threshold=config.escalate_threshold)
 

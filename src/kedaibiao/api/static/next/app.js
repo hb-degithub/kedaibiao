@@ -140,8 +140,6 @@
     jobs: [],
     /* 当前作用域下的平台账号（顶栏切换器与账号简介都用它） */
     accounts: [],
-    /* 工具页是否显示「已有专属入口」的动作 */
-    toolsShowAll: false,
     /* 每个平台的动作名集合：能力型页面据此决定出不出现在左轨 */
     platformActions: {},
     /* 提交成功且回读 finish=True 的作业：列表里直接显示「已完成」，
@@ -342,7 +340,7 @@
     logs: { label: '运行日志', group: '分析', needsPlatform: false },
     stats: { label: '统计', group: '分析', needsPlatform: false },
     accounts: { label: '账号', group: '系统', needsPlatform: false },
-    tools: { label: '工具', group: '系统', needsPlatform: true },
+    tools: { label: '工具', group: '系统', needsPlatform: false },
     roadmap: { label: '计划', group: '系统', needsPlatform: false },
     users: { label: '用户', group: '系统', needsPlatform: false, admin: true }
   };
@@ -433,7 +431,6 @@
       r.platform = null;
       if (history.replaceState) { history.replaceState(null, '', hashFor(r.page, null)); }
     }
-    if (r.platform !== state.platform) { state.toolsShowAll = false; }
     state.page = r.page;
     state.platform = r.platform;
     closeInspector();
@@ -3391,7 +3388,7 @@
     if (platName === 'chaoxing') {
       /* 学习通没有通用提交链路，但有自己的作答动作：别让用户以为「不能交」。 */
       return {
-        label: '提交走「工具 · 做考试」',
+        label: '提交走「作业页 · 就地作答」',
         tone: 'pill-mute',
         why: '学习通的取题与交卷都在它自己的答题窗口里（fetch_questions / submit 均未声明），'
           + '通用提交链路用不了；作业行的「做考试 / 做测验 / 重考」就是入口。'
@@ -5921,71 +5918,33 @@
         });
       }
 
-      /* --- 大模型 --- */
+      /* --- 大模型：配置已统一到「工具」页，这里只显示状态 + 指路 --- */
       var llm = settings.llm || {};
       var llmBody = el('div', '');
-      var status = el('div', 'pills');
-      status.appendChild(dotPill(llm.enabled && llm.configured ? '已启用' : '未配置',
+      var llmStatus = el('div', 'pills');
+      llmStatus.appendChild(dotPill(llm.enabled && llm.configured ? '已启用' : '未配置',
         llm.enabled && llm.configured ? 'pill-ok' : 'pill-mute'));
-      status.appendChild(pill('key ' + (llm.api_key_set ? '已设置' : '未设置'), 'pill-mute'));
-      llmBody.appendChild(status);
+      llmStatus.appendChild(pill('key ' + (llm.api_key_set ? '已设置' : '未设置'), 'pill-mute'));
+      if (llm.ocr_model) { llmStatus.appendChild(pill('OCR ' + llm.ocr_model, 'pill-mute')); }
+      if (llm.escalate_enabled) {
+        llmStatus.appendChild(pill('升级 < ' + llm.escalate_threshold, 'pill-warn'));
+      }
+      llmBody.appendChild(llmStatus);
       llmBody.appendChild(defs([
         ['模型', llm.model || '—'],
         ['地址', llm.api_base || '—'],
-        ['来源', llm.configured_via || '—'],
-        ['覆盖字段', (llm.override_fields || []).join('、') || '—']
+        ['来源', llm.configured_via || '—']
+      ]));
+      llmBody.appendChild(hintBlock([
+        '大模型配置是**全局唯一**的，已统一到「工具 · LLM 配置中心」：主模型、OCR 模型、低置信度升级都在那里改。',
+        '这里只显示当前生效状态；改配置请点下面的按钮。'
+      ]));
+      llmBody.appendChild(actionRow([
+        btn('打开 LLM 配置中心', 'btn-sm btn-primary', function () { go('tools'); })
       ]));
 
-      if (llm.editable && state.isSuper) {
-        var form = el('div', 'form-grid');
-        var baseUrl = input('text', llm.api_base || '', 'https://api.example.com/v1');
-        var model = input('text', llm.model || '', 'deepseek-chat');
-        var key = input('password', '', '留空 = 不修改');
-        var timeout = input('number', llm.timeout || 90, '');
-        var temperature = input('number', llm.temperature === undefined ? 0 : llm.temperature, '');
-        form.appendChild(fieldWrap('接口地址', baseUrl, 'OpenAI 兼容，通常以 /v1 结尾'));
-        form.appendChild(fieldWrap('模型', model, '网关允许的模型名'));
-        form.appendChild(fieldWrap('API Key', key, '只写不读，保存后界面拿不到明文'));
-        form.appendChild(fieldWrap('超时（秒）', timeout, '1 ~ 600'));
-        form.appendChild(fieldWrap('温度', temperature, '0 ~ 2'));
-
-        var msg = el('span', 'hint-text', '');
-        var save = btn('保存', 'btn-primary btn-sm', function () {
-          save.disabled = true;
-          post('/api/settings/llm', {
-            base_url: baseUrl.value,
-            model: model.value,
-            timeout: Number(timeout.value) || 90,
-            temperature: Number(temperature.value) || 0,
-            api_key: key.value
-          }).then(function () {
-            toast('已保存，立即生效');
-            msg.textContent = '已保存';
-            renderPage();
-          }).catch(function (e) {
-            msg.textContent = describe(e);
-          }).then(function () { save.disabled = false; });
-        });
-        var test = btn('测试连接', 'btn-sm', function () {
-          msg.textContent = '正在测试…';
-          post('/api/settings/llm/test', {}).then(function (r) {
-            msg.textContent = '连通：' + jsonText(r, 120);
-          }).catch(function (e) {
-            msg.textContent = describe(e);
-          });
-        });
-        var clearKey = btn('清除 Key', 'btn-sm btn-danger', function () {
-          post('/api/settings/llm', { clear_api_key: true }).then(function () {
-            toast('已清除 Key');
-            renderPage();
-          }).catch(function (e) { msg.textContent = describe(e); });
-        });
-        llmBody.appendChild(form);
-        llmBody.appendChild(actionRow([save, test, clearKey, msg]));
-      }
-
       left.appendChild(panel('大模型', llmBody, {
-        aside: pill(state.isSuper ? '超管可改' : '只读', 'pill-mute')
+        aside: pill('已移到工具页', 'pill-mute')
       }));
 
       /* --- 配置现状 --- */
@@ -6212,205 +6171,194 @@
 
   /* ================================================================ 工具 */
 
-  /* 这些动作已经在专属页面提供了更完整的入口，工具页不再重复列。
-     值是「去哪儿找」，用来在提示里告诉用户。 */
-  var ACTION_SURFACED_IN = {
-    study: '作业页 · 刷课',
-    duration: '作业页 · 刷课（刷时长）',
-    attendance: '考勤页',
-    sign: '考勤页',
-    signin: '考勤页'
-  };
+  /* ================================================================ 工具（统一 LLM 配置中心） */
 
-  /* 过滤后剩下的空提示（不同平台不同，所以按有没有剩余动作决定文案） */
-  function toolsEmptyText(hidden) {
-    if (!hidden) {
-      return '这个平台没有声明只读动作。课程 / 作业这类通用动作在左侧对应页面。';
+  /* 工具页**不放平台相关内容**：平台动作在各自的课程 / 作业 / 考勤页里，
+     这里只放「与平台无关、全局唯一」的东西 —— 大模型配置中心。
+     三段配置共享同一份存储（app_settings 的 llm.* 键），改完立即生效。 */
+
+  function llmNumber(value, fallback) {
+    var n = Number(value);
+    return isFinite(n) && value !== '' && value !== null && value !== undefined ? n : fallback;
+  }
+
+  function llmCenter(view) {
+    var box = el('div', '');
+    var editable = !!(view && view.editable && state.isSuper);
+
+    /* --- 状态条 --- */
+    var status = el('div', 'pills');
+    status.appendChild(dotPill(view && view.enabled ? '主模型已启用' : '主模型未配置',
+      view && view.enabled ? 'pill-ok' : 'pill-mute'));
+    status.appendChild(pill('主 key ' + (view && view.api_key_set ? '已设置' : '未设置'), 'pill-mute'));
+    status.appendChild(pill('OCR ' + ((view && view.ocr_model) || '跟随主模型'), 'pill-mute'));
+    status.appendChild(pill(view && view.escalate_enabled
+      ? ('升级 < ' + view.escalate_threshold)
+      : '未启用升级', view && view.escalate_enabled ? 'pill-warn' : 'pill-mute'));
+    if (view && view.source) {
+      status.appendChild(pill('来源 ' + (view.configured_via || view.source), 'pill-mute'));
     }
-    return '这个平台的动作都已经有专属入口（' + hidden + '），工具页没有额外可跑的。';
+    box.appendChild(status);
+
+    /* --- ① 主模型 --- */
+    var baseUrl = input('text', (view && view.api_base) || '', 'https://api.example.com/v1');
+    var model = input('text', (view && view.model) || '', 'deepseek-chat');
+    var key = input('password', '', '留空 = 不修改');
+    var timeout = input('number', (view && view.timeout) || 60, '1 ~ 600');
+    var temperature = input('number', view && view.temperature !== undefined ? view.temperature : 0, '0 ~ 2');
+
+    var mainForm = el('div', 'form-grid');
+    mainForm.appendChild(fieldWrap('接口地址', baseUrl, 'OpenAI 兼容，通常以 /v1 结尾；所有平台共用这一份'));
+    mainForm.appendChild(fieldWrap('主模型', model, '答题主力模型；网关允许的模型名'));
+    mainForm.appendChild(fieldWrap('API Key', key, '只写不读：保存后界面再也拿不到明文'));
+    mainForm.appendChild(fieldWrap('超时（秒）', timeout, '60 左右够用；长题可调到 120'));
+    mainForm.appendChild(fieldWrap('温度', temperature, '答题建议 0，改写作文可调高'));
+    box.appendChild(panel('① 主模型（答题）', mainForm, {
+      aside: pill(editable ? '超管可改' : '只读', 'pill-mute')
+    }));
+
+    /* --- ② 读图 / OCR --- */
+    var ocrModel = input('text', (view && view.ocr_model) || '', '留空 = 跟随主模型');
+    var ocrBase = input('text', (view && view.ocr_api_base) || '', '留空 = 用主模型地址');
+    var ocrKey = input('password', '', '留空 = 不修改');
+    var ocrKeyNote = el('span', 'hint-text',
+      view && view.ocr_api_key_set ? '当前：已设置' : '当前：未设置（跟随主模型）');
+
+    var ocrForm = el('div', 'form-grid');
+    ocrForm.appendChild(fieldWrap('OCR / 视觉模型', ocrModel,
+      '读题面截图与公式图片用；留空 = 沿用主模型（很多网关同一模型也能读图）'));
+    ocrForm.appendChild(fieldWrap('OCR 接口地址', ocrBase, 'OCR 走另一家网关时才填'));
+    ocrForm.appendChild(fieldWrap('OCR API Key', ocrKey, '单独计费时填；只写不读'));
+    ocrForm.appendChild(ocrKeyNote);
+    box.appendChild(panel('② 读图 / OCR 模型', ocrForm, {
+      aside: pill('可独立配置', 'pill-mute')
+    }));
+
+    /* --- ③ 低置信度升级 --- */
+    var threshold = input('number',
+      view && view.escalate_threshold ? view.escalate_threshold : 0, '0 = 关闭；建议 0.7 ~ 0.85');
+    var fbModel = input('text', (view && view.fallback_model) || '', '更强/更贵的模型名');
+    var fbBase = input('text', (view && view.fallback_api_base) || '', '留空 = 用主模型地址');
+    var fbKey = input('password', '', '留空 = 不修改');
+    var fbKeyNote = el('span', 'hint-text',
+      view && view.fallback_api_key_set ? '当前：已设置' : '当前：未设置（跟随主模型）');
+
+    var escForm = el('div', 'form-grid');
+    escForm.appendChild(fieldWrap('置信度阈值', threshold,
+      '低于该值的题会再问一次第二个模型；0 = 关闭，区间 0~1'));
+    escForm.appendChild(fieldWrap('第二个模型', fbModel,
+      '留空 = 不升级；建议用更强/更贵的模型'));
+    escForm.appendChild(fieldWrap('第二个模型地址', fbBase, '不同网关时才填'));
+    escForm.appendChild(fieldWrap('第二个模型 Key', fbKey, '不同账号时填；只写不读'));
+    escForm.appendChild(fbKeyNote);
+    box.appendChild(panel('③ 低置信度升级', escForm, {
+      aside: pill('逐题触发', 'pill-warn')
+    }));
+
+    var msg = el('span', 'hint-text', '');
+
+    if (editable) {
+      function payload(extra) {
+        return Object.assign({
+          base_url: baseUrl.value,
+          model: model.value,
+          api_key: key.value,
+          timeout: llmNumber(timeout.value, 60),
+          temperature: llmNumber(temperature.value, 0),
+          ocr_model: ocrModel.value,
+          ocr_base_url: ocrBase.value,
+          ocr_api_key: ocrKey.value,
+          escalate_threshold: llmNumber(threshold.value, 0),
+          fallback_model: fbModel.value,
+          fallback_base_url: fbBase.value,
+          fallback_api_key: fbKey.value
+        }, extra || {});
+      }
+
+      var save = btn('保存全部配置', 'btn-primary btn-sm', function () {
+        save.disabled = true;
+        post('/api/settings/llm', payload()).then(function () {
+          toast('已保存，下一轮跑批生效');
+          renderPage();
+        }).catch(function (e) {
+          msg.textContent = describe(e);
+        }).then(function () { save.disabled = false; });
+      });
+
+      var test = btn('测试主模型', 'btn-sm', function () {
+        msg.textContent = '正在测试…';
+        post('/api/settings/llm/test', {}).then(function (r) {
+          msg.textContent = '连通：' + jsonText(r, 160);
+        }).catch(function (e) {
+          msg.textContent = describe(e);
+        });
+      });
+
+      var clearMain = btn('清除主 Key', 'btn-sm btn-danger', function () {
+        post('/api/settings/llm', { clear_api_key: true }).then(function () {
+          toast('已清除主 Key');
+          renderPage();
+        }).catch(function (e) { msg.textContent = describe(e); });
+      });
+      var clearOcr = btn('清除 OCR Key', 'btn-sm', function () {
+        post('/api/settings/llm', { clear_ocr_api_key: true }).then(function () {
+          toast('已清除 OCR Key');
+          renderPage();
+        }).catch(function (e) { msg.textContent = describe(e); });
+      });
+      var clearFb = btn('清除升级 Key', 'btn-sm', function () {
+        post('/api/settings/llm', { clear_fallback_api_key: true }).then(function () {
+          toast('已清除升级 Key');
+          renderPage();
+        }).catch(function (e) { msg.textContent = describe(e); });
+      });
+
+      box.appendChild(panel('操作', actionRow([save, test, clearMain, clearOcr, clearFb, msg]), {
+        flush: true
+      }));
+    } else {
+      box.appendChild(panel(null, stateBlock('gate', '只读视图',
+        '只有超级管理员能改大模型配置；其他用户能看到配置状态，但改不了。')));
+    }
+
+    /* --- 注意事项（前端写死：这些是使用前提，不是运行状态） --- */
+    box.appendChild(hintBlock([
+      '**只配一处，所有平台共用**：这里是全局唯一的大模型配置；平台适配器只声明「会不会用模型」，不各自存 key。',
+      '**没配也能跑**：主模型未配置时答题链自动跳过它（题库 → 规则兜底），不会让整个跑批失败。',
+      '**模型只负责答，不负责交**：答案仍要过最低置信度门槛与 dry_run，不会因为换了模型就被自动提交。',
+      '**OCR 与升级可以指向不同网关**：常见做法是「便宜模型答题 + 好的多模态模型读图 + 强模型兜底不确定的题」。三个 Key 各自独立，留空则继承主模型。',
+      '**升级逐题触发，不是整份重跑**：一份卷子里通常只有几道题升级，费用可控；阈值建议 0.7~0.85，设 0 表示关闭。',
+      '**升级不会「变可信」**：第二个模型的答案只有在置信度更高时才替换主答案，替换后会标记来源（`escalated_from`），报告里能看出哪些题是升级来的。',
+      '**Key 只写不读**：保存后界面与 `/api/settings/llm` 都不会返回明文，只说「已设置 / 未设置」。要换 key 直接覆盖，要清空用对应「清除」按钮。',
+      '**改完下一轮生效**：配置存在本机数据库（不入库、不进 git）；正在跑的任务不受影响。',
+      '**模型会漏题也会瞎报置信度**：置信度已打折（×0.85）后上报；越界选项一律丢弃，不猜一个。',
+      '**不要用别人的 key**：把 key 贴进 issue / 截图 / 分享的 .env 都等于泄漏；配置只存在你自己机器的数据库里。'
+    ]));
+
+    return box;
   }
 
   function pageTools(page, seq) {
-    if (needsPlatformPage(page, seq)) { return; }
-    var platName = state.platform;
-
     page.appendChild(pageHead({
       title: '工具',
-      badge: pill('通用渲染', 'pill-mute'),
-      sub: [scopeChip(), '动作由适配器声明，界面不认识任何平台细节'],
-      actions: [btn('平台日志', 'btn-sm btn-ghost', function () { openPlatformLog(platName); })]
+      badge: pill('LLM 配置中心', 'pill-accent'),
+      sub: ['全局唯一 · 与平台无关', '主模型 / OCR / 低置信度升级'],
+      actions: [btn('刷新', 'btn-sm', function () { renderPage(); })]
     }));
 
     var host = el('div', '');
     page.appendChild(host);
     host.appendChild(panel(null, loadingBlock()));
 
-    var actions = [];
-    var selected = null;
-
-    /* 「显示全部」开关：默认只列没有专属入口的动作。
-       存在 state 里 —— 页面会整块重绘，局部变量活不过一次 renderPage()。 */
-    var showAll = {
-      get on() { return state.toolsShowAll === true; },
-      set on(v) { state.toolsShowAll = v === true; }
-    };
-
-    get('/api/platforms/' + encodeURIComponent(platName) + '/actions').then(function (body) {
+    get('/api/settings/llm').then(function (view) {
       if (seq !== state.pageSeq) { return; }
-      // 通用动作（courses / assignments / detail）已有专属页面，工具页不再重复列
-      var all = ((body && body.actions) || []).filter(function (a) {
-        return a.builtin !== true;
-      });
-      var hidden = all.filter(function (a) { return ACTION_SURFACED_IN[a.name]; });
-      actions = showAll.on
-        ? all
-        : all.filter(function (a) { return !ACTION_SURFACED_IN[a.name]; });
       clear(host);
-
-      /* 提示条：说明隐藏了什么、去哪儿找、以及切回全部 */
-      if (hidden.length) {
-        var note = el('div', 'banner');
-        var label = el('span', 'banner-title', '已收起 ' + hidden.length + ' 个动作');
-        note.appendChild(label);
-        var list = el('ul');
-        hidden.forEach(function (a) {
-          list.appendChild(el('li', '',
-            (a.label || a.name) + ' —— 去「' + ACTION_SURFACED_IN[a.name] + '」'));
-        });
-        note.appendChild(list);
-        if (!showAll.on) {
-          note.appendChild(btn('照样显示在工具页', 'btn-sm btn-ghost', function () {
-            showAll.on = true;
-            renderPage();
-          }));
-        }
-        host.appendChild(note);
-      }
-
-      if (!actions.length) {
-        host.appendChild(panel(null, stateBlock('', '没有额外可跑的动作',
-          toolsEmptyText(hidden.length),
-          showAll.on ? [] : (hidden.length ? [btn('显示全部动作', 'btn-sm', function () {
-            showAll.on = true;
-            renderPage();
-          })] : []))));
-        return;
-      }
-
-      var chips = el('div', 'tabs');
-      chips.setAttribute('role', 'tablist');
-      var runHost = el('div', '');
-      var formHost = el('div', '');
-
-      actions.forEach(function (a) {
-        var b = el('button', 'tab', a.label || a.name);
-        b.type = 'button';
-        b.setAttribute('role', 'tab');
-        b.addEventListener('click', function () {
-          select(a);
-          Array.prototype.forEach.call(chips.children, function (c) {
-            c.setAttribute('aria-selected', String(c === b));
-          });
-        });
-        chips.appendChild(b);
-        b.__action = a;
-      });
-
-      host.appendChild(panel('平台动作', chips));
-      host.appendChild(formHost);
-      host.appendChild(runHost);
-
-      function select(a) {
-        selected = a;
-        clear(formHost);
-        clear(runHost);
-
-        var head = el('div', 'panel-head');
-        head.appendChild(el('h2', '', a.label || a.name));
-        head.appendChild(pill(a.name, 'pill-mute'));
-        head.appendChild(a.mutates ? pill('写操作', 'pill-danger') : pill('只读', 'pill-ro'));
-        if (a.description) { head.appendChild(el('span', 'hint-text', a.description)); }
-
-        var form = el('div', 'form-grid');
-        var inputs = {};
-        (a.params || []).forEach(function (p) {
-          var node;
-          if (p.type === 'text') {
-            node = el('textarea');
-            node.className = 'mono';
-          } else {
-            node = el('input');
-            node.type = p.type === 'int' ? 'number' : 'text';
-            node.className = 'mono';
-          }
-          if (p.required) { node.required = true; }
-          var f = fieldWrap((p.label || p.name) + (p.required ? ' *' : ''),
-            node, p.type === 'int' ? '整数' : (p.type === 'text' ? '长文本' : ''));
-          if (p.type === 'text') { f.classList.add('field-wide'); }
-          form.appendChild(f);
-          inputs[p.name] = node;
-        });
-
-        var msg = el('span', 'hint-text', '');
-        var run = btn('执行', 'btn-primary', function () {
-          var payload = {};
-          var missing = [];
-          (a.params || []).forEach(function (p) {
-            var v = inputs[p.name] ? String(inputs[p.name].value || '').trim() : '';
-            if (p.required && !v) { missing.push(p.label || p.name); return; }
-            if (!v) { return; }
-            payload[p.name] = p.type === 'int' ? Number(v) : v;
-          });
-          if (missing.length) {
-            msg.textContent = '还差必填参数：' + missing.join('、');
-            return;
-          }
-          run.disabled = true;
-          msg.textContent = '执行中…';
-          post('/api/platforms/' + encodeURIComponent(platName) + '/actions/' +
-            encodeURIComponent(a.name), payload).then(function (env) {
-            msg.textContent = '';
-            clear(runHost);
-            runHost.appendChild(panel(env.title || (a.label || a.name),
-              renderEnvelope(env, {
-                hideHead: true,
-                onRow: function (row) { inspectRow(platName, row, a.label || a.name); },
-                empty: '动作成功，但没有返回数据行。'
-              })));
-          }).catch(function (e) {
-            msg.textContent = describe(e);
-            clear(runHost);
-            runHost.appendChild(panel(null, errorBlock(e)));
-          }).then(function () { run.disabled = false; });
-        });
-
-        var panelNode = el('section', 'panel');
-        panelNode.appendChild(head);
-        var bodyNode = el('div', 'panel-body');
-        if (!(a.params || []).length) {
-          bodyNode.appendChild(el('p', 'env-note', '这个动作没有参数，直接执行即可。'));
-        }
-        bodyNode.appendChild(form);
-        bodyNode.appendChild(actionRow([run, msg]));
-        panelNode.appendChild(bodyNode);
-        formHost.appendChild(panelNode);
-      }
-
-      select(actions[0]);
-      if (chips.firstChild) { chips.firstChild.setAttribute('aria-selected', 'true'); }
+      host.appendChild(llmCenter(view || {}));
     }).catch(function (e) {
       if (seq !== state.pageSeq) { return; }
       clear(host);
       host.appendChild(panel(null, errorBlock(e, function () { renderPage(); })));
     });
-
-    page.appendChild(hintBlock([
-      '工具页是**兜底入口**：只列那些还没有专属页面的平台动作。',
-      '已经在专属页面有入口的动作（刷课、考勤 / 签到、刷时长）默认收起，避免同一个操作有两个按钮。',
-      '动作清单来自适配器声明，前端按 kind（table / detail / message）通用渲染，不为平台写专属页面。',
-      '标「写操作」的动作会改平台侧状态（开考计时、填答案、交卷），不可逆。',
-      '结果里的正文与批注属于个人内容：只在这里展示，不缓存、不外发、不导出。'
-    ]));
   }
 
   /* ================================================================ 用户 */
