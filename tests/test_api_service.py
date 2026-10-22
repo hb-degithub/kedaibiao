@@ -992,6 +992,112 @@ class TestSubmitReviewFlow(unittest.TestCase):
         self.assertEqual(fields["平台受理"], "否")
 
 
+class PlanCacheAdapter(FakeAdapter):
+    """用来验证「确认时复用复核过的那份计划」。
+
+    题库里预置 `choice 0`，而规则兜底会挑最长选项（`choice 1`）——
+    于是「提交时到底重算了没有」可以被答案区分出来。
+    """
+
+    name = "apiplancache"
+    display_name = "计划缓存假平台"
+    capabilities = Capabilities(submit=True)
+    stem = "计划缓存题"
+    submitted: list[list[Answer]] = []
+
+    async def fetch_questions(self, assignment: Assignment) -> list[Question]:
+        return [
+            Question(
+                stem=type(self).stem,
+                type=QuestionType.SINGLE,
+                options=["短", "明显更长的选项"],
+                remote_id="q1",
+            )
+        ]
+
+    async def submit(self, assignment: Assignment, answers: list[Answer]) -> SubmissionResult:
+        type(self).submitted.append(list(answers))
+        return SubmissionResult(assignment_id=assignment.remote_id, ok=True, score=100.0)
+
+
+class TestReviewedPlanReuse(unittest.TestCase):
+    """干跑与真提交之间不重新生成答案：人确认过的东西必须原样提交。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "config").mkdir()
+        (self.root / "config" / "local.toml").write_text(
+            "[kedaibiao]\n"
+            f'db_url = "sqlite:///{self.root}/x.db"\n'
+            f'session_dir = "{self.root}/s"\n'
+            'min_confidence = 0.5\n',
+            encoding="utf-8",
+        )
+        adapters.register(PlanCacheAdapter.name, PlanCacheAdapter, override=True)
+        self.addCleanup(adapters.unregister, PlanCacheAdapter.name)
+        PlanCacheAdapter.submitted.clear()
+        PlanCacheAdapter.stem = "计划缓存题"
+
+        from kedaibiao.security.accounts import AccountStore
+
+        store = AccountStore(self.root / "x.db")
+        store.add(0, PlanCacheAdapter.name, username="stu")
+        store.close()
+
+        from kedaibiao.bank.store import QuestionBank
+
+        bank = QuestionBank(self.root / "x.db")
+        question = Question(
+            stem=PlanCacheAdapter.stem, options=["短", "明显更长的选项"], remote_id="q1"
+        )
+        bank.upsert(
+            question,
+            Answer(question=question, choices=[0], source=AnswerSource.BANK_HIT,
+                   confidence=1.0),
+        )
+        bank.close()
+        self.service = ConsoleService(root=self.root)
+
+    def _drop_bank(self) -> None:
+        from kedaibiao.bank.store import QuestionBank
+
+        bank = QuestionBank(self.root / "x.db")
+        for row in bank.fetchall("SELECT fingerprint FROM questions"):
+            bank.execute("DELETE FROM questions WHERE fingerprint=?", (row["fingerprint"],))
+        bank.close()
+
+    def test_confirm_reuses_reviewed_answers(self) -> None:
+        plan = self.service.submit_assignment(PlanCacheAdapter.name, "a1")
+        self.assertEqual(plan["answers"][0]["choices"], [0])  # 题库命中
+        self._drop_bank()   # 若提交时重算，规则兜底会改选「最长选项」= choice 1
+        result = self.service.submit_assignment(PlanCacheAdapter.name, "a1", confirm=True)
+        self.assertTrue(result["submitted"])
+        self.assertEqual(len(PlanCacheAdapter.submitted), 1)
+        answer = PlanCacheAdapter.submitted[0][0]
+        self.assertEqual(answer.choices, [0], "提交的必须是复核时看到的那份答案")
+        self.assertEqual(answer.source, AnswerSource.BANK_HIT)
+
+    def test_cache_is_dropped_when_questions_change(self) -> None:
+        self.service.submit_assignment(PlanCacheAdapter.name, "a1")
+        PlanCacheAdapter.stem = "换了一道题"   # 题干变了 → 计划不该被复用
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.submit_assignment(PlanCacheAdapter.name, "a1", confirm=True)
+        self.assertEqual(cm.exception.status, 400, "题库已删，重算后规则兜底 0.35 低于阈值")
+        self.assertEqual(PlanCacheAdapter.submitted, [])
+
+    def test_expired_plan_is_not_used(self) -> None:
+        from kedaibiao.api import service as service_mod
+
+        self.service.submit_assignment(PlanCacheAdapter.name, "a1")
+        self._drop_bank()
+        with mock.patch.object(service_mod, "SUBMIT_PLAN_TTL_SECONDS", 0):
+            with self.assertRaises(ConsoleError):
+                self.service.submit_assignment(PlanCacheAdapter.name, "a1", confirm=True)
+        self.assertEqual(PlanCacheAdapter.submitted, [])
+
+
 class TestParamValidation(unittest.TestCase):
     def _spec(self):
         from kedaibiao.api.actions import ActionParam, ActionSpec

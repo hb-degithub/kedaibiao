@@ -45,7 +45,7 @@ from kedaibiao.config.settings import (
     load_settings,
     resolve_environ,
 )
-from kedaibiao.core.models import AnswerSource, Credentials, TaskKind
+from kedaibiao.core.models import Answer, AnswerSource, Credentials, TaskKind
 from kedaibiao.platforms import load_builtin_adapters
 from kedaibiao.platforms.base import NotSupportedError
 from kedaibiao.runtime import (
@@ -486,6 +486,34 @@ def _apply_answer_overrides(
         answer.confidence = 0.0 if answer.is_empty() else 1.0
 
 
+#: 复核过的计划能复用多久。太短会把「看了十分钟才点提交」判成过期，
+#: 太长又可能撞上平台改了题 —— 30 分钟够人慢慢核对 50 道题。
+SUBMIT_PLAN_TTL_SECONDS = 1800
+#: 比对计划与当前试卷时的题干前缀长度（防串题，不需要整段比对）。
+_PLAN_STEM_KEY = 60
+
+
+def _plan_stem_key(stem: Any) -> str:
+    return _text_or_empty(stem)[:_PLAN_STEM_KEY]
+
+
+def _answer_rows_from_plan(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把缓存的答案单压成「可重建 Answer」的最小结构。"""
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        rows.append(
+            {
+                "index": entry.get("index"),
+                "choices": list(entry.get("choices") or []),
+                "text": str(entry.get("text") or ""),
+                "source": str(entry.get("source") or "unknown"),
+                "confidence": float(entry.get("confidence") or 0.0),
+                "stem_key": _plan_stem_key(entry.get("stem")),
+            }
+        )
+    return rows
+
+
 def _submit_plan_envelope(
     plan: dict[str, Any], assignment_id: str
 ) -> dict[str, Any]:
@@ -686,6 +714,11 @@ class ConsoleService:
         self._live_errors: dict[str, int] = {}
         #: 前台截图任务（持有引用）
         self._live_tasks: dict[str, Any] = {}
+        #: 复核过的提交计划：``owner|platform|assignment`` → 那次干跑算出的答案单。
+        #: 为什么要缓存：干跑和真提交是两次独立请求，中间隔着人看计划的时间。
+        #: 每次都重跑答题链的话，模型可能给出**另一套**答案 —— 人确认过的东西
+        #: 就作废了，而且低置信度题的集合还可能变，门槛会莫名其妙地又亮一次。
+        self._submit_plans: dict[str, dict[str, Any]] = {}
         # 动作与适配器注册表都是进程级的，重复登记会覆盖，这里调用是幂等的。
         # 必须显式调用：程序化使用 ConsoleService 时不会经过 CLI 的 main()，
         # 否则会出现「平台数 0」这种看起来像坏了的结果。
@@ -3015,6 +3048,58 @@ class ConsoleService:
                            f"有答案 {result.get('answered', '?')} 题")
         return result
 
+    # -- 复核过的提交计划 -------------------------------------------------
+
+    @staticmethod
+    def _plan_key(owner_id: int, platform: str, assignment_id: str) -> str:
+        return f"{owner_id}|{platform}|{assignment_id}"
+
+    def _remember_submit_plan(self, key: str, plan: dict[str, Any]) -> None:
+        """把干跑算出的答案单存下来，供随后的「确认真提交」原样复用。"""
+        rows = _answer_rows_from_plan(list(plan.get("answers") or []))
+        with self._lock:
+            self._submit_plans[key] = {"at": time.time(), "rows": rows}
+
+    def _cached_answers(
+        self, key: str, questions: list[Any]
+    ) -> list[Answer] | None:
+        """取回人看过的那份答案单；题目对不上就作废。
+
+        为什么要校验题干前缀：计划是按**题序**匹配的，如果这中间平台换了题
+        （或者用户切了作业），按下标硬套就是「把答案填到别的题上」。宁可重算。
+        """
+        with self._lock:
+            entry = self._submit_plans.get(key)
+            if entry is None:
+                return None
+            if time.time() - float(entry.get("at") or 0.0) > SUBMIT_PLAN_TTL_SECONDS:
+                self._submit_plans.pop(key, None)
+                return None
+            rows = list(entry.get("rows") or [])
+        if len(rows) != len(questions):
+            return None
+        answers: list[Answer] = []
+        for index, (row, question) in enumerate(zip(rows, questions, strict=True), start=1):
+            if row.get("index") != index:
+                return None
+            stem_key = str(row.get("stem_key") or "")
+            if stem_key and _plan_stem_key(question.stem) != stem_key:
+                return None
+            try:
+                source = AnswerSource(str(row.get("source") or "unknown"))
+            except ValueError:
+                source = AnswerSource.UNKNOWN
+            answers.append(
+                Answer(
+                    question=question,
+                    choices=list(row.get("choices") or []),
+                    text=str(row.get("text") or ""),
+                    source=source,
+                    confidence=float(row.get("confidence") or 0.0),
+                )
+            )
+        return answers
+
     async def _submit_one(
         self,
         platform: str,
@@ -3091,7 +3176,16 @@ class ConsoleService:
 
             # 控制台是**人工复核**，不是自动批跑：低于阈值的候选答案不能丢，
             # 否则人看到的是「没答出来」，实际模型可能给了 0.7 的猜测。
-            answers = await _ask_for_review(runtime.pipeline.answerer, questions)
+            plan_key = self._plan_key(owner_id, platform, assignment_id)
+            answers: list[Any] | None = None
+            if confirm:
+                # 真提交优先复用「人刚才看过的那份计划」：重跑答题链会让答案
+                # 换一套，甚至冒出新的低置信度题，门槛看起来像在随机闪。
+                answers = self._cached_answers(plan_key, questions)
+                if answers is not None:
+                    self._plog(platform, "info", "复用复核时的那份计划（答案未被重新生成）")
+            if answers is None:
+                answers = await _ask_for_review(runtime.pipeline.answerer, questions)
             if confirm and overrides:
                 # 人工在控制台上改过答案：写回这份作答列表，再走同一套硬门槛。
                 _apply_answer_overrides(answers, overrides)
@@ -3140,6 +3234,8 @@ class ConsoleService:
                     note += f"\n注意：{gate}"
                     plan["submit_gate"] = gate
                 plan["note"] = note
+                # 存下这份答案单：下一步「确认真提交」原样复用它。
+                self._remember_submit_plan(plan_key, plan)
                 plan.update(_submit_plan_envelope(plan, assignment_id))
                 return plan
 
