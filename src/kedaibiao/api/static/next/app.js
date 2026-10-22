@@ -2440,6 +2440,22 @@
     [dryBtn, liveBtn, stopBtn].forEach(function (node) { actions.appendChild(node); });
     body.appendChild(actions);
 
+    /* 前台画面：任务运行时把浏览器画面实时显示出来（滑块/人脸都看得见） */
+    var liveBox = el('div', 'live-view');
+    liveBox.hidden = true;
+    var liveImg = el('img', '');
+    liveImg.alt = '任务画面';
+    liveImg.draggable = false;
+    liveBox.appendChild(liveImg);
+    var liveHint = el('div', 'hint-text',
+      '可直接在这张画面上拖动滑块（按住拼图往右拖），完成后点下面的「继续」');
+    liveBox.appendChild(liveHint);
+    body.appendChild(liveBox);
+
+    var humanBox = el('div', 'human-gate');
+    humanBox.hidden = true;
+    body.appendChild(humanBox);
+
     /* 滑块验证策略：自动解 / 人工拖（记住上次选择） */
     var captchaMode = el('select', 'input');
     ['auto', 'human'].forEach(function (value) {
@@ -2484,6 +2500,52 @@
 
     var currentJobId = '';
     var watcher = null;
+
+    function sendPointer(kind, nx, ny) {
+      if (!currentJobId) { return; }
+      post('/api/platforms/chaoxing/pointer', {
+        job: currentJobId, type: kind, nx: nx, ny: ny
+      }).catch(function () { /* 画面更新时的竞态忽略 */ });
+    }
+
+    function bindPointer() {
+      var dragging = false;
+      var last = 0;
+      function coords(event) {
+        var rect = liveImg.getBoundingClientRect();
+        if (!rect.width || !rect.height) { return null; }
+        return {
+          nx: (event.clientX - rect.left) / rect.width,
+          ny: (event.clientY - rect.top) / rect.height
+        };
+      }
+      liveImg.addEventListener('pointerdown', function (event) {
+        var at = coords(event);
+        if (!at) { return; }
+        event.preventDefault();
+        dragging = true;
+        liveImg.setPointerCapture && liveImg.setPointerCapture(event.pointerId);
+        sendPointer('down', at.nx, at.ny);
+      });
+      liveImg.addEventListener('pointermove', function (event) {
+        if (!dragging) { return; }
+        var now = Date.now();
+        if (now - last < 40) { return; }
+        last = now;
+        var at = coords(event);
+        if (at) { sendPointer('move', at.nx, at.ny); }
+      });
+      liveImg.addEventListener('pointerup', function (event) {
+        if (!dragging) { return; }
+        dragging = false;
+        var at = coords(event);
+        sendPointer('up', at ? at.nx : 0.5, at ? at.ny : 0.5);
+      });
+      liveImg.addEventListener('pointercancel', function () {
+        if (dragging) { dragging = false; sendPointer('up', 0.5, 0.5); }
+      });
+    }
+    bindPointer();
 
     function readCaptchaMode() {
       try {
@@ -2650,6 +2712,26 @@
             onJob: function (state) {
               if (state.items && state.items.length) { renderItems(state.items); }
               if (state.summary) { summaryText.textContent = state.summary; }
+              if (state.has_live) {
+                liveBox.hidden = false;
+                liveImg.src = '/api/platforms/chaoxing/live?job='
+                  + encodeURIComponent(currentJobId) + '&t=' + Date.now();
+              } else {
+                liveBox.hidden = true;
+              }
+              if (state.human) {
+                humanBox.hidden = false;
+                clear(humanBox);
+                humanBox.appendChild(el('div', '', '⏸ ' + state.human));
+                var okBtn = btn('我已完成，继续', 'btn-primary btn-sm', function () {
+                  post('/api/jobs/' + encodeURIComponent(currentJobId) + '/human', {})
+                    .then(function () { humanBox.hidden = true; })
+                    .catch(function (e) { toast(describe(e)); });
+                });
+                humanBox.appendChild(okBtn);
+              } else {
+                humanBox.hidden = true;
+              }
               if (state.score_text) {
                 scoreBox.hidden = false;
                 scoreBox.textContent = '交卷结果：' + state.score_text;
@@ -2657,6 +2739,8 @@
             },
             onDone: function (state) {
               setBusy(false);
+              liveBox.hidden = true;
+              humanBox.hidden = true;
               if (state.score_text) {
                 scoreBox.hidden = false;
                 scoreBox.textContent = '交卷结果：' + state.score_text;

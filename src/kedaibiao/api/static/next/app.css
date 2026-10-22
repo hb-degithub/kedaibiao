@@ -1582,3 +1582,35 @@ pre.code {
 /* 有账号但没有「当前号」时的提示态：橙色描边，别当成未登录 */
 .acct-chip.is-unset { border-color: color-mix(in srgb, var(--warn) 48%, transparent); }
 .acct-chip.is-unset .dot { background: var(--warn); }
+
+/* 学习通作答面板：前台画面 + 人工验证提示 */
+.live-view {
+  margin: 10px 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+  touch-action: none;
+}
+.live-view img {
+  display: block;
+  width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.live-view .hint-text { padding: 8px 12px; }
+.human-gate {
+  margin: 10px 0;
+  padding: 10px 14px;
+  border: 1px solid #5c4a1d;
+  border-radius: 10px;
+  background: #221d12;
+  color: var(--warn);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}

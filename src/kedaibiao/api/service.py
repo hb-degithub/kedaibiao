@@ -305,6 +305,14 @@ class ConsoleService:
         self._active_job_id: str | None = None
         #: 用户点了「停止」的任务 id（后台线程每个循环点检查一次）
         self._cancel_requested: set[str] = set()
+        #: 学习通任务的前台画面：job_id → {page, loop, frame, at}
+        self._chaoxing_live: dict[str, dict[str, Any]] = {}
+        #: 等人工过滑块/人脸时的事件：job_id → threading.Event
+        self._human_events: dict[str, threading.Event] = {}
+        #: 前台截图失败计数（只用来限日志，不影响任务）
+        self._live_errors: dict[str, int] = {}
+        #: 前台截图任务（持有引用）
+        self._live_tasks: dict[str, Any] = {}
         # 动作与适配器注册表都是进程级的，重复登记会覆盖，这里调用是幂等的。
         # 必须显式调用：程序化使用 ConsoleService 时不会经过 CLI 的 main()，
         # 否则会出现「平台数 0」这种看起来像坏了的结果。
@@ -1539,6 +1547,22 @@ class ConsoleService:
             def emit(level: str, message: str) -> None:
                 self._job_log(job_id, level if level in {"ok", "warn", "error"} else "info", message)
 
+            def on_page(page: Any) -> None:
+                """拿到页面后开一个后台截图任务，控制台就能「前台显示」。"""
+                loop = asyncio.get_running_loop()
+                self._chaoxing_live[job_id] = {
+                    "page": page,
+                    "loop": loop,
+                    "frame": b"",
+                    "at": 0.0,
+                }
+                self._job_update(job_id, has_live=True)
+                self._job_log(job_id, "info", "前台显示已开启（可实时看画面）")
+
+            async def human_gate(kind: str, message: str) -> bool:
+                """暂停等人在控制台上过滑块/人脸。"""
+                return await self._chaoxing_wait_human(job_id, kind, message)
+
             confirm = _truthy(params.get("confirm"))
             force = _truthy(params.get("force"))
             captcha_mode = str(params.get("captcha_mode") or "").strip().lower()
@@ -1560,6 +1584,7 @@ class ConsoleService:
                         doc_seconds=float(params.get("doc_seconds") or 0),
                         emit=emit,
                         cancel=lambda: self._cancelled(job_id),
+                        on_page=on_page,
                     )
                 )
                 self._job_update(job_id, steps=result.get("steps") or [], summary=result.get("summary", ""))
@@ -1575,8 +1600,9 @@ class ConsoleService:
                         emit=emit,
                         on_items=lambda items: self._job_update(job_id, items=items),
                         force=force,
-                        retake=_truthy(params.get("retake")),
                         captcha_mode=captcha_mode,
+                        human_gate=human_gate,
+                        on_page=on_page,
                     )
                 )
                 self._chaoxing_finish(job_id, result, confirm=confirm)
@@ -1589,8 +1615,9 @@ class ConsoleService:
                         emit=emit,
                         on_items=lambda items: self._job_update(job_id, items=items),
                         force=force,
-                        retake=_truthy(params.get("retake")),
                         captcha_mode=captcha_mode,
+                        human_gate=human_gate,
+                        on_page=on_page,
                     )
                 )
                 self._chaoxing_finish(job_id, result, confirm=confirm)
@@ -1602,6 +1629,10 @@ class ConsoleService:
             log.exception("学习通任务失败: %s", job_id)
             self._finish_batch_job(job_id, "failed", error=message)
         finally:
+            self._chaoxing_live.pop(job_id, None)
+            self._human_events.pop(job_id, None)
+            self._live_tasks.pop(job_id, None)
+            self._job_update(job_id, has_live=False, human="")
             if adapter is not None:
                 with contextlib.suppress(Exception):
                     persist_http_cookies(adapter, runtime.settings if runtime else None)
@@ -1639,6 +1670,128 @@ class ConsoleService:
             self._job_log(job_id, "warn", f"交卷未完成：{result.get('submit_note') or '未知原因'}")
         else:
             self._job_log(job_id, "info", "干跑：已填卷并核验，未交卷")
+
+    async def _chaoxing_live_loop(self, job_id: str, page: Any) -> None:
+        """任务运行期间每 1.5 秒截一帧（JPEG），控制台拿来「前台显示」。"""
+        self._job_log(job_id, "info", "前台截图任务已启动")
+        while True:
+            with self._lock:
+                job = self._jobs_by_id.get(job_id)
+                running = job is not None and job.get("status") == "running"
+            if not running:
+                return
+            try:
+                frame = await page.raw.screenshot(
+                    type="jpeg", quality=60, timeout=5000
+                )
+            except Exception as exc:  # noqa: BLE001 - 截图失败不影响任务
+                self._live_errors[job_id] = self._live_errors.get(job_id, 0) + 1
+                if self._live_errors[job_id] in (1, 5):
+                    self._job_log(
+                        job_id, "warn", f"前台截图失败（第 {self._live_errors[job_id]} 次）：{exc}"
+                    )
+                frame = b""
+            info = self._chaoxing_live.get(job_id)
+            if info is not None:
+                info["ticks"] = info.get("ticks", 0) + 1
+            if info is not None and frame:
+                if not info.get("frame"):
+                    log.info("学习通前台首帧已就绪（job=%s，%d 字节）", job_id, len(frame))
+                info["frame"] = frame
+                info["at"] = time.time()
+            await asyncio.sleep(1.5)
+
+    def chaoxing_live(self, job_id: str) -> bytes | None:
+        """按需截一帧当前画面（前端每隔一两秒取一次）。
+
+        为什么按需截而不是后台循环：Playwright 的页面属于任务自己的事件循环，
+        从监听线程里切一帧最稳；后台任务在 OCR 密集时反而容易饿死。
+        """
+        info = self._chaoxing_live.get(job_id)
+        if not info or info.get("loop") is None:
+            return None
+        loop = info["loop"]
+        page = info["page"]
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                page.raw.screenshot(type="jpeg", quality=60, timeout=5000), loop
+            )
+            frame = future.result(timeout=8)
+        except Exception as exc:  # noqa: BLE001 - 截图失败就当这次没有
+            self._live_errors[job_id] = self._live_errors.get(job_id, 0) + 1
+            if self._live_errors[job_id] in (1, 10):
+                self._job_log(job_id, "warn", f"前台截图失败：{exc}")
+            return None
+        if frame:
+            info["frame"] = frame
+            info["at"] = time.time()
+        return frame or None
+
+    def chaoxing_pointer(
+        self, job_id: str, kind: str, nx: float, ny: float
+    ) -> dict[str, Any]:
+        """把控制台上的拖动/点击映射成页面里的鼠标事件（人工过滑块用）。
+
+        ``nx``/``ny`` 是 0~1 的归一化坐标（前端按图片尺寸算），这里换算成页面
+        CSS 像素。所有 Playwright 调用都回到任务自己的事件循环里执行。
+        """
+        info = self._chaoxing_live.get(job_id)
+        if not info or info.get("loop") is None:
+            return {"ok": False, "error": "这个任务没有可操作的页面"}
+        loop = info["loop"]
+        page = info["page"]
+        viewport = getattr(page.raw, "viewport_size", None) or {
+            "width": 1440,
+            "height": 900,
+        }
+        x = max(0.0, min(1.0, float(nx))) * float(viewport.get("width", 1440))
+        y = max(0.0, min(1.0, float(ny))) * float(viewport.get("height", 900))
+        mouse = page.raw.mouse
+        if kind == "move":
+            coro = mouse.move(x, y)
+        elif kind == "down":
+            coro = mouse.down()
+        elif kind == "up":
+            coro = mouse.up()
+        else:
+            return {"ok": False, "error": f"未知的鼠标动作 {kind!r}"}
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            future.result(timeout=5)
+        except Exception as exc:  # noqa: BLE001 - 页面可能已关闭
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True}
+
+    async def _chaoxing_wait_human(self, job_id: str, kind: str, message: str) -> bool:
+        """暂停任务等人工（滑块/人脸），控制台点「继续」后返回 True。"""
+        event = threading.Event()
+        self._human_events[job_id] = event
+        self._job_update(job_id, human=message)
+        self._job_log(job_id, "warn", message + "（在画面上操作，完成后点「继续」）")
+        handled = False
+        try:
+            for _ in range(120):
+                with self._lock:
+                    job = self._jobs_by_id.get(job_id)
+                if job is None or job.get("status") != "running" or self._cancelled(job_id):
+                    break
+                if await asyncio.to_thread(event.wait, 5):
+                    handled = True
+                    break
+        finally:
+            self._human_events.pop(job_id, None)
+            self._job_update(job_id, human="")
+        if handled:
+            self._job_log(job_id, "ok", "已收到「完成」，继续执行")
+        return handled
+
+    def mark_human(self, job_id: str) -> bool:
+        """控制台按钮：告诉正在等待的任务「人已经处理完了」。"""
+        event = self._human_events.get(job_id)
+        if event is None:
+            return False
+        event.set()
+        return True
 
     def _chaoxing_summary(self, job_id: str) -> str:
         with self._lock:

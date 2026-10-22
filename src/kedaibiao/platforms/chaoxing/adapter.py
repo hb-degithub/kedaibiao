@@ -713,6 +713,8 @@ class ChaoxingAutomation:
         force: bool = False,
         retake: bool = False,
         captcha_mode: str = "",
+        human_gate: Any | None = None,
+        on_page: Any | None = None,
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.quiz import ExamItem  # noqa: PLC0415
@@ -731,6 +733,8 @@ class ChaoxingAutomation:
         )
         async with PwBrowser(self._config()) as browser:
             page = await self._page(browser)
+            if on_page is not None:
+                on_page(page)
             runner = ChaoxingQuiz(
                 page,
                 course_id=course_id,
@@ -739,6 +743,7 @@ class ChaoxingAutomation:
                 answerer=self.adapter.answerer(),
                 emit=emit,
                 captcha_mode=captcha_mode,
+                human_gate=human_gate,
             )
             report = await runner.run_exam(
                 item, confirm=confirm, on_items=on_items, force=force
@@ -755,6 +760,8 @@ class ChaoxingAutomation:
         on_items: Any | None = None,
         force: bool = False,
         captcha_mode: str = "",
+        human_gate: Any | None = None,
+        on_page: Any | None = None,
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.quizrun import ChaoxingQuiz  # noqa: PLC0415
@@ -762,6 +769,8 @@ class ChaoxingAutomation:
         course_id, clazz_id, cpi = self._ids(course)
         async with PwBrowser(self._config()) as browser:
             page = await self._page(browser)
+            if on_page is not None:
+                on_page(page)
             runner = ChaoxingQuiz(
                 page,
                 course_id=course_id,
@@ -770,6 +779,7 @@ class ChaoxingAutomation:
                 answerer=self.adapter.answerer(),
                 emit=emit,
                 captcha_mode=captcha_mode,
+                human_gate=human_gate,
             )
             report = await runner.run_section_quiz(
                 chapter_id, confirm=confirm, on_items=on_items, force=force

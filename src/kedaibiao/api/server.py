@@ -338,6 +338,20 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 )
             })
 
+        if path == "/api/platforms/chaoxing/live":
+            query = parse_qs(urlparse(self.path).query)
+            job_id = (query.get("job") or [""])[0]
+            frame = svc.chaoxing_live(job_id) if job_id else None
+            if frame is None:
+                self._send(404, b"no frame", "text/plain")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(frame)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(frame)
+            return
         # 注意顺序：/api/platforms/<name>/actions 必须先于 /api/platforms 判断
         if path.startswith("/api/platforms/") and path.endswith("/course-tree"):
             name = path[len("/api/platforms/") : -len("/course-tree")].strip("/")
@@ -535,6 +549,21 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             if not job_id or "/" in job_id:
                 return self._error(404, f"没有这个路由: {path}", "not_found")
             return self._json(200, self.service.cancel_job(job_id))
+
+        if path == "/api/platforms/chaoxing/pointer":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.chaoxing_pointer(
+                str(payload.get("job") or ""),
+                str(payload.get("type") or ""),
+                float(payload.get("nx") or 0.0),
+                float(payload.get("ny") or 0.0),
+            ))
+
+        if path.startswith("/api/jobs/") and path.endswith("/human"):
+            job_id = path[len("/api/jobs/") : -len("/human")].strip("/")
+            return self._json(200, {"ok": self.service.mark_human(job_id)})
 
         if path.startswith("/api/platforms/") and path.endswith("/meta-batch"):
             name = path[len("/api/platforms/") : -len("/meta-batch")].strip("/")
