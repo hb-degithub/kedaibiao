@@ -2011,6 +2011,7 @@ class ConsoleService:
                         captcha_mode=captcha_mode,
                         human_gate=human_gate,
                         on_page=on_page,
+                        cancel=lambda: self._cancelled(job_id),
                     )
                 )
                 self._chaoxing_finish(job_id, result, confirm=confirm)

@@ -745,6 +745,7 @@ class ChaoxingAutomation:
         captcha_mode: str = "",
         human_gate: Any | None = None,
         on_page: Any | None = None,
+        cancel: Any | None = None,
     ) -> dict[str, Any]:
         from kedaibiao.browser.pw import PwBrowser  # noqa: PLC0415
         from kedaibiao.platforms.chaoxing.quiz import ExamItem  # noqa: PLC0415
@@ -777,7 +778,7 @@ class ChaoxingAutomation:
                 on_page=on_page,
             )
             report = await runner.run_exam(
-                item, confirm=confirm, on_items=on_items, force=force
+                item, confirm=confirm, on_items=on_items, force=force, cancel=cancel
             )
         return _report_dict(report)
 

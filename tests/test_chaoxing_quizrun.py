@@ -298,3 +298,20 @@ def test_captcha_mode_selection(monkeypatch) -> None:
     assert _runner(captcha_mode="whatever").captcha_mode == "auto"
     monkeypatch.setenv("KEDAIBIAO_CHAXING_CAPTCHA", "human")
     assert _runner().captcha_mode == "human"
+
+
+def test_time_limit_seconds_parses_platform_message() -> None:
+    """「限时提交：考试10分钟内不允许提交考试」→ 等 600 秒再交。"""
+    result = {
+        "ok": False,
+        "response": {"msg": "限时提交：考试10分钟内不允许提交考试", "status": "error"},
+    }
+    assert quizrun.ChaoxingQuiz._time_limit_seconds(result) == 600
+    assert quizrun.ChaoxingQuiz._time_limit_seconds(
+        {"ok": False, "response": {"msg": "考试5分钟内不允许提交"}}
+    ) == 300
+    # 不是限时原因（真失败）→ 0，不要傻等
+    assert quizrun.ChaoxingQuiz._time_limit_seconds(
+        {"ok": False, "response": {"msg": "请先作答"}}
+    ) == 0
+    assert quizrun.ChaoxingQuiz._time_limit_seconds({"ok": False, "error": "网络错误"}) == 0

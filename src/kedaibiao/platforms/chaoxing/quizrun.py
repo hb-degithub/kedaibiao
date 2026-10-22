@@ -1014,12 +1014,14 @@ class ChaoxingQuiz:
         max_questions: int = 60,
         on_items: Callable[[list[dict[str, Any]]], None] | None = None,
         force: bool = False,
+        cancel: Callable[[], bool] | None = None,
     ) -> QuizReport:
         """作业/考试全链路：进入（含自动解滑块）→ 逐题作答 → 交卷 → 回读分数。"""
         report = QuizReport(title=item.title)
         page: Any = None
         try:
             page = await self.open_exam_item(item)
+            entered_at = time.time()
             self.emit("info", f"已进入答题页：{page.url[:120]}")
             seen: set[str] = set()
             for _step in range(max_questions):
@@ -1061,9 +1063,9 @@ class ChaoxingQuiz:
                 report.submit_note = blocked
                 self.emit("warn", f"暂不交卷：{blocked}")
                 return report
-            self.emit("info", "提交试卷…")
-            result = await self._exam_submit_form(page)
-            report.submitted = bool(result.get("ok"))
+            result = await self._submit_exam_with_retry(
+                page, report, entered_at=entered_at, cancel=cancel
+            )
             report.submit_detail = json.dumps(
                 {k: v for k, v in result.items() if k != "page_text"},
                 ensure_ascii=False,
@@ -1085,6 +1087,63 @@ class ChaoxingQuiz:
                     await page.raw.close()
         report.finished_at = time.time()
         return report
+
+    @staticmethod
+    def _time_limit_seconds(result: dict[str, Any]) -> int:
+        """「限时提交：考试10分钟内不允许提交考试」→ 需要等多少秒（0 = 不是这个原因）。"""
+        response = result.get("response")
+        text = ""
+        if isinstance(response, dict):
+            text = str(response.get("msg") or "")
+        text = text or str(result.get("error") or "")
+        if not any(word in text for word in ("限时", "不允许提交", "分钟", "时间未到", "尚未")):
+            return 0
+        match = re.search(r"(\d+)\s*分钟", text)
+        if match:
+            return int(match.group(1)) * 60
+        return 60
+
+    async def _submit_exam_with_retry(
+        self,
+        page: Any,
+        report: QuizReport,
+        *,
+        entered_at: float,
+        cancel: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """交卷；如果平台说「N 分钟内不允许提交」，就等到时间到了再自动重试。
+
+        实测有些考试设了最短作答时间（例如 10 分钟），提前交会被拒。
+        这里按进入答题页的时间推算，等到点后再交，最多重试 5 次。
+        """
+        result: dict[str, Any] = {}
+        for attempt in range(1, 6):
+            self.emit("info", "提交试卷…" if attempt == 1 else f"再次提交（第 {attempt} 次）…")
+            result = await self._exam_submit_form(page)
+            report.submitted = bool(result.get("ok"))
+            if report.submitted:
+                return result
+            wait_seconds = self._time_limit_seconds(result)
+            if not wait_seconds:
+                return result
+            elapsed = time.time() - entered_at
+            remaining = max(0.0, wait_seconds - elapsed) + 5.0
+            if remaining > 3600:
+                remaining = 3600
+            self.emit(
+                "warn",
+                f"平台要求作答满 {wait_seconds // 60} 分钟才能交卷"
+                f"（已过 {elapsed / 60:.1f} 分钟），{remaining / 60:.1f} 分钟后再试",
+            )
+            deadline = time.time() + remaining
+            while time.time() < deadline:
+                if cancel is not None and cancel():
+                    self.emit("warn", "收到停止请求，放弃等待交卷")
+                    return result
+                await asyncio.sleep(min(15.0, max(1.0, deadline - time.time())))
+            if cancel is not None and cancel():
+                return result
+        return result
 
     async def _exam_submit(self, page: Any, *, confirm: bool) -> dict[str, Any]:
         """考试交卷：定位「交卷」按钮；确认后点两次（页面自身有二次确认层）。"""
