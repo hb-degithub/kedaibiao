@@ -4341,6 +4341,9 @@
     var node = el('div', 'plan-editor');
     var entries = [];
     var dirtyText = el('span', 'hint-text', '');
+    var pendingText = el('span', 'hint-text plan-pending');
+    /*: 由 openSubmitFlow 注册：待确认数量一变就更新提交按钮 */
+    var onChange = null;
 
     if (env.title || env.label || env.platform) {
       var titleRow = el('div', 'plan-head');
@@ -4364,18 +4367,46 @@
       chips.appendChild(pill(confText, 'pill-mute'));
     }
     chips.appendChild(dirtyText);
+    if (humanCount) { chips.appendChild(pendingText); }
     node.appendChild(chips);
     node.appendChild(el('p', 'env-note',
       '下面的答案可以直接改：选择题点选项，填空/简答改文字。' +
-      '只有改过或勾了「我确认」的题按人工答案提交，其余仍受置信度门槛约束。'));
+      '标了「需人工确认」的题必须改过答案或勾「我确认这题」才能提交 —— ' +
+      '后端对未确认的低置信度题一律拒绝（宁可交白卷也不交错答案）。'));
 
-    function refreshDirty() {
-      var count = entries.filter(function (entry) {
+    /* 一道题「算处理完了」的判据：
+       - 不是需人工确认的题 —— 后端本来就会接受；
+       - 是需人工确认的题 —— 必须（改过答案 或 勾了「我确认」）**并且**有内容。
+         只勾确认不填答案会变成空答案，后端照样以「没答」拒绝，所以这里先拦。 */
+    function resolved(entry) {
+      if (!entry.needsHuman) { return true; }
+      var value = entry.read();
+      var filled = (value.choices && value.choices.length) ||
+        String(value.text || '').trim() !== '';
+      return filled && (entry.ack || entry.changed());
+    }
+
+    function pendingCount() {
+      var count = 0;
+      entries.forEach(function (entry) { if (!resolved(entry)) { count += 1; } });
+      return count;
+    }
+
+    function refreshState() {
+      var changed = entries.filter(function (entry) {
         return entry.ack || entry.changed();
       }).length;
-      dirtyText.textContent = count ? '已改 ' + count + ' 题' : '还没改任何题';
-      dirtyText.className = count ? 'hint-text plan-dirty' : 'hint-text';
+      dirtyText.textContent = changed ? '已改 ' + changed + ' 题' : '还没改任何题';
+      dirtyText.className = changed ? 'hint-text plan-dirty' : 'hint-text';
+      var left = pendingCount();
+      pendingText.textContent = left
+        ? '待人工确认 ' + left + ' / ' + humanCount
+        : '全部已确认';
+      pendingText.className = left
+        ? 'hint-text plan-pending' : 'hint-text plan-pending plan-pending-done';
+      if (typeof onChange === 'function') { onChange(left); }
     }
+    var refreshDirty = refreshState;
 
     answers.forEach(function (q, qi) {
       q = isObj(q) ? q : {};
@@ -4390,7 +4421,7 @@
         text: String(q.text || '')
       };
       var index = q.index || (qi + 1);
-      var entry = { index: index, ack: false };
+      var entry = { index: index, ack: false, needsHuman: q.needs_human === true };
       var unanswered = !original.choices.length && !original.text.trim();
       var card = el('div', 'plan-card' + (unanswered ? ' plan-card-todo' : ''));
 
@@ -4468,10 +4499,10 @@
         ack.type = 'checkbox';
         ack.addEventListener('change', function () {
           entry.ack = ack.checked;
-          refreshDirty();
+          refreshState();
         });
         ackLabel.appendChild(ack);
-        ackLabel.appendChild(el('span', '', '这题我人工确认过（提交时跳过置信度门槛）'));
+        ackLabel.appendChild(el('span', '', '这题我人工确认过（提交时按人工答案提交）'));
         card.appendChild(ackLabel);
       }
 
@@ -4479,10 +4510,12 @@
       node.appendChild(card);
     });
 
-    refreshDirty();
+    refreshState();
 
     return {
       node: node,
+      pending: pendingCount,
+      setOnChange: function (cb) { onChange = cb; refreshState(); },
       collect: function () {
         var out = [];
         entries.forEach(function (entry) {
@@ -4523,10 +4556,14 @@
         body.appendChild(renderEnvelope(env, {}));
       }
       var guard = { armed: false };
+      var armedLabel = '再点一次，真的提交';
       var live = btn('确认真提交', 'btn-danger', function () {
+        /* 还有没确认的低置信度题就不让点：后端一定会以 400 拒绝，
+           与其让它变成一个「提交失败」，不如在这里把门槛说清楚。 */
+        if (editor && editor.pending() > 0) { return; }
         if (!guard.armed) {
           guard.armed = true;
-          live.textContent = '再点一次，真的提交';
+          live.textContent = armedLabel;
           live.classList.add('btn-primary');
           return;
         }
@@ -4574,11 +4611,27 @@
           }
           if (typeof assignmentsReload === 'function') { assignmentsReload(); }
         }).catch(function (e) {
+          /* 被后端拦住时要说清「平台没收到提交」和「怎么改」，
+             所以这里重开计划（而不是只丢一个错误框）。 */
+          var rejected = e && e.kind === 'bad_request';
+          var body2 = el('div', '');
+          if (rejected) {
+            body2.appendChild(el('div', 'banner error',
+              '平台没有收到提交：控制台在本地就拒绝了。按下面的原因处理后，' +
+              '回到计划里改，再重新提交。'));
+          }
+          var retry = function () {
+            openSubmitFlow(platName, assignmentId, row, canSubmit);
+          };
+          body2.appendChild(errorBlock(e, rejected ? retry : null));
           openInspector({
-            title: '提交失败',
+            title: rejected ? '提交被拒绝' : '提交失败',
             sub: platName + ' · ' + assignmentId,
-            body: errorBlock(e),
-            foot: [btn('关闭', 'btn-sm', closeInspector)]
+            body: body2,
+            foot: rejected
+              ? [btn('回到提交计划', 'btn-sm btn-primary', retry),
+                 btn('关闭', 'btn-sm btn-ghost', closeInspector)]
+              : [btn('关闭', 'btn-sm', closeInspector)]
           });
         });
       });
@@ -4588,6 +4641,23 @@
         body: body,
         foot: [live, btn('取消', 'btn-sm btn-ghost', closeInspector)]
       });
+      /* 计划里的「待人工确认」数量决定按钮能不能点：
+         0 才可提交，否则按钮上直接写还差几题。 */
+      if (editor) {
+        editor.setOnChange(function (left) {
+          guard.armed = false;
+          live.classList.remove('btn-primary');
+          if (left > 0) {
+            live.disabled = true;
+            live.textContent = '还差 ' + left + ' 题需人工确认';
+            live.title = '把这些题改答案，或勾上「我确认这题」，全部处理完才能提交。';
+          } else {
+            live.disabled = false;
+            live.textContent = '确认真提交';
+            live.title = '两步确认：第一次点击变成「再点一次，真的提交」。';
+          }
+        });
+      }
     }).catch(function (e) {
       openInspector({
         title: '干跑失败',

@@ -1674,3 +1674,7 @@ pre.code {
 
 /* 未作答的题：左边一条提示条，和「已有候选答案」的题区分开 */
 .plan-card-todo { border-left: 3px solid var(--danger); }
+
+/* 待人工确认计数：还有几题没处理完时高亮，全部处理完转成绿色 */
+.plan-pending { color: var(--warn); font-weight: 600; }
+.plan-pending-done { color: var(--ok); }
