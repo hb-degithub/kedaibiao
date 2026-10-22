@@ -376,7 +376,6 @@ GET_CASES: list[tuple[str, set[int], str | None, bool]] = [
     ("/api/auth/me", {200}, None, True),
     ("/api/users", {200}, None, True),
     ("/api/accounts", {200}, None, True),
-    ("/api/questions", {200}, None, True),
     ("/api/users/999", {404}, "not_found", False),  # 已知死分支：恒 404
     # 平台级只读
     ("/api/platforms", {200}, None, True),

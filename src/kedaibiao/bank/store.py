@@ -422,25 +422,6 @@ class QuestionBank(SqliteStore):
             for r in rows
         ]
 
-    def recent_questions(
-        self, limit: int = 50, *, platform: str | None = None,
-        owner_id: int | None = ANY_OWNER,
-    ) -> list[dict[str, Any]]:
-        """最近的题目（「详细作答信息」用）。"""
-        where, args = _filters(owner_id, platform)
-        rows = self.fetchall(
-            f"SELECT owner_id, fingerprint, stem, qtype, choices, text, source,"
-            f" confidence, correct, platform, updated_at FROM questions{where}"
-            f" ORDER BY updated_at DESC LIMIT ?",
-            (*args, max(1, min(limit, 500))),
-        )
-        out = []
-        for r in rows:
-            item = dict(r)
-            item["choices"] = json.loads(item["choices"] or "[]")
-            out.append(item)
-        return out
-
     # -- 导入导出 ---------------------------------------------------------
 
     def export_jsonl(self, path: str | Path, *, owner_id: int | None = ANY_OWNER) -> int:

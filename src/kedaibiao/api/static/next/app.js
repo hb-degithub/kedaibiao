@@ -1772,19 +1772,20 @@
     {
       id: 'dead-routes',
       title: '清理死接口',
-      status: '待排期',
-      tone: 'pill-mute',
+      status: '已完成 2026-10-22',
+      tone: 'pill-ok',
       platform: '',
-      summary: '几条没有任何调用方的历史接口。',
-      why: 'GET /api/questions、POST /api/run（仅测试在调）、'
-        + 'GET /api/essays/jobs/<id>（与 /api/jobs/<id> 同实现）、service.itest_job、/next 别名。',
+      summary: '零调用的历史接口已删；剩下三个确认都有真实调用方，保留。',
+      why: '已删：GET /api/questions（连同 service/store 的 recent_questions）'
+        + '与 service.itest_job 别名。保留：POST /api/run（失败重试面板在用）、'
+        + 'GET /api/essays/jobs/<id>（v1 控制在用）、/next（书签别名）。',
       plan: [
-        '先删 /api/questions 与 itest_job（零风险），再评估 /api/run（要改 15 处测试）。'
+        '已完成：审计清单里能删的都删了；/api/run 与新加的失败重试面板一起保留，'
+          + '不再算死接口。'
       ],
-      gaps: ['接口文档与代码对不上'],
-      risks: ['/api/run 有测试依赖，删之前要把测试改到 batch-submit。'],
-      refs: ['docs/audit-2026-10-20.md'],
-      decision: '纯清理，不影响功能。'
+      gaps: [],
+      refs: ['docs/audit-2026-10-20.md', 'scripts/api_matrix_check.py'],
+      decision: '已完成：剩下三个都有真实调用方，删了会破坏功能。'
     }
   ];
 

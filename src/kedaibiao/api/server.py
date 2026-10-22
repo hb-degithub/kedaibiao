@@ -329,15 +329,6 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 platform=self._query().get("platform", [None])[0],
                 owner_id=self._owner_param(),
             ))
-        if path == "/api/questions":
-            return self._json(200, {
-                "questions": svc.recent_questions(
-                    self._int_param("limit", 50),
-                    platform=self._query().get("platform", [None])[0],
-                    owner_id=viewer.owner_filter(self._owner_param()),
-                )
-            })
-
         if path == "/api/platforms/chaoxing/captcha":
             query = parse_qs(urlparse(self.path).query)
             job_id = (query.get("job") or [""])[0]

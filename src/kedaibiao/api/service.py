@@ -1351,21 +1351,6 @@ class ConsoleService:
                 await adapter.close()
             runtime.close()
 
-    def recent_questions(
-        self, limit: int = 50, *, platform: str | None = None,
-        owner_id: int | None = None, viewer: Viewer | None = None,
-    ) -> list[dict[str, Any]]:
-        """最近的题目与作答（「详细作答信息」用）。"""
-        scope = self._check_platform(platform)
-        owner = (viewer or Viewer()).owner_filter(owner_id)
-        if not self._db_path().is_file():
-            return []
-        return self._read(
-            lambda h: h.bank.recent_questions(
-                _clamp(limit, 1, 500), platform=scope, owner_id=owner
-            )
-        )
-
     # -- 认证与用户 -------------------------------------------------------
 
     def _with_auth(self, fn: Any) -> Any:
@@ -2367,9 +2352,6 @@ class ConsoleService:
             name=f"kedaibiao-itest-auto-{job_id}", daemon=True,
         ).start()
         return _jsonable(job)
-
-    def itest_job(self, job_id: str) -> dict[str, Any]:
-        return self.grade_job(job_id)  # 共用同一份任务存储
 
     def _job_log(self, job_id: str, level: str, text: str) -> None:
         """追加一行日志（控制台按行滚动显示，格式像命令输出）。"""
