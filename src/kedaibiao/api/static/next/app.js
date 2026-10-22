@@ -3684,21 +3684,165 @@
           .catch(function () { return env; });
       }
 
-      post('/api/platforms/' + encodeURIComponent(platName) + '/actions/assignments',
-        payload).then(function (env) {
-        if (seq !== state.pageSeq) { return; }
-        if (platName === 'chaoxing' && course) {
-          return enrichChaoxing(env).then(function (ready) { renderAssignments(ready); });
+      var base = '/api/platforms/' + encodeURIComponent(platName) + '/actions/assignments';
+
+      function decorate(env) {
+        if (platName !== 'chaoxing' || !course) { return Promise.resolve(env); }
+        return enrichChaoxing(env);
+      }
+
+      function failedBlock(error) {
+        clear(host);
+        host.appendChild(panel(null, errorBlock(error, load)));
+      }
+
+      /* 一次性汇总（有课程筛选、或平台不支持分阶段读取时走这条） */
+      function loadAll() {
+        post(base, payload).then(function (env) {
+          if (seq !== state.pageSeq) { return; }
+          return decorate(env).then(function (ready) { renderAssignments(ready); });
+        }).catch(function (e) {
+          if (seq !== state.pageSeq) { return; }
+          failedBlock(e);
+        }).then(function () {
+          loadBtn.disabled = false;
+        });
+      }
+
+      if (course) { return loadAll(); }
+
+      /* 两阶段读取：先拿「有多少门课」，再逐门读作业并在界面上显示进度。
+         为什么这么做：全部课程一次性汇总时，界面要空白等到底（东软/U校园
+         十几门课就是十几轮串行请求），用户不知道到底读了多少、还要多久。 */
+      post(base, { courses_only: 1 }).then(function (listEnv) {
+        if (seq !== state.pageSeq) { return null; }
+        var phase = listEnv && listEnv.meta && listEnv.meta.phase;
+        if (phase !== 'courses_only') {
+          // 后端/平台不支持分阶段（或返回的本来就是完整作业表）：
+          // 直接用这份结果收尾，不再多打一轮请求。
+          return decorate(listEnv).then(function (ready) { renderAssignments(ready); })
+            .then(function () { loadBtn.disabled = false; });
         }
-        renderAssignments(env);
+        var courses = (listEnv && listEnv.rows) || [];
+        if (!courses.length) {
+          // 一门课都没有：走一次性汇总，让空状态文案由后端给
+          loadAll();
+          return null;
+        }
+
+        var collected = [];
+        var failures = [];
+        var template = null;
+        var progressText = el('span', 'hint-text', '');
+
+        function paint(done) {
+          progressText.textContent = '共 ' + courses.length + ' 门课程 · 已读 '
+            + done + '/' + courses.length + ' · 已读到 ' + collected.length + ' 条作业';
+        }
+
+        function renderProgress() {
+          clear(host);
+          var head = el('div', 'banner');
+          head.appendChild(el('span', 'banner-title', '正在逐门读取作业'));
+          head.appendChild(progressText);
+          host.appendChild(head);
+          paint(0);
+          if (template) {
+            var merged = {};
+            Object.keys(template).forEach(function (k) { merged[k] = template[k]; });
+            merged.rows = collected.slice();
+            merged.title = '作业 / 任务（全部课程，已读 ' + collected.length + ' 条）';
+            host.appendChild(panel(merged.title, renderEnvelope(merged, {
+              hideHead: true,
+              onRow: function (row) { inspectRow(platName, row, '作业记录'); },
+              empty: '还在读取…',
+              rowAction: function (row) {
+                var id = assignmentIdOf(row);
+                return id ? el('span', 'hint-text', '读取中') : el('span', 'hint-text', '—');
+              }
+            }), { aside: pill(collected.length + ' 条', 'pill-mute') }));
+          }
+          if (failures.length) {
+            host.appendChild(panel('读取失败的课程', (function () {
+              var ul = el('ul');
+              failures.forEach(function (line) { ul.appendChild(el('li', '', line)); });
+              return ul;
+            })(), { flush: true, aside: pill(failures.length + ' 门', 'pill-warn') }));
+          }
+        }
+
+        renderProgress();
+
+        return courses.reduce(function (chain, item, index) {
+          return chain.then(function () {
+            if (seq !== state.pageSeq) { return; }
+            paint(index);
+            var body = { course: item.id };
+            if (wantState) { body.with_state = 1; }
+            return post(base, body).then(function (env) {
+              if (seq !== state.pageSeq) { return; }
+              if (!template) { template = env; }
+              var rows = (env && env.rows) || [];
+              rows.forEach(function (row) { collected.push(row); });
+              paint(index + 1);
+              renderProgress();
+            }).catch(function (e) {
+              failures.push((item.name || item.id) + '：' + describe(e));
+              paint(index + 1);
+              renderProgress();
+            });
+          });
+        }, Promise.resolve()).then(function () {
+          if (seq !== state.pageSeq) { return; }
+          // 全部读完：用标准渲染收尾（带行内提交按钮、检查器、状态补丁）
+          var merged = {};
+          Object.keys(template || {}).forEach(function (k) { merged[k] = template[k]; });
+          merged.rows = collected;
+          merged.title = '作业 / 任务（全部课程） —— 共 ' + collected.length + ' 条';
+          merged.note = (template && template.note ? template.note + ' ' : '')
+            + '已逐门读取 ' + courses.length + ' 门课程'
+            + (failures.length ? ('，其中 ' + failures.length + ' 门失败（见上方清单）') : '') + '。';
+          clear(host);
+          if (failures.length) {
+            var warn = el('div', 'banner');
+            warn.appendChild(el('span', 'banner-title', '有 ' + failures.length + ' 门课程没读出来'));
+            var ul = el('ul');
+            failures.forEach(function (line) { ul.appendChild(el('li', '', line)); });
+            warn.appendChild(ul);
+            host.appendChild(warn);
+          }
+          host.appendChild(panel(merged.title,
+            renderEnvelope(merged, {
+              hideHead: true,
+              rowPatch: function (row) {
+                var id = assignmentIdOf(row);
+                if (!id || !state.doneOverrides[platName + '|' + id]) { return row; }
+                if (!has(row, 'state')) { return row; }
+                var patched = {};
+                Object.keys(row).forEach(function (k) { patched[k] = row[k]; });
+                patched.state = '已完成';
+                return patched;
+              },
+              onRow: function (row) {
+                var navigable = collected.filter(function (x) {
+                  return assignmentIdOf(x) !== '';
+                });
+                var idx = navigable.indexOf(row);
+                if (idx < 0) { inspectRow(platName, row, '作业记录'); return; }
+                openAssignmentAt(platName, navigable, idx, canSubmit);
+              },
+              empty: '这些课程下没有作业 / 任务。'
+            }),
+            { aside: pill(collected.length + ' 条', 'pill-mute') }));
+          loadBtn.disabled = false;
+        });
       }).catch(function (e) {
         if (seq !== state.pageSeq) { return; }
-        clear(host);
-        host.appendChild(panel(null, errorBlock(e, load)));
-      }).then(function () {
-        loadBtn.disabled = false;
+        // courses_only 不支持（旧后端 / 平台没有 list_courses）→ 退回一次性汇总
+        loadAll();
       });
     }
+
 
     load();
     page.appendChild(hintBlock([

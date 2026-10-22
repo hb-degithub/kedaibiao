@@ -161,6 +161,7 @@ def table(
     title: str = "",
     note: str = "",
     empty_hint: str = "没有数据",
+    meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return envelope(
         platform=platform,
@@ -172,6 +173,9 @@ def table(
         columns=columns,
         rows=rows,
         empty_hint=empty_hint,
+        # 给前端的机器可读附加信息（进度分母、失败数等）；没有就不带这个键，
+        # 免得旧前端把 null 当成「有 meta」。
+        **({"meta": meta} if meta else {}),
     )
 
 
@@ -2537,6 +2541,34 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
         if not courses:
             raise ActionInputError(f"没有找到课程号 {only!r}")
 
+    # 「先数一遍，再逐个读」：前端先要课程清单（这一步只打一次课程接口），
+    # 拿到总数后逐门调用 assignments 并显示进度，避免一屏空白等到底。
+    if _unipus_flag(params, "courses_only"):
+        return table(
+            platform=name,
+            action="assignments",
+            label="作业",
+            title=f"课程清单 —— 共 {len(courses)} 门（尚未读取作业）",
+            note=(
+                "这一步只读课程列表；接下来前端会逐门读取作业，"
+                "每读完一门刷新一次进度与表格。传 courses_only=0 可获得一次性汇总。"
+            ),
+            columns=[
+                column("id", "课程号", mono=True),
+                column("name", "名称"),
+                column("teacher", "教师"),
+            ],
+            rows=[
+                {
+                    "id": course.remote_id,
+                    "name": course.name or course.remote_id,
+                    "teacher": course.teacher or "—",
+                }
+                for course in courses
+            ],
+            meta={"courses": len(courses), "phase": "courses_only"},
+        )
+
     rows: list[dict[str, Any]] = []
     failures: list[str] = []
     for course in courses:
@@ -2605,6 +2637,8 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
         + ([column("score", "分数")] if any(row.get("score") for row in rows) else []),
         rows=rows,
         empty_hint="这些课程下没有作业 / 任务。",
+        # 前端逐门读取时拿它显示「已读 X/N 门」
+        meta={"courses": len(courses), "failures": len(failures)},
     )
 
 
@@ -2752,6 +2786,10 @@ def ensure_generic_actions(platform: str) -> None:
                         "with_state", "读取完成状态",
                         hint="1 = 逐组回读 progress/v2（慢，但状态是真实的）；"
                              "0 = 不读，状态列显示 —",
+                    ),
+                    ActionParam(
+                        "courses_only", "只读课程清单",
+                        hint="1 = 只返回课程列表与总数（前端先数一遍、再逐门读取用）",
                     ),
                 ),
             ),

@@ -654,6 +654,23 @@ class TestActions(ServiceTestBase):
             out = self.service.run_action(GOOD, "assignments", {"with_state": 1})
         self.assertEqual(out["rows"][0]["state"], "已完成")
 
+    def test_assignments_courses_only_phase_lists_courses(self) -> None:
+        """两阶段读取的第一阶段：只读课程清单（给前端算进度分母）。"""
+        with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
+            out = self.service.run_action(GOOD, "assignments", {"courses_only": 1})
+        self.assertEqual(out["kind"], "table")
+        self.assertEqual(out["rows"][0]["id"], "c1", "只回课程号，不回作业")
+        self.assertIn("课程清单", out["title"])
+        self.assertEqual(out["meta"]["phase"], "courses_only")
+        self.assertEqual(out["meta"]["courses"], 1)
+
+    def test_assignments_full_payload_carries_course_count(self) -> None:
+        """第二阶段每门读一次；meta.courses 让前端显示「已读 X/N 门」。"""
+        with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
+            out = self.service.run_action(GOOD, "assignments", {"course": "c1"})
+        self.assertEqual(out["meta"]["courses"], 1)
+        self.assertEqual(out["meta"]["failures"], 0)
+
     def test_assignments_unknown_course_is_bad_request(self) -> None:
         with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
             with self.assertRaises(ConsoleError) as cm:
