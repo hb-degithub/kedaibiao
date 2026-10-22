@@ -3308,29 +3308,34 @@
     page.appendChild(pageHead({
       title: '课程',
       badge: pill('只读', 'pill-ro'),
-      sub: [scopeChip(), '读取课程 / 班级列表'],
+      sub: [scopeChip(), '先列出全部课程，再逐门统计作业数'],
       actions: [reload]
     }));
 
     var host = el('div', '');
     page.appendChild(host);
 
+    /* 每门课的作业数缓存：同一平台重复进页面不重复打接口。
+       键是平台名，值是 {课程号: {count, error}}。 */
+    var cacheKey = 'courseCounts:' + platName;
+    if (!state[cacheKey]) { state[cacheKey] = {}; }
+    var cache = state[cacheKey];
+
+    var running = false;
+    var cancelRequested = false;
+
+    function courseIdOf(row) {
+      return String(row.id || row.course_id || row.remote_id || '');
+    }
+
     function load() {
+      cancelRequested = true;   // 上一轮如果还在跑，让它自己停下
+      running = false;
       clear(host);
       host.appendChild(panel(null, loadingBlock()));
       post('/api/platforms/' + encodeURIComponent(platName) + '/actions/courses', {}).then(function (env) {
         if (seq !== state.pageSeq) { return; }
-        clear(host);
-        host.appendChild(panel(env.title || '课程 / 班级',
-          renderEnvelope(env, {
-            hideHead: true,
-            onRow: function (row) { inspectRow(platName, row, '课程记录'); },
-            empty: '这个平台没有返回课程。请确认账号会话是否还有效。'
-          }),
-          {
-            flush: false,
-            aside: pill(String((env.rows || []).length) + ' 条', 'pill-mute')
-          }));
+        render(env);
       }).catch(function (e) {
         if (seq !== state.pageSeq) { return; }
         clear(host);
@@ -3338,11 +3343,131 @@
       });
     }
 
+    function render(env) {
+      var rows = (env && env.rows) || [];
+      var columns = ((env && env.columns) || []).slice();
+      var hasCount = columns.some(function (c) { return c.key === 'assignment_count'; });
+      if (!hasCount) { columns.push({ key: 'assignment_count', label: '作业数', mono: true }); }
+
+      var progressText = el('span', 'hint-text', '');
+      var banner = el('div', 'banner');
+      banner.appendChild(el('span', 'banner-title', '逐门统计作业数'));
+      banner.appendChild(progressText);
+
+      var stopBtn = btn('停止统计', 'btn-sm btn-ghost', function () {
+        cancelRequested = true;
+        progressText.textContent = progressText.textContent + ' · 已停止';
+      });
+      var startBtn = btn('开始统计', 'btn-sm', function () { startCounting(); });
+      banner.appendChild(startBtn);
+      banner.appendChild(stopBtn);
+
+      function countedIds() {
+        return rows.filter(function (row) {
+          var entry = cache[courseIdOf(row)];
+          return entry && entry.count !== undefined;
+        }).length;
+      }
+
+      function paint() {
+        var done = countedIds();
+        var total = rows.reduce(function (sum, row) {
+          var entry = cache[courseIdOf(row)];
+          return sum + (entry && entry.count ? entry.count : 0);
+        }, 0);
+        progressText.textContent = '共 ' + rows.length + ' 门课程 · 已统计 '
+          + done + '/' + rows.length + ' · 共读到 ' + total + ' 条作业';
+        stopBtn.disabled = !running;
+        startBtn.disabled = running || !rows.length;
+      }
+
+      function tableEnv() {
+        var patched = {};
+        Object.keys(env || {}).forEach(function (k) { patched[k] = env[k]; });
+        patched.columns = columns;
+        patched.rows = rows.map(function (row) {
+          var copy = {};
+          Object.keys(row).forEach(function (k) { copy[k] = row[k]; });
+          var entry = cache[courseIdOf(row)];
+          copy.assignment_count = entry
+            ? (entry.error ? '读取失败' : String(entry.count))
+            : '—';
+          return copy;
+        });
+        return patched;
+      }
+
+      function paintTable() {
+        // 只替换表格部分，进度条保留（避免每次重画把滚动位置顶走）
+        var holder = host.querySelector('[data-courses-table]');
+        if (holder) { holder.remove(); }
+        var wrapper = el('div', '');
+        wrapper.setAttribute('data-courses-table', '1');
+        var view = tableEnv();
+        wrapper.appendChild(panel(view.title || '课程 / 班级',
+          renderEnvelope(view, {
+            hideHead: true,
+            onRow: function (row) { inspectRow(platName, row, '课程记录'); },
+            empty: '这个平台没有返回课程。请确认账号会话是否还有效。'
+          }),
+          { flush: false, aside: pill(String(rows.length) + ' 条', 'pill-mute') }));
+        host.appendChild(wrapper);
+      }
+
+      function startCounting() {
+        if (running || !rows.length) { return; }
+        running = true;
+        cancelRequested = false;
+        paint();
+        var queue = rows.filter(function (row) {
+          var id = courseIdOf(row);
+          if (!id) { return false; }
+          var entry = cache[id];
+          return !entry || (entry.count === undefined && !entry.error);
+        });
+        if (!queue.length) {
+          running = false;
+          paint();
+          return;
+        }
+        queue.reduce(function (chain, row) {
+          return chain.then(function () {
+            if (cancelRequested || seq !== state.pageSeq) { return; }
+            var id = courseIdOf(row);
+            return post('/api/platforms/' + encodeURIComponent(platName) + '/actions/assignments',
+              { course: id }).then(function (result) {
+              if (cancelRequested || seq !== state.pageSeq) { return; }
+              cache[id] = { count: ((result && result.rows) || []).length };
+              paint();
+              paintTable();
+            }).catch(function (e) {
+              cache[id] = { error: describe(e) };
+              paint();
+              paintTable();
+            });
+          });
+        }, Promise.resolve()).then(function () {
+          running = false;
+          paint();
+          paintTable();
+        });
+      }
+
+      clear(host);
+      host.appendChild(banner);
+      paintTable();
+      paint();
+      // 首次进页面自动开跑；已经有缓存（比如刚从作业页回来）就只是刷新进度
+      startCounting();
+    }
+
     load();
     page.appendChild(hintBlock([
-      '调平台只读动作 courses（list_courses）：会真的登录平台并读取数据，但不改动任何内容。',
-      '冻结/停用的课程可能不出现在列表里，这取决于平台自己的返回。',
-      '任何失败都会显示后端的中文原因，不做静默降级。'
+      '第一步只调用课程接口，列出全部课程（先把「有多少门」读出来）；',
+      '第二步逐门调用作业接口统计每门课的作业数，界面显示「已统计 X/N 门」，',
+      '某门失败只记在那一行（显示「读取失败」），不影响其它课程。',
+      '统计结果在本页缓存：来回切换页面不会重复打接口，点「重新加载」才重来。',
+      '全程只读：courses / assignments 都是 GET 类读取，不会提交任何内容。'
     ]));
   }
 

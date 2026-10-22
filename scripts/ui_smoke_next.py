@@ -402,6 +402,16 @@ def main() -> int:
         result.check("stats" in page.url, "命令面板可跳转功能页")
         result.check(page.locator("table.tbl tbody tr").count() >= 3, "统计表按平台出行")
 
+        print("· 课程页先列课程、再逐门统计作业数")
+        page.goto(entry + "/#/courses/unipus", wait_until="domcontentloaded")
+        page.wait_for_timeout(2000)
+        course_text = page.locator("main").inner_text()
+        result.check("逐门统计作业数" in course_text, "课程页有逐门统计进度条")
+        result.check("已统计" in course_text and "/4" in course_text.replace(" ", ""),
+                     "进度分母是课程数（4 门）", course_text[:160].replace("\n", " "))
+        result.check(page.locator(".tbl tbody tr").count() == 4, "课程表 4 行")
+        result.check("作业数" in course_text, "课程表新增「作业数」列")
+
         print("· 作业列表与检查器")
         page.goto(entry + "/#/assignments/unipus", wait_until="domcontentloaded")
         page.wait_for_timeout(1200)
