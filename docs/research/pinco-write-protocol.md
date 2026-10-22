@@ -350,6 +350,20 @@ H5 判成功的写法是 `code === 200`，与 Web RPC 家族「`statusCode` 为 
 | **C7** | P2 | `courseware/student/open`、`maxLook`、`studyReport` 各一次请求/响应 | 课件类上报的真实字段 |
 | **C8** | P2 | 一次失败提交（如已过期作业）的响应 | 错误码枚举（含 `6569/10419/6582` 的语义） |
 
+> **抓 C1 的工具已备好（2026-10-22）**：`scripts/pinco_submit_capture.py`。
+> 它用控制台已保存的会话打开作业页，在你点「提交」的瞬间把请求（URL / 请求头 /
+> 请求体原文）落盘，然后 `route.abort()` —— **请求不会到达平台，这次作业不会被交掉**；
+> 默认连 `Save/Update/Delete/Upload/Create` 这类写动作一起拦，草稿自动保存也不会落库。
+>
+> ```bash
+> python3 scripts/pinco_submit_capture.py --url '<作业页 URL>'
+> # 结果：data/recon/pinco/submit-capture-<时间戳>.json（已 gitignore，含本人作答内容，不要提交）
+> ```
+>
+> 拿到样本后按 C1 的验收点核对：URL 里的 `actionName`、请求体顶层键、答案字段的
+> 编码形态、响应成功形状。三项都对上，再把 `PincoAdapter.submit_payload_confirmed`
+> 改成 `True`，并先跑一次「计划 → 复核 → 提交」核对平台侧确实落库。
+
 **明确不需要 / 不做**：反编译脱壳、改包重打包、爆破验证码、批量账号、
 对提交接口压测、绕过教师设置的限制（红线见 `pinco.md §8`）。
 

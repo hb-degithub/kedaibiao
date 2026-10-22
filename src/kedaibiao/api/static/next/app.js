@@ -1718,53 +1718,56 @@
     {
       id: 'pinco-live-submit',
       title: '品课真提交（放开写闸门）',
-      status: '待抓包确认',
+      status: '待跑一次抓包',
       tone: 'pill-warn',
       platform: 'pinco',
       summary: '复核链已经能走通，但最后一步仍被「提交报文未确认」挡住。',
       why: 'adapter.submit_payload_confirmed = False：守卫放行后仍然拒绝发写请求，'
-        + '因为交错的答案比不交更糟。',
+        + '因为交错的答案比不交更糟。抓包工具已就绪，跑一次即可解锁。',
       plan: [
-        '用真实会话提交一次，抓下 ACTION_SUBMIT_HOMEWORK 的请求体结构。',
-        '把字段对齐到 _post_submit 里构造的载荷，确认后把开关设为 True。',
+        'python3 scripts/pinco_submit_capture.py --url "<作业页 URL>"：'
+          + '在页面点提交，请求被截获并中止（不会真的交）。',
+        '把抓到的请求体与 _submit_payload 对齐，确认后把开关设为 True。',
         '开启后先跑一次「计划 → 复核 → 提交」，核对平台侧确实落库。'
       ],
       gaps: ['提交报文结构未由真实样本确认'],
       risks: ['一旦开错，交出去的答案可能是错的；必须先抓包再开。'],
-      refs: ['platforms/pinco/adapter.py', 'docs/audit-2026-10-20.md'],
-      decision: '等你抓包或授权后再开。'
+      refs: ['scripts/pinco_submit_capture.py', 'platforms/pinco/adapter.py'],
+      decision: '工具已备好；抓一次包、核对字段后再开闸门。'
     },
     {
       id: 'neusoft-images',
       title: '东软图片类资源刷课',
-      status: '待排期',
-      tone: 'pill-mute',
+      status: '已完成 2026-10-22',
+      tone: 'pill-ok',
       platform: 'neusoft',
-      summary: '图片（res_type=4）被当成「可完成」，但没有完成链路。',
-      why: '刷课时每张图片计一次失败，还会吃掉 limit，完成度永远到不了 100%。',
+      summary: '图片（res_type=4）不再计失败、不吃 limit、单独记 unsupported。',
+      why: '以前每张图片计一次失败并把 limit 吃光，完成度永远到不了 100%。',
       plan: [
-        '把 IMAGE 移出 COMPLETABLE_RES_TYPES，或在 play_course 里记 skipped、不占 limit。'
+        '已实现：SUPPORTED_RES_TYPES 只含视频/文档；图片在 play_course 里跳过并进 '
+          + 'report.unsupported（不是 failed），完成度口径不变。'
       ],
-      gaps: ['图片资源的完成链路未实现'],
-      risks: ['移除后图片不再计入待完成，课程完成度口径会变。'],
-      refs: ['platforms/neusoft/endpoints.py', 'platforms/neusoft/study.py'],
-      decision: '小改动，等你确认口径。'
+      gaps: [],
+      refs: ['platforms/neusoft/endpoints.py', 'platforms/neusoft/study.py',
+        'tests/test_neusoft_paging.py'],
+      decision: '已完成：图片没有实测完成链路，等有证据再接。'
     },
     {
       id: 'neusoft-paging',
       title: '东软列表翻页',
-      status: '待排期',
-      tone: 'pill-mute',
+      status: '已完成 2026-10-22',
+      tone: 'pill-ok',
       platform: 'neusoft',
-      summary: '课程 100 条封顶、学习任务 200 条、考勤没有分页。',
-      why: '超出部分静默缺失，表现为「没有作业 / 没有考勤」。',
+      summary: '课程 / 学习任务 / 考勤都按 total + 短页翻页，服务端忽略 pageNo 时安全停止。',
+      why: '以前只取第一页：课程 100、任务 200 封顶，考勤不分页，超出部分静默消失。',
       plan: [
-        '按 total 循环取页（或尾页判断）；至少把 total 与已取条数写进日志。'
+        '已实现：platforms/neusoft/paging.py 统一三条终止条件'
+          + '（无新条目 / 覆盖 total / 短页），并给 MAX_PAGES 兜底告警。'
       ],
-      gaps: ['三处列表都只取第一页'],
-      risks: ['翻页会显著增加请求数，需要限速。'],
-      refs: ['platforms/neusoft/resources.py', 'platforms/neusoft/homework.py'],
-      decision: '等你有大批量课程时再做。'
+      gaps: [],
+      risks: ['考勤分页参数没有实测证据：响应无 total 时保持只读第一页并告警。'],
+      refs: ['platforms/neusoft/paging.py', 'tests/test_neusoft_paging.py'],
+      decision: '已完成：考勤分页参数待真实账号复测确认。'
     },
     {
       id: 'dead-routes',
