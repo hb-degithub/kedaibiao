@@ -1671,3 +1671,6 @@ pre.code {
   cursor: pointer;
 }
 .plan-ack input { accent-color: var(--warn); }
+
+/* 未作答的题：左边一条提示条，和「已有候选答案」的题区分开 */
+.plan-card-todo { border-left: 3px solid var(--danger); }

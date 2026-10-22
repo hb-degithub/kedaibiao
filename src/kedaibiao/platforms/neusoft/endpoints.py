@@ -169,5 +169,10 @@ ATT_LOCATION_TYPE = 1
 ATT_TYPE_SCAN = 1
 
 #: 试卷里 `questionType` 的已知取值（**枚举不全**，只登记已验证的），[A]
+#: 2026-10-22 用真实账号取到 50 题：``"1"`` 全是 4 选 1 的单选题，
+#: ``"3"`` 全部是「A=正确 / B=错误」两选项的判断题（见
+#: ``data/recon/neusoft-paper-*.json``）。
+QUESTION_TYPE_SINGLE = "1"
+QUESTION_TYPE_JUDGE = "3"
 QUESTION_TYPE_FILL_MULTI = "4"
 QUESTION_TYPE_COMPOSITE = ("8", "10")

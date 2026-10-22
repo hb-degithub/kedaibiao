@@ -812,6 +812,12 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
   结果同样会另挂 `kind: "detail"` 的信封（iTEST 的交卷步骤 / 页面回显 /
   截图路径），没有 `message` 字段的平台也能在检查器里看到结果。
 
+  ⚠️ **「真提交」不等于「已交卷」**：有的平台（东软）写路径只有 APK 静态证据，
+  默认**只存作答草稿、不交卷**。这类平台在干跑计划里会带 `submit_gate`
+  （一句可直接展示的说明），结果信封的 `label` 会是 `"未交卷"`、字段
+  `已交卷` 为 `"否"`、`平台受理` 为 `"否"`。别把它当成失败重试 —— 按说明开闸
+  （东软是 `KEDAIBIAO_NEUSOFT_ALLOW_SUBMIT=1`）后才会真的交卷。
+
 **平台没实现提交时返回 `501 not_supported`**，`error` 会说明原因。
 目前 pigai / unipus 都是 `capabilities.submit = false`，
 pinco 的提交请求体结构也还没由真实样本确认 —— **不会假装成功**。

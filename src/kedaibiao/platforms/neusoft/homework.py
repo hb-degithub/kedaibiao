@@ -83,9 +83,22 @@ class PaperQuestion:
 
     字段名沿用平台原样（``paperId`` → ``paper_id``），因为保存草稿时
     ``paperId`` / ``questionNo`` / ``questionType`` 三项要原样回传（§5.3）。
+
+    ⚠️ 真实响应里这三项**不在同一层**（2026-10-22 实测，见
+    ``data/recon/neusoft-paper-*.json``）::
+
+        paperQuestionList[]: {id, paperId, partId, questionType,
+                              paperQuestion: {questionNo, questionType, stemText, choices, …}}
+
+    - ``paperId`` 在外层，**整份试卷共用一个值**（等于响应顶层的 ``id``），
+      不能拿它当「一道题」的主键；
+    - ``id`` 在外层且逐题唯一，才是题目行的主键（:attr:`question_id`）；
+    - ``questionNo`` / ``stemText`` / ``choices`` 在内层。
     """
 
     paper_id: str = ""
+    #: 外层 ``id``：逐题唯一的题目行主键。``questionNo`` 才是人看的题号。
+    question_id: str = ""
     question_no: str = ""
     question_type: str = ""
     stem: str = ""
@@ -94,6 +107,16 @@ class PaperQuestion:
     candidate_answer: tuple[str, ...] = ()
     standard_answer: tuple[str, ...] = ()
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def key(self) -> str:
+        """作答匹配用的主键：逐题 ``id`` 优先，退化到 ``paperId``。
+
+        两种已知形状各自唯一：真实形状靠外层 ``id``（逐题唯一），旧假设的形状里
+        ``paperId`` 本身就是逐题的值。两者都缺的行没有可匹配的键，返回空串 ——
+        调用方会跳过它，绝不拿 ``questionNo`` 去猜（题型分组后题号会重复）。
+        """
+        return self.question_id or self.paper_id
 
 
 @dataclass(slots=True)
@@ -139,6 +162,8 @@ class Entered:
 #: 其余取值一律 ``UNKNOWN`` —— 平台枚举不全（§8 待补）。按「1 单选 / 2 多选 /
 #: 3 判断」这种直觉补表，会把判断题当单选回填，答案判错且没有任何报错，比不知道更糟。
 QUESTION_TYPE_MAP: dict[str, QuestionType] = {
+    ep.QUESTION_TYPE_SINGLE: QuestionType.SINGLE,
+    ep.QUESTION_TYPE_JUDGE: QuestionType.JUDGE,
     ep.QUESTION_TYPE_FILL_MULTI: QuestionType.FILL,
 }
 
@@ -233,6 +258,7 @@ def parse_paper(payload: Any, *, test_id: str = "") -> Paper:
     """
     if not isinstance(payload, dict):
         raise NeusoftProtocolError(f"试卷响应不是对象: {type(payload).__name__}")
+    paper_fallback_id = as_str(payload.get("id"))
     questions: list[PaperQuestion] = []
     for part in as_list(payload.get("paperParts")):
         if not isinstance(part, dict):
@@ -244,7 +270,11 @@ def parse_paper(payload: Any, *, test_id: str = "") -> Paper:
             if not isinstance(inner, dict):
                 log.warning("试卷题目缺少 paperQuestion 内层，已跳过: %r", item)
                 continue
-            questions.append(_paper_question(inner))
+            question = _paper_question(inner, item)
+            # 外层与内层都没给 paperId 时，用响应顶层的 id 兜底（同一份试卷同一个值）。
+            if not question.paper_id:
+                question.paper_id = paper_fallback_id
+            questions.append(question)
     return Paper(
         test_id=as_str(payload.get("testId")) or test_id,
         questions=questions,
@@ -357,8 +387,11 @@ async def submit_paper(
 def to_core_questions(paper: Paper) -> list[Question]:
     """试卷 → ``core.Question`` 列表，供题库匹配与作答器使用。
 
-    ``remote_id`` 用 ``paperId``：保存草稿时它和 ``questionNo`` 一起定位题目；
-    ``questionNo`` 与平台原始字段都留在 ``raw`` 里，回填答案不需要再翻响应。
+    ``remote_id`` 用 :attr:`PaperQuestion.key`（逐题唯一的 ``id``）：
+    保存草稿时要靠它把答案匹配回具体题目行。``paperId`` 整份试卷共用一个值，
+    拿它当 ``remote_id`` 会让所有题互相同化（曾经就是这样，导致交卷时
+    「没有一条答案能映射到平台题目」）。``questionNo`` 与平台原始字段都留在
+    ``raw`` 里，回填答案不需要再翻响应。
     题型只做 :func:`core_question_type` 的保守映射，映射不出来就是 ``UNKNOWN``。
     """
     return [
@@ -366,7 +399,7 @@ def to_core_questions(paper: Paper) -> list[Question]:
             stem=item.stem,
             type=core_question_type(item.question_type),
             options=[choice.content for choice in item.choices],
-            remote_id=item.paper_id or None,
+            remote_id=item.key or None,
             raw=dict(item.raw),
         )
         for item in paper.questions
@@ -395,29 +428,69 @@ def _plain_text(markup: str) -> str:
     return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
-def _paper_question(inner: Mapping[str, Any]) -> PaperQuestion:
-    """把一个 ``paperQuestion`` 内层 dict 解析成 :class:`PaperQuestion`。"""
-    # ``paperId`` 是保存草稿的必填字段（§5.3），但试卷里这个键名只有 [B] 级证据；
-    # 缺失时回退 ``id`` 是防御性兜底，接入真实账号时要用真实响应核对一次。
-    paper_id = as_str(inner.get("paperId")) or as_str(inner.get("id"))
+#: 平台在文本字段里会把制表符/换行**二次转义**成字面量 ``\t`` ``\n``
+#: （实测 ``choiceContent`` 是 ``"\\t实用性"``，原样显示就是「\实用性」）。
+_ESCAPE_RE = re.compile(r"\\([trn])")
+_ESCAPE_MAP = {"t": "\t", "r": "\n", "n": "\n"}
+
+
+def _clean_text(value: Any) -> str:
+    """解掉二次转义、统一空白。
+
+    只处理 ``\\t`` / ``\\n`` / ``\\r`` 三种 —— 题干里的反斜杠（数学式、路径）
+    不该被这里当转义吃掉。
+    """
+    text = as_str(value)
+    if not text:
+        return ""
+    if "\\" in text:
+        text = _ESCAPE_RE.sub(lambda m: _ESCAPE_MAP[m.group(1)], text)
+    return text.replace("\u3000", " ").strip()
+
+
+def _paper_question(
+    inner: Mapping[str, Any], wrapper: Mapping[str, Any] | None = None
+) -> PaperQuestion:
+    """解析一道题：**内层 ``paperQuestion`` + 外层行**。
+
+    为什么两层都要读：真实响应里 ``paperId``/``id`` 在外层、``questionNo``/
+    ``questionType``/``stemText``/``choices`` 在内层（见 :class:`PaperQuestion`
+    的类注释）。只读内层会得到 ``paper_id=""`` —— 保存草稿时整批答案都定位
+    不到题目，交卷回一句「没有一条答案能映射到平台题目」。
+    """
+    outer = wrapper or {}
+    # ``paperId`` 原样回传（§5.3）：外层优先，内层是旧假设下的位置，保留兜底。
+    paper_id = (
+        as_str(outer.get("paperId"))
+        or as_str(inner.get("paperId"))
+        # 曾经把内层 ``id`` 当 paperId 兜底；真实响应里内层没有 id，
+        # 有 id 的是外层（逐题唯一），所以这里退到外层的 questionNo 组合。
+        or as_str(inner.get("id"))
+    )
+    question_id = as_str(outer.get("id")) or as_str(inner.get("id"))
     choices: list[Choice] = []
     for item in as_list(inner.get("choices")):
         if isinstance(item, dict):
             choices.append(
                 Choice(
-                    choice_id=as_str(item.get("choiceId")),
-                    content=as_str(item.get("choiceContent")),
+                    choice_id=_clean_text(item.get("choiceId")),
+                    content=_clean_text(item.get("choiceContent")),
                 )
             )
     return PaperQuestion(
         paper_id=paper_id,
-        question_no=as_str(inner.get("questionNo")),
-        question_type=as_str(inner.get("questionType")),
-        stem=as_str(inner.get("stemText")) or _plain_text(as_str(inner.get("stem"))),
+        question_id=question_id,
+        question_no=as_str(inner.get("questionNo")) or as_str(outer.get("questionNo")),
+        question_type=as_str(inner.get("questionType"))
+        or as_str(outer.get("questionType")),
+        stem=(
+            _clean_text(inner.get("stemText"))
+            or _plain_text(as_str(inner.get("stem")))
+        ),
         choices=tuple(choices),
         candidate_answer=_answer_values(inner.get("candidateAnswer")),
         standard_answer=_answer_values(inner.get("standardAnswer")),
-        raw=dict(inner),
+        raw={**dict(inner), "_outer": dict(outer)},
     )
 
 

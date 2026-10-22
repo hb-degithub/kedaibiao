@@ -101,6 +101,9 @@ class NeusoftAdapter(PlatformAdapter):
     #: 这个平台没有「某门课不存在」这类可跳过的课程级业务错误，
     #: 任何失败都应当上抛 —— 否则会把会话过期伪装成「这门课没作业」。
     skippable_course_errors = ()
+    #: 提交闸门说明：控制台把这句话放在干跑计划里，用户点「确认真提交」之前
+    #: 就该知道这个平台默认**只存草稿不交卷**（写路径只有 APK 静态证据）。
+    submit_gate_hint = SUBMIT_BLOCKED_MESSAGE
 
     def __init__(self, ctx: AdapterContext | None = None) -> None:
         super().__init__(ctx)
@@ -144,6 +147,14 @@ class NeusoftAdapter(PlatformAdapter):
 
         比基类多一步「用 refresh_token 续期」：账号库不存密码，从磁盘恢复的
         会话没有凭据，光靠密码重登会把「会话过期」变成「必须回账号页重绑」。
+
+        两个坑（2026-10-22 实测）：
+
+        - ``is_logged_in`` 探的是 ``USER_PROFILE``，平台在 token 过期后**仍可能
+          回它正常**，等到拉课程才 401 —— 所以「探测通过」不等于「能干活」，
+          上层必须把后续 401 翻译成「重新登录」；
+        - 账号库解析出来的 ``Credentials.password`` 是空串，拿它去 ``login``
+          只会得到一个没有意义的失败。没有密码就不要试，直接说明要人工重登。
         """
         if await self.is_logged_in():
             return True
@@ -159,7 +170,15 @@ class NeusoftAdapter(PlatformAdapter):
                 f"刷新令牌也失效（{self.client.refresh_error or '平台拒绝刷新'}）"
             )
         self.log.info("东软会话已过期：%s —— 需要重新登录一次", self.last_session_error)
-        return await self.login(credentials)
+        if not (credentials.password or "").strip():
+            # 账号库不存密码，这里必定失败；别把「该人工重登」伪装成「登录失败」。
+            self.last_session_error += "；账号库里没有密码，请到「账号」页重新登录一次"
+            return False
+        ok = await self.login(credentials)
+        if ok and not await self.is_logged_in():
+            self.last_session_error += "；密码登录返回成功但会话仍不可用"
+            return False
+        return ok
 
     def export_session(self) -> dict[str, Any] | None:
         """导出会话。
@@ -454,15 +473,20 @@ def build_answer_rows(
     两个关键换算：
 
     - **题目定位**：``paperId`` + ``questionNo`` + ``questionType`` 三项要原样回传
-      （§5.3），所以用 ``paper_id`` 建索引，而不是靠题干重新匹配；
+      （§5.3）。索引必须用**逐题唯一**的键（:attr:`PaperQuestion.key`）：
+      ``paperId`` 整份试卷共用一个值，拿它建索引会把所有题压成一条，
+      交卷时就报「没有一条答案能映射到平台题目」；
     - **选项答案**：平台的 ``standardAnswer`` 是**逗号拼接的 ``choiceId``** 形状
       （§5.4 的三态字段），所以选择索引要换成 ``choice_id``，不是字母也不是文案。
+      ⚠️ 真实响应里 ``choiceId`` 是 ``A``/``B``/``C``/``D`` 且**顺序是打乱的**
+      （选项数组不是 A、B、C、D 的顺序），所以只能按数组下标取 ``choice_id``，
+      不能拿位置当字母用。
     """
-    by_paper_id = {item.paper_id: item for item in paper.questions if item.paper_id}
+    by_key = {item.key: item for item in paper.questions if item.key}
     rows: list[dict[str, str]] = []
     for answer in answers:
         remote_id = answer.question.remote_id or ""
-        item = by_paper_id.get(remote_id)
+        item = by_key.get(remote_id)
         if item is None:
             continue
         text = _answer_text(answer, item)

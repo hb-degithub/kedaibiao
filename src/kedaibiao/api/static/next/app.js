@@ -4391,15 +4391,24 @@
       };
       var index = q.index || (qi + 1);
       var entry = { index: index, ack: false };
-      var card = el('div', 'plan-card');
+      var unanswered = !original.choices.length && !original.text.trim();
+      var card = el('div', 'plan-card' + (unanswered ? ' plan-card-todo' : ''));
 
       var head = el('div', 'plan-card-head');
       head.appendChild(el('span', 'plan-qno', '第 ' + index + ' 题'));
       if (qtype !== 'unknown') { head.appendChild(pill(PLAN_TYPE_LABEL[qtype] || qtype, 'pill-mute')); }
-      if (q.needs_human) { head.appendChild(pill('需人工确认', 'pill-warn')); }
-      var confValue = (typeof q.confidence === 'number') ? q.confidence.toFixed(2) : '—';
-      head.appendChild(el('span', 'hint-text',
-        '置信度 ' + confValue + ' · 来源 ' + dash(q.source)));
+      if (unanswered) {
+        /* 置信度 0.00 / 来源 unknown 只是「没有候选」的技术写法，
+           对人没用 —— 直接说没答出，并提示要手填。 */
+        head.appendChild(pill('未作答', 'pill-danger'));
+        if (q.needs_human) { head.appendChild(pill('需人工确认', 'pill-warn')); }
+        head.appendChild(el('span', 'hint-text', 'AI 没给出候选答案，请手动选/填'));
+      } else {
+        if (q.needs_human) { head.appendChild(pill('需人工确认', 'pill-warn')); }
+        var confValue = (typeof q.confidence === 'number') ? q.confidence.toFixed(2) : '—';
+        head.appendChild(el('span', 'hint-text',
+          '置信度 ' + confValue + ' · 来源 ' + dash(q.source)));
+      }
       card.appendChild(head);
       card.appendChild(el('div', 'plan-stem', q.stem || '（平台没给题面）'));
 
@@ -4530,10 +4539,18 @@
         }).then(function (res) {
           var finished = res && (res.server_finish === true || res.server_finish === 1 ||
             res.server_finish === '1');
+          /* 平台受理才算交上：有的平台（东软）默认只存草稿、不交卷，
+             这时 submitted 仍是 true，但 ok=false、回执里写明原因。 */
+          var accepted = res && res.ok === true;
           if (finished) {
             state.doneOverrides[platName + '|' + assignmentId] = true;
           }
           var resultBody = el('div', '');
+          if (!accepted && !finished) {
+            resultBody.appendChild(el('div', 'banner error',
+              '平台没有交卷：下面是平台回执。列表状态不会变成「已完成」，' +
+              '按回执里的提示处理后可以再点一次。'));
+          }
           resultBody.appendChild(renderEnvelope(res, {}));
           if (finished) {
             var scored = Array.isArray(res.score) ? res.score.length : 0;
@@ -4543,14 +4560,18 @@
                 '所以得分率是 0.0 —— 它不等于没交，看 finish 才对。'));
           }
           openInspector({
-            title: '提交结果',
+            title: accepted || finished ? '提交结果' : '没有交卷',
             sub: platName + ' · ' + assignmentId,
             body: resultBody,
             foot: [btn('关闭', 'btn-sm', closeInspector)]
           });
-          toast(finished
-            ? '已提交 · 回读 finish=True，列表状态已更新为已完成'
-            : '已提交，但平台没回读 finish：列表状态请点「读取完成状态」核对');
+          if (finished) {
+            toast('已提交 · 回读 finish=True，列表状态已更新为已完成');
+          } else if (accepted) {
+            toast('已提交，但平台没回读 finish：列表状态请点「读取完成状态」核对');
+          } else {
+            toast('未交卷：看抽屉里的平台回执');
+          }
           if (typeof assignmentsReload === 'function') { assignmentsReload(); }
         }).catch(function (e) {
           openInspector({

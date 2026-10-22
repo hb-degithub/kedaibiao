@@ -919,6 +919,79 @@ class TestAnswerDisplay(unittest.TestCase):
         self.assertEqual(answer_letters([True], ["甲"]), "True")  # 布尔不是下标
 
 
+class LowConfidenceAdapter(FakeAdapter):
+    """题不在题库里：只剩规则兜底（置信度 0.35，低于阈值 0.5）。"""
+
+    name = "apilowconf"
+    display_name = "低置信度假平台"
+    capabilities = Capabilities(submit=True)
+
+    async def fetch_questions(self, assignment: Assignment) -> list[Question]:
+        return [Question(stem="题库里没有的题", type=QuestionType.SINGLE,
+                         options=["甲", "乙"], remote_id="q9")]
+
+    async def submit(self, assignment: Assignment, answers: list[Answer]) -> SubmissionResult:
+        return SubmissionResult(assignment_id=assignment.remote_id, ok=False,
+                                message="已保存草稿，未交卷")
+
+
+class TestSubmitReviewFlow(unittest.TestCase):
+    """控制台复核链路：低置信度答案要留下来给人看，不能被 ChainAnswerer 丢掉。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "config").mkdir()
+        (self.root / "config" / "local.toml").write_text(
+            "[kedaibiao]\n"
+            f'db_url = "sqlite:///{self.root}/x.db"\n'
+            f'session_dir = "{self.root}/s"\n'
+            'min_confidence = 0.5\n',
+            encoding="utf-8",
+        )
+        adapters.register(LowConfidenceAdapter.name, LowConfidenceAdapter, override=True)
+        self.addCleanup(adapters.unregister, LowConfidenceAdapter.name)
+        from kedaibiao.security.accounts import AccountStore
+
+        store = AccountStore(self.root / "x.db")
+        store.add(0, LowConfidenceAdapter.name, username="stu")
+        store.close()
+        self.service = ConsoleService(root=self.root)
+
+    def test_dry_run_keeps_low_confidence_candidate(self) -> None:
+        """回归：低于阈值的候选曾整条被丢，界面显示「置信度 0.00 · 来源 unknown」。"""
+        out = self.service.submit_assignment(LowConfidenceAdapter.name, "a1")
+        answer = out["answers"][0]
+        self.assertEqual(out["answered"], 1)
+        self.assertGreater(answer["confidence"], 0.0)
+        self.assertNotEqual(answer["source"], "unknown")
+        self.assertTrue(answer["needs_human"], "低置信度必须标需人工")
+        self.assertEqual(answer["choices"], [0], "规则兜底的选择要保留下来")
+
+    def test_unconfirmed_low_confidence_is_blocked(self) -> None:
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.submit_assignment(
+                LowConfidenceAdapter.name, "a1", confirm=True
+            )
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("需人工确认", str(cm.exception))
+
+    def test_confirming_the_question_unblocks_submit(self) -> None:
+        """勾了「我确认」的题按人工答案提交，越过阈值门槛。"""
+        out = self.service.submit_assignment(
+            LowConfidenceAdapter.name, "a1", confirm=True,
+            overrides=[{"index": 1, "choices": [0], "text": ""}],
+        )
+        self.assertEqual(out["answers"][0]["source"], "manual")
+        # 平台只存了草稿：信封必须说清「没有交卷」
+        self.assertEqual(out["kind"], "detail")
+        self.assertEqual(out["label"], "未交卷")
+        fields = {f["label"]: f["value"] for f in out["fields"]}
+        self.assertEqual(fields["已交卷"], "否")
+        self.assertEqual(fields["平台受理"], "否")
+
+
 class TestParamValidation(unittest.TestCase):
     def _spec(self):
         from kedaibiao.api.actions import ActionParam, ActionSpec

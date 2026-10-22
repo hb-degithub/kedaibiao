@@ -260,6 +260,35 @@ class AnswerRowTest(unittest.TestCase):
         answer = Answer(question=Question(stem="q", remote_id="p1"))
         self.assertEqual(build_answer_rows(self._paper(), [answer]), [])
 
+    def test_real_shape_shared_paper_id_maps_every_question(self) -> None:
+        """回归：``paperId`` 整份试卷共用一个值，靠它建索引会把所有题压成一条。
+
+        真实响应里逐题唯一的是外层 ``id``；选项字母还是打乱的。
+        """
+        paper = Paper(test_id=TEST_ID, questions=[
+            PaperQuestion(
+                paper_id="paper-1", question_id="row-1", question_no="17",
+                question_type="1",
+                choices=(Choice("C", "实用性"), Choice("A", "颠覆性")),
+            ),
+            PaperQuestion(
+                paper_id="paper-1", question_id="row-2", question_no="38",
+                question_type="3",
+                choices=(Choice("A", "正确"), Choice("B", "错误")),
+            ),
+        ])
+        answers = [
+            Answer(question=Question(stem="q1", remote_id="row-1"), choices=[1]),
+            Answer(question=Question(stem="q2", remote_id="row-2"), choices=[1]),
+        ]
+        rows = build_answer_rows(paper, answers)
+        self.assertEqual(len(rows), 2, "两道题都要有行（共用 paperId 不能互相覆盖）")
+        self.assertEqual(rows[0]["paperId"], "paper-1")
+        self.assertEqual(rows[0]["questionNo"], "17")
+        self.assertEqual(rows[0]["answer"], "A", "下标 1 → 该位置的 choiceId（打乱的字母）")
+        self.assertEqual(rows[1]["questionNo"], "38")
+        self.assertEqual(rows[1]["answer"], "B")
+
 
 class SubmitGateTest(unittest.IsolatedAsyncioTestCase):
     def _transport(self) -> FakeTransport:

@@ -413,6 +413,44 @@ def _normalise_answer_overrides(raw: Any) -> list[dict[str, Any]] | None:
     return cleaned or None
 
 
+async def _ask_for_review(answerer: Any, questions: list[Any]) -> list[Any]:
+    """控制台的作答：保留低于阈值的候选答案，供人复核。
+
+    ``ChainAnswerer`` 默认把低于 ``min_confidence`` 的答案丢掉（自动批跑要的
+    是「不确定就别交」）。控制台正相反 —— 人要看模型到底猜了什么才能改，
+    所以这里显式要 ``keep_weak=True``。其它答题器原样调用。
+    """
+    from kedaibiao.tasks.answerer import ChainAnswerer  # noqa: PLC0415 - 避免顶层耦合
+
+    if isinstance(answerer, ChainAnswerer):
+        return await answerer.answer(questions, keep_weak=True)
+    return await answerer.answer(questions)
+
+
+def _session_expired_error(exc: BaseException) -> ConsoleError | None:
+    """把「平台说没登录」翻成一句用户能照做的话。
+
+    为什么单独认这一类：有的平台 ``is_logged_in`` 的探测接口对过期 token
+    仍然回正常，真正报 401 是在后面拉数据时 —— 那时已经不是「登录失败」那句
+    文案覆盖的路径了，会漏成 500 内部错误。
+    """
+    name = type(exc).__name__.lower()
+    text = str(exc)
+    lowered = text.lower()
+    if not (
+        "notloggedin" in name
+        or "未登录" in text
+        or "no accesstoken" in lowered
+        or "没有 accesstoken" in lowered
+    ):
+        return None
+    return ConsoleError(
+        f"平台登录态已失效（{text}）。请到「账号」页重新登录这个账号，再回来提交。",
+        kind=PLATFORM_ERROR,
+        status=502,
+    )
+
+
 def _apply_answer_overrides(
     answers: list[Any], overrides: list[dict[str, Any]]
 ) -> None:
@@ -548,11 +586,20 @@ def _submit_plan_envelope(
 def _submit_result_envelope(
     result: dict[str, Any], assignment_id: str
 ) -> dict[str, Any]:
-    """真提交结果的展示信封：原生链路（iTEST）的结果没有 ``message`` 字段。"""
+    """提交结果的展示信封。
+
+    三个链路的结果形状不一样：原生链路（iTEST）给交卷步骤与页面回显、U校园给
+    ``server_finish`` 与回读、通用链路给 ``ok``/``message``。信封统一收口，
+    免得没有 ``message`` 的平台又掉回「这个动作没有返回结构化内容」。
+    """
+    submitted = bool(result.get("submitted"))
+    accepted = result.get("ok")
     fields: list[dict[str, Any]] = [
         {"label": "任务号", "value": assignment_id},
-        {"label": "已交卷", "value": "是" if result.get("submitted") else "否"},
+        {"label": "已交卷", "value": "是" if submitted else "否"},
     ]
+    if accepted is not None:
+        fields.append({"label": "平台受理", "value": "是" if accepted else "否"})
     finish = result.get("server_finish")
     fields.append(
         {
@@ -567,6 +614,9 @@ def _submit_result_envelope(
         fields.append({"label": "交卷截图", "value": str(screenshot)})
 
     sections: list[dict[str, Any]] = []
+    message = _text_or_empty(result.get("message"))
+    if message:
+        sections.append({"label": "平台回执", "kind": "text", "text": message})
     page_text = _text_or_empty(result.get("page_text"))
     if page_text:
         sections.append({"label": "交卷页面回显", "kind": "text", "text": page_text})
@@ -596,9 +646,12 @@ def _submit_result_envelope(
                 "rows": step_rows,
             }
         )
+    # 标签只用来说明「到底交没交」—— 这是用户最容易被误导的一处。
+    label = "已交卷" if submitted and accepted is not False else "未交卷"
     return {
         "kind": "detail",
         "action": "submit",
+        "label": label,
         "fields": fields,
         "sections": sections,
     }
@@ -2947,6 +3000,9 @@ class ConsoleService:
         except Exception as exc:  # noqa: BLE001
             self._plog(scope, "error",
                        f"✗ 提交 {assignment_id}：{type(exc).__name__}: {exc}")
+            expired = _session_expired_error(exc)
+            if expired is not None:
+                raise expired from exc
             raise
         if isinstance(result, dict):
             if result.get("dry_run", True) is False or result.get("submitted") is not None:
@@ -2981,8 +3037,10 @@ class ConsoleService:
             adapter = runtime.make_adapter(platform)
             restore_adapter_session(adapter, cookie_file)
             if not await adapter.refresh_session(creds):
+                detail = _text_or_empty(getattr(adapter, "last_session_error", ""))
                 raise ConsoleError(
-                    f"{platform} 登录失败（会话可能已失效，请到「账号」页重新登录）",
+                    f"{platform} 登录失败（会话可能已失效，请到「账号」页重新登录）"
+                    + (f"：{detail}" if detail else ""),
                     kind=PLATFORM_ERROR, status=502,
                 )
 
@@ -3031,7 +3089,9 @@ class ConsoleService:
                     "没有取到题目，无法作答", kind="bad_request", status=400
                 )
 
-            answers = await runtime.pipeline.answerer.answer(questions)
+            # 控制台是**人工复核**，不是自动批跑：低于阈值的候选答案不能丢，
+            # 否则人看到的是「没答出来」，实际模型可能给了 0.7 的猜测。
+            answers = await _ask_for_review(runtime.pipeline.answerer, questions)
             if confirm and overrides:
                 # 人工在控制台上改过答案：写回这份作答列表，再走同一套硬门槛。
                 _apply_answer_overrides(answers, overrides)
@@ -3072,7 +3132,14 @@ class ConsoleService:
 
             if not confirm:
                 plan["submitted"] = False
-                plan["note"] = "这是干跑结果，没有向平台提交任何内容。确认无误后带 confirm=true 再调用。"
+                note = "这是干跑结果，没有向平台提交任何内容。确认无误后带 confirm=true 再调用。"
+                gate = _text_or_empty(getattr(adapter, "submit_gate_hint", ""))
+                if gate:
+                    # 这个平台「真提交」只会存草稿：必须在点击之前说清楚，
+                    # 否则用户会以为按钮没生效。
+                    note += f"\n注意：{gate}"
+                    plan["submit_gate"] = gate
+                plan["note"] = note
                 plan.update(_submit_plan_envelope(plan, assignment_id))
                 return plan
 
@@ -3081,7 +3148,9 @@ class ConsoleService:
             if weakest < runtime.settings.min_confidence:
                 raise ConsoleError(
                     f"最低置信度 {weakest:.2f} 低于阈值 {runtime.settings.min_confidence:.2f}，"
-                    f"拒绝提交（宁可交白卷也不交错答案）",
+                    f"拒绝提交（宁可交白卷也不交错答案）。"
+                    f"回到「提交计划」里把标了「需人工确认」的题核对一遍 —— "
+                    f"改过或勾了「我确认这题」的题会以人工答案提交，不受这条门槛约束。",
                     kind="bad_request", status=400,
                 )
 
@@ -3094,6 +3163,20 @@ class ConsoleService:
             plan["ok"] = result.ok
             plan["score"] = result.score
             plan["message"] = result.message
+            # 结果也走展示信封：没有 message 的平台、或只交了草稿的情况，
+            # 用户都要能在抽屉里一眼看清「到底交没交」。
+            plan.update(
+                _submit_result_envelope(
+                    {
+                        "submitted": result.ok,
+                        "ok": result.ok,
+                        "score": result.score,
+                        "message": result.message,
+                        "server_finish": (result.raw or {}).get("server_finish"),
+                    },
+                    assignment_id,
+                )
+            )
             return plan
         finally:
             if adapter is not None:

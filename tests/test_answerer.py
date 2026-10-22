@@ -135,6 +135,28 @@ class TestChainAnswerer(unittest.IsolatedAsyncioTestCase):
         result = await chain.answer([Question(stem="题")])
         self.assertTrue(result[0].is_empty())
 
+    async def test_keep_weak_keeps_low_confidence_candidate(self) -> None:
+        """控制台复核要看到「模型猜了什么、多确信」，不是一句「没答出来」。
+
+        默认丢弃语义保持不变（自动批跑用），只有显式 keep_weak=True 才保留。
+        """
+        chain = ChainAnswerer([_StubAnswerer("weak", [0], 0.1)], min_confidence=0.5)
+        result = await chain.answer([Question(stem="题")], keep_weak=True)
+        self.assertFalse(result[0].is_empty())
+        self.assertEqual(result[0].choices, [0])
+        self.assertEqual(result[0].confidence, 0.1, "置信度不能篡改")
+        # 同一份链不传 keep_weak 时仍是空占位 —— 自动链路语义没变
+        self.assertTrue((await chain.answer([Question(stem="题")]))[0].is_empty())
+
+    async def test_keep_weak_prefers_higher_confidence_fallback(self) -> None:
+        """链尾的规则兜底（0.2）不该盖掉链首模型给的 0.4。"""
+        weak = _StubAnswerer("weak", [0], 0.4)
+        tail = _StubAnswerer("tail", [1], 0.2)
+        chain = ChainAnswerer([weak, tail], min_confidence=0.5)
+        result = await chain.answer([Question(stem="题")], keep_weak=True)
+        self.assertEqual(result[0].choices, [0])
+        self.assertEqual(result[0].confidence, 0.4)
+
 
 async def _mixed(questions: list[Question]) -> list[Answer]:
     out: list[Answer] = []

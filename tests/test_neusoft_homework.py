@@ -399,8 +399,11 @@ class CoreQuestionTest(unittest.TestCase):
     def test_only_documented_question_types_are_mapped(self) -> None:
         self.assertIs(core_question_type("4"), QuestionType.FILL)
         self.assertIs(core_question_type(4), QuestionType.FILL)
+        # 2026-10-22 真实试卷实测：1 = 四选一单选，3 = 正/误判断题
+        self.assertIs(core_question_type("1"), QuestionType.SINGLE)
+        self.assertIs(core_question_type("3"), QuestionType.JUDGE)
         # 组合题（8/10）在 core 里没有对应枚举；其余未登记取值同样归 UNKNOWN
-        for raw in ("8", "10", "1", "", None):
+        for raw in ("8", "10", "", None):
             with self.subTest(question_type=raw):
                 self.assertIs(core_question_type(raw), QuestionType.UNKNOWN)
 
@@ -417,6 +420,91 @@ class CoreQuestionTest(unittest.TestCase):
         self.assertEqual(questions[1].options, ["选项甲", "选项乙"])
         self.assertIs(questions[2].type, QuestionType.UNKNOWN)
         self.assertIs(questions[3].type, QuestionType.UNKNOWN)
+
+
+def _real_shape_payload() -> dict[str, Any]:
+    """**真实响应形状**（2026-10-22 实测，见 ``data/recon/neusoft-paper-*.json``）。
+
+    和旧假设的差别全在这里，也是「交卷时一条答案都映射不上」的根因：
+
+    - ``paperId`` / ``id`` 在**外层**（``paperQuestionList[]``），内层没有；
+    - ``paperId`` 整份试卷共用一个值（等于顶层 ``id``），逐题唯一的是外层 ``id``；
+    - ``choices[].choiceId`` 是字母且**顺序打乱**（不是 A、B、C、D）；
+    - 选项文本可能被二次转义（``"\\t实用性"``）。
+    """
+    return {
+        "id": "paper-1",
+        "name": "期末测试",
+        "paperParts": [
+            {
+                "partId": "part-1",
+                "paperQuestionList": [
+                    {
+                        "id": "pqrow-1",
+                        "paperId": "paper-1",
+                        "partId": "part-1",
+                        "questionType": "1",
+                        "paperQuestion": {
+                            "questionNo": 17,
+                            "questionType": "1",
+                            "stemText": "下列描述错误的一项是？",
+                            "choices": [
+                                {"choiceId": "B", "choiceContent": "开放性"},
+                                {"choiceId": "D", "choiceContent": "从众性"},
+                            ],
+                        },
+                    },
+                    {
+                        "id": "pqrow-2",
+                        "paperId": "paper-1",
+                        "partId": "part-1",
+                        "questionType": "3",
+                        "paperQuestion": {
+                            "questionNo": 38,
+                            "questionType": "3",
+                            "stemText": "发散思维和聚合思维往往要结合使用。",
+                            "choices": [
+                                {"choiceId": "A", "choiceContent": "\\t正确"},
+                                {"choiceId": "B", "choiceContent": "\\t错误"},
+                            ],
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+
+
+class RealShapePaperTest(unittest.TestCase):
+    """真实响应形状：paperId 在外层、逐题唯一的是外层 id、选项字母是打乱的。"""
+
+    def test_paper_id_comes_from_outer_row(self) -> None:
+        paper = parse_paper(_real_shape_payload())
+        self.assertEqual(len(paper.questions), 2)
+        for item in paper.questions:
+            self.assertEqual(item.paper_id, "paper-1")
+        # 迁移前这里恒为空 —— 于是 answer/save 的行全被丢掉
+        self.assertEqual(
+            [item.question_no for item in paper.questions], ["17", "38"]
+        )
+
+    def test_question_id_is_the_unique_key(self) -> None:
+        paper = parse_paper(_real_shape_payload())
+        self.assertEqual([item.question_id for item in paper.questions], ["pqrow-1", "pqrow-2"])
+        keys = [item.key for item in paper.questions]
+        self.assertEqual(keys, ["pqrow-1", "pqrow-2"])
+        self.assertEqual(len(set(keys)), len(keys), "paperId 共用，绝不能用它当主键")
+
+    def test_escaped_choice_text_is_decoded(self) -> None:
+        paper = parse_paper(_real_shape_payload())
+        judge = paper.questions[1]
+        self.assertEqual([choice.content for choice in judge.choices], ["正确", "错误"])
+
+    def test_to_core_questions_use_unique_remote_id(self) -> None:
+        questions = to_core_questions(parse_paper(_real_shape_payload()))
+        self.assertEqual([q.remote_id for q in questions], ["pqrow-1", "pqrow-2"])
+        self.assertIs(questions[0].type, QuestionType.SINGLE)
+        self.assertIs(questions[1].type, QuestionType.JUDGE)
 
 
 if __name__ == "__main__":

@@ -226,11 +226,51 @@ PUT  /web-api/smartexam/test/student/submit?historyId=  # 不可逆
 
 | 字段 | 形状 |
 | --- | --- |
-| `questionType` | **字符串**枚举；`"4"`=多空填空，`"8"`/`"10"`=组合题（枚举不全） |
+| `questionType` | **字符串**枚举；`"1"`=四选一单选，`"3"`=正/误判断题，`"4"`=多空填空，`"8"`/`"10"`=组合题（枚举不全） |
 | `stem` / `stemText` | 题干 HTML / 纯文本，优先 `stemText` |
 | `choices[]` | `{choiceId, choiceContent}` |
 | `candidateAnswer` / `standardAnswer` | **三态**：数组 / 逗号串 / `null` |
-| `questionNo` | 字符串；题型分组后可能各自从 1 开始编号 |
+| `questionNo` | 字符串（响应里可能是数字）；**按试卷唯一**，题型分组后才会重复的风险没有出现 |
+
+### 5.5 那张「交卷一条答案都映射不上」的教训（2026-10-22 真实响应）
+
+`[A]` 真实账号取到 50 题（`data/recon/neusoft-paper-<testId>.json`），实测结构与
+旧假设**不在同一层**：
+
+```jsonc
+{ "id": "68b0…c985", "name": "期末测试",
+  "paperParts": [{
+    "partId": "68b0…c986",
+    "paperQuestionList": [{
+      "id": "68b0…c997",        // ← 逐题唯一，题目行主键
+      "paperId": "68b0…c985",   // ← 整份试卷共用（= 顶层 id）
+      "partId": "68b0…c986",
+      "questionType": "1",
+      "paperQuestion": {        // ← 题面在此层，且这里**没有** paperId / id
+        "questionNo": 17, "questionType": "1",
+        "stemText": "下列对创新思维的性质的描述，错误的一项是？",
+        "choices": [{"choiceId": "B", "choiceContent": "开放性"},
+                    {"choiceId": "D", "choiceContent": "从众性"}, …],
+        "candidateAnswer": null, "standardAnswer": null
+      }}]}]}
+```
+
+四条必须先记住的事实：
+
+1. **`paperId` 不是逐题标识**：50 道题共用一个 `paperId`。拿它当字典键建索引，
+   会把整份试卷压成一条答案行 —— 保存时逐条校验又能过，最终表现是「没有一条
+   答案能映射到平台题目」。逐题唯一的是外层 `id`。
+2. **`choiceId` 是字母且顺序打乱**：选项数组不是 A、B、C、D 的顺序
+   （实测第一题是 `B/D/C/A`）。所以「下标 → 该位置 `choiceId`」是唯一正确的换算，
+   不能拿位置当字母用。
+3. **文本字段会被二次转义**：`choiceContent` 可能是 `"\\t实用性"`（字面量反斜杠 t）。
+   原样显示就是「\实用性」，进题库还会污染指纹。解析时解 `\t`/`\n`/`\r` 再 trim。
+4. **`questionType` 是字符串**，`"1"` 与 `"3"` 在此之前没被登记 → 全部归 `UNKNOWN`，
+   于是规则兜底不参与、界面没有题型标签。
+
+`answer/save` 的行仍然是 `{"paperId", "questionNo", "questionType", "answer"}`：
+`paperId` 原样取外层的值（全卷相同），`questionNo` 取内层，`answer` 是该题所选
+选项的 `choiceId`（多选用逗号拼接）。写路径仍只有 `[B]` 级证据。
 
 ---
 

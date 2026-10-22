@@ -91,7 +91,18 @@ class RuleAnswerer(Answerer):
 
 
 class ChainAnswerer(Answerer):
-    """逐级降级：前一个答不出（空答案或低于阈值）才问下一个。"""
+    """逐级降级：前一个答不出（空答案或低于阈值）才问下一个。
+
+    ## 低于阈值的答案：默认丢弃，按需保留
+
+    默认行为保持「不可靠就当没答」：整条链跑完仍低于 ``min_confidence`` 的题
+    返回空占位，让上层（流水线 / 批跑）拒绝自动提交 —— 这是自动链路的正确语义。
+
+    但**人工复核**要的是相反的：控制台要让人看到「模型到底猜了什么、它自己
+    有多确信」，再决定改还是确认。那种场景传 ``keep_weak=True``：低于阈值的
+    候选答案保留下来（置信度不篡改），只是继续按需人工确认标出来。
+    两种语义不能合成一种 —— 丢掉答案就没得复核，保留答案则不能自动提交。
+    """
 
     name = "chain"
 
@@ -110,9 +121,13 @@ class ChainAnswerer(Answerer):
         """
         return any(getattr(item, "supports_images", False) for item in self.answerers)
 
-    async def answer(self, questions: list[Question]) -> list[Answer]:
+    async def answer(
+        self, questions: list[Question], *, keep_weak: bool = False
+    ) -> list[Answer]:
         remaining = list(range(len(questions)))
         results: dict[int, Answer] = {}
+        #: ``keep_weak=True`` 时留下低于阈值但非空的答案（同一题取置信度最高的一条）
+        weak: dict[int, Answer] = {}
 
         for answerer in self.answerers:
             if not remaining:
@@ -121,12 +136,19 @@ class ChainAnswerer(Answerer):
             produced = await answerer.answer(batch)
             still: list[int] = []
             for i, ans in zip(remaining, produced, strict=True):
-                if ans.is_empty() or ans.confidence < self.min_confidence:
+                if ans.is_empty():
                     still.append(i)
-                else:
+                    continue
+                if ans.confidence >= self.min_confidence:
                     results[i] = ans
+                    continue
+                if keep_weak:
+                    prev = weak.get(i)
+                    if prev is None or ans.confidence > prev.confidence:
+                        weak[i] = ans
+                still.append(i)
             remaining = still
 
         for i in remaining:
-            results[i] = self._empty(questions[i])
+            results[i] = weak[i] if i in weak else self._empty(questions[i])
         return [results[i] for i in range(len(questions))]
