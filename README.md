@@ -10,7 +10,7 @@
 平台差异全部关在适配器里，核心调度一行都不用改。
 
 **当前状态：v0.1.0 —— 框架 + 6 个真实平台适配器。** 核心层与题库层零第三方依赖，
-离线单测全绿（`pytest -q` 2095 项 / 约 30 秒；`make test` 走 unittest，1984 项）；
+离线单测全绿（`pytest -q` 2090 项 / 约 30 秒；`make test` 走 unittest，1979 项）；
 U校园、东软智慧教育、超星学习通、iTEST、批改网、希沃品课均已接入。
 每个平台「实测到哪一步、哪些只有静态证据」写在
 [docs/verification/](docs/verification/) 与 [docs/research/](docs/research/) 里 ——
@@ -238,12 +238,10 @@ kedaibiao schedule --once --dry-run  # 即使任务写了 live=true 也强制干
 
 ```bash
 PYTHONPATH=src python3 -m kedaibiao web            # 默认绑 127.0.0.1:8765
-PYTHONPATH=src python3 -m kedaibiao web --host ::1 --port 8766   # 只走 IPv6 回环
-PYTHONPATH=src python3 -m kedaibiao web --host '[::1]:8766'      # 端口也可以写在 host 里
 ```
 
-IPv6 地址会按 RFC 3986 自动用方括号处理（`http://[::1]:8766/`），Host 白名单
-也认方括号形式；绑 `::` / `0.0.0.0` 属于监听所有网卡，仍需要 `--allow-host`。
+只支持 IPv4 回环（`127.0.0.1`）。要绑定非回环地址（例如 Tailscale 网内）用
+`--host <地址> --allow-host <主机名>`，启动时会打印警告。
 
 > 📷 控制台 · 概览 —— 截图只在本机保留（含真实平台数据，不入库）：`docs/screenshots/ui-overview-pigai.png`
 
@@ -318,14 +316,14 @@ PYTHONPATH=src python3 -m kedaibiao web
 改完前端想确认没写坏交互，跑自带的测试（都不碰真实平台账号）：
 
 ```bash
-timeout 600 .venv/bin/python -m pytest -q            # 2095 单测（约 30 秒，离线）
+timeout 600 .venv/bin/python -m pytest -q            # 2090 单测（约 30 秒，离线）
 python3 scripts/api_matrix_check.py                  # 后端路由/安全/并发 125 项（自起临时服务）
 python3 scripts/ui_matrix_check.py  --base http://127.0.0.1:8765 --username admin --password '…'
 python3 scripts/ui_smoke_next.py    --base http://127.0.0.1:8765 --username admin --password '…'
 ```
 
 最近一次全面测试的结果与发现见 [docs/testing-report-2026-10-21.md](docs/testing-report-2026-10-21.md)
-（报告写于 1722 单测时点，此后单测已增长到 2095）。
+（报告写于 1722 单测时点，此后单测已增长到 2090）。
 
 ### 平台只读动作（CLI）
 

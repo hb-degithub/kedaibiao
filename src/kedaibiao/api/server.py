@@ -857,10 +857,6 @@ def build_allowed_hosts(
     extra = list(allow_hosts or [])
 
     def expand(name: str) -> set[str]:
-        # IPv6 的 Host 头必须带方括号（RFC 3986）：`[::1]:8765`。
-        # 裸 `::1:8765` 不是合法 Host，浏览器不会这么发。
-        if ":" in name and not name.startswith("["):
-            return {name, f"[{name}]", f"[{name}]:{port}"}
         return {name, f"{name}:{port}"}
 
     if bind_host in LOOPBACK_NAMES:
@@ -879,49 +875,6 @@ def build_allowed_hosts(
     return allowed
 
 
-def is_ipv6_host(host: str) -> bool:
-    """是不是 IPv6 地址（``::1`` / ``[::1]`` / ``::`` 之类）。"""
-    return ":" in (host or "")
-
-
-def split_host_port(text: str) -> tuple[str, int | None]:
-    """把 ``[::1]:8765`` / ``127.0.0.1:8765`` 拆成 (host, port)。
-
-    命令行里写 ``--host ::1`` 是常见写法；但如果用户写 ``[::1]:8765``，
-    ``socket.bind`` 会不认 —— 这里先拆开再传。
-    """
-    raw = (text or "").strip()
-    if raw.startswith("["):
-        end = raw.find("]")
-        if end > 0:
-            host = raw[1:end]
-            rest = raw[end + 1 :]
-            if rest.startswith(":") and rest[1:].isdigit():
-                return host, int(rest[1:])
-            return host, None
-    if raw.count(":") == 1:
-        host, _, port_text = raw.partition(":")
-        if port_text.isdigit():
-            return host, int(port_text)
-    return raw, None
-
-
-class _ServerV4(ThreadingHTTPServer):
-    address_family = socket.AF_INET
-
-
-class _ServerV6(ThreadingHTTPServer):
-    address_family = socket.AF_INET6
-    #: 双栈监听：绑 ``::`` 时同时接受 IPv4 连接（Linux 默认如此，显式写出来免得
-    #: 换平台后行为变）；只绑 ``::1`` 时这个选项无副作用。
-    dualstack_ipv6 = True
-
-
-def _server_class(host: str) -> type[ThreadingHTTPServer]:
-    """按地址族选 HTTP server 类 —— 默认的 ThreadingHTTPServer 只认 AF_INET。"""
-    return _ServerV6 if is_ipv6_host(host) else _ServerV4
-
-
 def make_server(
     service: ConsoleService,
     *,
@@ -934,7 +887,7 @@ def make_server(
     ``Host`` 白名单见 :func:`build_allowed_hosts`。
     """
     handler = type("BoundConsoleHandler", (ConsoleHandler,), {"service": service})
-    httpd = _server_class(host)((host, port), handler)
+    httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
     handler.allowed_hosts = build_allowed_hosts(
         host, httpd.server_address[1], allow_hosts
@@ -970,9 +923,7 @@ def serve(
 
     actual = httpd.server_address[1]
     shown = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
-    # IPv6 地址在 URL 里必须带方括号，否则 `::1:8766` 这种没法点、也解析不了
-    shown_url = f"[{shown}]" if is_ipv6_host(shown) else shown
-    url = f"http://{shown_url}:{actual}/"
+    url = f"http://{shown}:{actual}/"
 
     if banner:
         print(f"课代表控制台已启动： {url}")
@@ -995,7 +946,6 @@ def serve(
 
 def pick_free_port(host: str = "127.0.0.1") -> int:
     """要一个当前空闲的端口号（拿完就释放，存在极小的竞态，够本地用）。"""
-    family = socket.AF_INET6 if is_ipv6_host(host) else socket.AF_INET
-    with socket.socket(family, socket.SOCK_STREAM) as sock:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((host, 0))
         return int(sock.getsockname()[1])

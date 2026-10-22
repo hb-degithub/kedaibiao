@@ -78,9 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     web_p = sub.add_parser("web", parents=[root_parent], help="启动 Web 控制台")
     web_p.add_argument(
-        "--host", default="127.0.0.1",
-        help="绑定地址（默认只绑回环）。IPv6 写 ::1 或 [::1]:8765；"
-        "0.0.0.0 / :: 会监听所有网卡，务必配合 --allow-host",
+        "--host", default="127.0.0.1", help="绑定地址（默认只绑回环，不要随便改）"
     )
     web_p.add_argument("--port", type=int, default=8765, help="端口，0 表示随机空闲端口")
     web_p.add_argument(
@@ -438,7 +436,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:
 
 def cmd_web(args: argparse.Namespace) -> int:
     # 延迟导入：不起控制台就不该加载 http.server
-    from kedaibiao.api.server import serve, split_host_port
+    from kedaibiao.api.server import serve
     from kedaibiao.api.service import ConsoleService
 
     if not Path(args.root).is_dir():
@@ -457,11 +455,8 @@ def cmd_web(args: argparse.Namespace) -> int:
             f"⏱  定时跑批已启用：{len(info.get('jobs', []))} 个任务，"
             f"tick={info.get('tick', 0):g}s"
         )
-    # 允许 `--host ::1` 和 `--host [::1]:8765` 两种写法（后者把端口也带上）
-    host, host_port = split_host_port(args.host)
-    port = host_port or args.port
     try:
-        serve(service, host=host, port=port, allow_hosts=args.allow_host)
+        serve(service, host=args.host, port=args.port, allow_hosts=args.allow_host)
     finally:
         service.stop_schedule()
     return 0
