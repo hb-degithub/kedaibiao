@@ -147,6 +147,12 @@ async def complete_resource(
             sorted(ep.COMPLETABLE_RES_TYPES),
         )
         return False
+    if resource.is_image:
+        log.info(
+            "图片资源没有实测的完成链路，跳过（不计失败、不占 limit）：res=%s",
+            resource.res_id,
+        )
+        return False
     if resource.is_video:
         return await complete_video(client, course, resource.res_id)
     if resource.is_document:

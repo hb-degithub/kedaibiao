@@ -85,6 +85,9 @@ class PlaybackReport:
     completed: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    #: 类型已知但**没有实测完成链路**而跳过的资源（目前只有图片）。
+    #: 单独一列，免得把它们混进 ``failed`` 让完成率永远到不了 100%。
+    unsupported: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -429,6 +432,11 @@ class NeusoftAdapter(PlatformAdapter):
         for item in items:
             if not item.is_completable:
                 continue
+            if not item.is_study_supported:
+                # 图片：计入待完成，但没有完成链路。跳过且**不占 limit**，
+                # 否则每张图都记一次失败、还会把灰度 limit 吃光。
+                report.unsupported.append(item.res_id)
+                continue
             if only_pending and item.is_completed:
                 report.skipped.append(item.res_id)
                 continue
@@ -438,10 +446,11 @@ class NeusoftAdapter(PlatformAdapter):
             ok = await study.complete_resource(self.client, platform_course, item)
             (report.completed if ok else report.failed).append(item.res_id)
         self.log.info(
-            "东软刷课：完成 %d，跳过 %d，失败 %d",
+            "东软刷课：完成 %d，跳过 %d，失败 %d，无完成链路 %d",
             len(report.completed),
             len(report.skipped),
             len(report.failed),
+            len(report.unsupported),
         )
         return report
 

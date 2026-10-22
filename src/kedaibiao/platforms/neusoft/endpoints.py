@@ -127,8 +127,16 @@ ATT_DETAIL_ID = f"{ATT}/getAttendanceDetailId"
 RES_TYPE_VIDEO = 1
 RES_TYPE_DOC = 3
 RES_TYPE_IMAGE = 4
-#: 可完成刷课的资源类型
+#: 可完成刷课的资源类型（含图片 —— 图片也算「待完成」，会影响完成度口径）
 COMPLETABLE_RES_TYPES = frozenset({RES_TYPE_VIDEO, RES_TYPE_DOC, RES_TYPE_IMAGE})
+
+#: **真的有完成链路**的资源类型：视频（三段上报）与文档（start → 等落库 → end → 回读）。
+#:
+#: 图片（``res_type=4``）虽然计入「待完成」，但 ``startStudyForDocPicMd`` 到底管不管
+#: 图片没有实测证据（档案 §4 的 [A] 只覆盖视频与文档）。所以刷课时**跳过图片、
+#: 不占 limit、单独记一条 unsupported**，而不是每张图算一次失败 —— 那会让完成度
+#: 永远到不了 100%，还会把 limit 吃光。
+SUPPORTED_RES_TYPES = frozenset({RES_TYPE_VIDEO, RES_TYPE_DOC})
 
 #: 学习状态，[A]
 STUDY_STATUS_TODO = 0

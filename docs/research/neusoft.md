@@ -328,6 +328,12 @@ PUT  /web-api/teachmanager/teach-course-attendance-detail/update
 
 `getAttendanceDetailId/{attendanceId}/{studentId}` 取明细 `id`；返回空串表示不在该教学班。
 
+> **分页证据（2026-10-22 只读探测）**：`getAppStuAttendancePage` 的响应是
+> `{"list": [...], "total": N}`，**`total` 字段确认存在**；但档案 §6 的实测 body
+> 里没有分页参数，`pageNo`/`pageSize` 是否生效**未验证**（追加这两个键后请求不报错，
+> 语义未知）。实现上：第一页保持实测 body，只有 `total > 本页行数` 时才追加分页键；
+> 服务端不认时靠「没有新场次」停下并告警，不会死循环。
+
 ---
 
 ## 7. 本适配器的取舍
@@ -348,6 +354,7 @@ PUT  /web-api/teachmanager/teach-course-attendance-detail/update
 | 2 | 组合题 `parentQuestionNo` | 需要一份真实组合题样本 |
 | 3 | `refreshToken` 的正确域名 | APK 里指向测试域名，生产需实测 |
 | 4 | 考核类是否需要 `currentClassId` | 资源类必需（已双向确认），考核类未见 |
+| 5 | 考勤 `pageNo` / `pageSize` 的真实语义 | 响应确认带 `total`；需要一份多页考勤样本（或真实账号复测）确认分页参数是否生效 |
 
 ---
 
@@ -392,10 +399,10 @@ PUT  /web-api/teachmanager/teach-course-attendance-detail/update
 | 签名 | `platforms/neusoft/signing.py` | `Id-Code`（AES-CBC + 零填充），4 条跨语言向量钉住 |
 | 请求层 | `platforms/neusoft/client.py` | 公共头、外壳解包、401 自动重登、租户解析、登录 |
 | 学期 | `platforms/neusoft/terms.py` | 学期下拉（两种形状都收） |
-| 课程/资源 | `platforms/neusoft/resources.py` | 课程分页、资源列表、目录递归（seen 防环） |
-| 刷课 | `platforms/neusoft/study.py` | 视频三段上报、文档流程、**回读确认** |
+| 分页 | `platforms/neusoft/paging.py` | 课程/任务/考勤共用三条终止条件（无新条目 / 覆盖 total / 短页）+ `MAX_PAGES` 兜底 |
+| 刷课 | `platforms/neusoft/study.py` | 视频三段上报、文档流程、**回读确认**；图片跳过（无实测链路） |
 | 作业 | `platforms/neusoft/homework.py` | 学习任务（过滤 type=3）、取题、进入、存草稿、交卷（默认拒绝） |
-| 考勤 | `platforms/neusoft/attendance.py` | 场次列表、三条签到守卫、提交签到 |
+| 考勤 | `platforms/neusoft/attendance.py` | 场次列表（按 `total` 翻页）、三条签到守卫、提交签到 |
 | 适配器 | `platforms/neusoft/adapter.py` | 框架契约 + 刷课/签到编排 + 会话导出导入 |
 | 控制台动作 | `api/actions.py`（`_register_neusoft`） | `resources` / `study` / `attendance` / `sign` |
 

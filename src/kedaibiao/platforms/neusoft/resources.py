@@ -27,6 +27,7 @@ import logging
 from typing import Any
 
 from kedaibiao.platforms.neusoft import endpoints as ep
+from kedaibiao.platforms.neusoft import paging as paging_rules
 from kedaibiao.platforms.neusoft.client import NeusoftClient
 from kedaibiao.platforms.neusoft.models import (
     NeusoftCourse,
@@ -36,11 +37,6 @@ from kedaibiao.platforms.neusoft.models import (
 )
 
 log = logging.getLogger(__name__)
-
-#: 课程分页参数。实测一次 100 条足够覆盖单个学期（档案 §3 给的示例就是 1/100），
-#: 这里不翻页：多数学期课程数远小于 100，翻页只会多打请求。
-COURSE_PAGE_NO = 1
-COURSE_PAGE_SIZE = 100
 
 #: 资源列表根层的 ``parentId``，[A]（档案 §3 的示例 body 就是这个值）。
 ROOT_PARENT_ID = "0"
@@ -190,20 +186,55 @@ def build_resource_body(course: NeusoftCourse, parent_id: str) -> dict[str, Any]
 
 
 async def list_courses(client: NeusoftClient, term_id: str) -> list[NeusoftCourse]:
-    """列一个学期下的课程。
+    """列一个学期下的**全部**课程（按 ``pageNo`` / ``pageSize=100`` 翻页）。
 
-    参数按档案 §3 的实测值固定：``pageNo=1`` / ``pageSize=100``。
+    改造原因：以前只取第 1 页，课程超过 100 门时后面的课静默消失，表现为
+    「这门课没有 / 这门课没作业」。翻页规则见 :mod:`..paging`：
+
+    - 本页没有新课程 → 停（服务端忽略 ``pageNo`` 时不会死循环）；
+    - 已取课程数覆盖 ``total`` → 停；
+    - 本页原始行数 < ``pageSize`` → 停；
+    - 到 :data:`paging.MAX_PAGES` 仍未读完 → 告警，不静默截断。
     """
-    payload = await client.request(
-        "GET",
-        ep.COURSE_PAGE,
-        params={
-            "termId": term_id,
-            "pageNo": COURSE_PAGE_NO,
-            "pageSize": COURSE_PAGE_SIZE,
-        },
-    )
-    return parse_courses(payload, term_id=term_id)
+    courses: list[NeusoftCourse] = []
+    seen: set[tuple[str, str]] = set()
+    raw_collected = 0
+    page_size = paging_rules.COURSE_PAGE_SIZE
+
+    for page_no in range(1, paging_rules.MAX_PAGES + 1):
+        payload = await client.request(
+            "GET",
+            ep.COURSE_PAGE,
+            params={"termId": term_id, "pageNo": page_no, "pageSize": page_size},
+        )
+        rows = _rows(payload, "list")
+        raw_collected += len(rows)
+        fresh = 0
+        for course in parse_courses(payload, term_id=term_id):
+            key = (course.teach_course_id, course.teach_class_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            courses.append(course)
+            fresh += 1
+        if fresh == 0:
+            if page_no > 1:
+                log.warning(
+                    "课程分页第 %d 页没有新课程，提前停止（服务端可能忽略了 pageNo）",
+                    page_no,
+                )
+            break
+        if not paging_rules.should_continue(
+            collected=raw_collected,
+            page_count=len(rows),
+            total=paging_rules.total_of(payload),
+            page_size=page_size,
+        ):
+            break
+    else:
+        log.warning("课程超过 %d 页仍未读完，后续课程未拉取", paging_rules.MAX_PAGES)
+
+    return courses
 
 
 async def list_resources(client: NeusoftClient, course: NeusoftCourse) -> list[Resource]:

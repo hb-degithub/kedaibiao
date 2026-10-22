@@ -22,14 +22,18 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from kedaibiao.platforms.neusoft import endpoints as ep
+from kedaibiao.platforms.neusoft import paging as paging_rules
 from kedaibiao.platforms.neusoft.client import NeusoftClient
 from kedaibiao.platforms.neusoft.errors import NeusoftError
 from kedaibiao.platforms.neusoft.models import as_int, as_list, as_str
+
+log = logging.getLogger(__name__)
 
 #: 场次状态「进行中」。``endpoints`` 里只登记了明细状态
 #: :data:`~...endpoints.ATT_STATUS_PRESENT`（同值 1，但那是「出勤」的语义），
@@ -129,18 +133,72 @@ async def list_attendance(
     这是「不要过滤」的表达方式（协议档案 §6 的实测报文），省字段时的服务端行为
     没有验证过，别拿它当默认值。
     """
-    payload = await client.request(
-        "POST",
-        ep.ATT_PAGE,
-        body={
-            "studentId": student_id,
-            "termId": term_id,
-            "courseId": None,
-            "attendanceStatus": None,
-            "status": None,
-        },
-    )
-    return parse_attendance(payload)
+    # 第一页保持档案 §6 的实测报文形态（**不带分页键**）：那是唯一已验证过的 body。
+    # 分页参数只在响应 ``total`` 明确大于本页条数时才追加 —— 服务端不认就退化成
+    # 「只读第一页」，与改造前行为一致，不会把请求形态改坏。
+    body: dict[str, Any] = {
+        "studentId": student_id,
+        "termId": term_id,
+        "courseId": None,
+        "attendanceStatus": None,
+        "status": None,
+    }
+    payload = await client.request("POST", ep.ATT_PAGE, body=body)
+
+    items = parse_attendance(payload)
+    seen = {item.attendance_id for item in items}
+    page_size = paging_rules.ATTENDANCE_PAGE_SIZE
+    total = paging_rules.total_of(payload)
+    raw_collected = len(payload.get("list") or []) if isinstance(payload, dict) else len(items)
+
+    # ``total`` 是 2026-10-22 只读探测确认存在的字段；没有它就无法判断「还有没有
+    # 下一页」，此时保持旧行为（只读第一页），并在 total 超过本页行数时告警。
+    rows = payload.get("list") if isinstance(payload, dict) else None
+    first_page_count = len(rows) if isinstance(rows, list) else len(items)
+    if total is None and first_page_count >= page_size:
+        log.warning(
+            "考勤第一页已满 %d 条且响应没有 total，可能还有更多场次未拉取",
+            page_size,
+        )
+
+    for page_no in range(2, paging_rules.MAX_PAGES + 1):
+        if total is None or raw_collected >= total:
+            break
+        page_payload = await client.request(
+            "POST",
+            ep.ATT_PAGE,
+            body={**body, "pageNo": page_no, "pageSize": page_size},
+        )
+        fresh = 0
+        for item in parse_attendance(page_payload):
+            if item.attendance_id in seen:
+                continue
+            seen.add(item.attendance_id)
+            items.append(item)
+            fresh += 1
+        page_rows = page_payload.get("list") if isinstance(page_payload, dict) else None
+        page_count = len(page_rows) if isinstance(page_rows, list) else 0
+        raw_collected += page_count
+        if fresh == 0:
+            log.warning(
+                "考勤分页第 %d 页没有新场次（total=%d，已取 %d），"
+                "服务端可能忽略了 pageNo，剩余场次未拉取",
+                page_no,
+                total,
+                len(items),
+            )
+            break
+        if not paging_rules.should_continue(
+            collected=raw_collected,
+            page_count=page_count,
+            total=paging_rules.total_of(page_payload),
+            page_size=page_size,
+        ):
+            break
+    else:
+        log.warning("考勤超过 %d 页仍未读完，后续场次未拉取", paging_rules.MAX_PAGES)
+
+    return items
 
 
 def is_open(att: Attendance, now_ms: int | None = None) -> bool:

@@ -30,6 +30,7 @@ from typing import Any
 
 from kedaibiao.core.models import Question, QuestionType
 from kedaibiao.platforms.neusoft import endpoints as ep
+from kedaibiao.platforms.neusoft import paging as paging_rules
 from kedaibiao.platforms.neusoft.client import NeusoftClient
 from kedaibiao.platforms.neusoft.errors import NeusoftError, NeusoftProtocolError
 from kedaibiao.platforms.neusoft.models import as_float, as_int, as_list, as_str
@@ -238,12 +239,47 @@ async def list_study_tasks(client: NeusoftClient, term_id: str) -> list[StudyTas
     """
     if not term_id:
         raise NeusoftError("list_study_tasks 需要 termId：本接口按学期拉，缺学期无法定位任务")
-    payload = await client.request(
-        "POST",
-        ep.STUDY_TASK_PAGE,
-        body={"pageNo": 1, "pageSize": 200, "termId": term_id},
-    )
-    return parse_study_tasks(payload)
+
+    # 翻页规则见 :mod:`..paging`。以前只取第 1 页（200 条封顶），一学期任务
+    # 超过 200 条时后面的作业/测验静默消失，表现为「老师没布置」。
+    tasks: list[StudyTask] = []
+    seen: set[str] = set()
+    raw_collected = 0
+    page_size = paging_rules.TASK_PAGE_SIZE
+
+    for page_no in range(1, paging_rules.MAX_PAGES + 1):
+        payload = await client.request(
+            "POST",
+            ep.STUDY_TASK_PAGE,
+            body={"pageNo": page_no, "pageSize": page_size, "termId": term_id},
+        )
+        rows = _rows(payload, key="list")
+        raw_collected += len(rows)
+        fresh = 0
+        for task in parse_study_tasks(payload):
+            if task.test_id in seen:
+                continue
+            seen.add(task.test_id)
+            tasks.append(task)
+            fresh += 1
+        if fresh == 0:
+            if page_no > 1:
+                log.warning(
+                    "学习任务分页第 %d 页没有新任务，提前停止（服务端可能忽略了 pageNo）",
+                    page_no,
+                )
+            break
+        if not paging_rules.should_continue(
+            collected=raw_collected,
+            page_count=len(rows),
+            total=paging_rules.total_of(payload),
+            page_size=page_size,
+        ):
+            break
+    else:
+        log.warning("学习任务超过 %d 页仍未读完，后续任务未拉取", paging_rules.MAX_PAGES)
+
+    return tasks
 
 
 # --------------------------------------------------------------------------

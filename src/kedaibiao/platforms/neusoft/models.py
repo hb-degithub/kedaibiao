@@ -186,3 +186,16 @@ class Resource:
     @property
     def is_document(self) -> bool:
         return self.res_type == ep.RES_TYPE_DOC
+
+    @property
+    def is_image(self) -> bool:
+        return self.res_type == ep.RES_TYPE_IMAGE
+
+    @property
+    def is_study_supported(self) -> bool:
+        """是否有**实测过**的完成链路（视频 / 文档）。
+
+        图片计入「待完成」但刷课时跳过：完成接口没有实测证据，硬刷只会
+        每张图算一次失败、还吃光 ``limit``（档案 §3/§4 的边界）。
+        """
+        return self.res_type in ep.SUPPORTED_RES_TYPES
