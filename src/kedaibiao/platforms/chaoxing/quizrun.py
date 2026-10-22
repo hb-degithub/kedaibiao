@@ -392,6 +392,7 @@ class ChaoxingQuiz:
             # 直接拼 examnotes URL 会落到「查看答案」页（0 题），所以照平台的做法点它。
             notes_page = await self._open_notes_via_list(item)
             if notes_page is not None:
+                notes_page = await self._ensure_notes_page(notes_page)
                 self.emit("info", f"已通过列表里的「重考」入口打开：{item.title}")
         if notes_page is None:
             url = EXAM_NOTES_URL.format(
@@ -453,6 +454,54 @@ class ChaoxingQuiz:
             self.emit("info", f"还没进到答题页（第 {attempt + 1} 次尝试），继续…")
             await asyncio.sleep(2)
         raise PwError("进入考试后没有找到答题页（可能被风控/需要人脸）")
+
+    async def _ensure_notes_page(self, page: PwPage) -> PwPage:
+        """把「交卷结果页」点成「考试须知（reset=true）」页。
+
+        已交卷的场次，goTest 会先落到结果页（上面写着「允许重考 N 次」和一个
+        「重考」按钮）；点它才会进带 ``&reset=true`` 的须知页，按钮文案变成
+        「开始重考」。这一步不点，后面就永远进不了答题页。
+        """
+        has_start = False
+        with contextlib.suppress(PwError):
+            has_start = bool(
+                await page.eval(
+                    "(() => { const el = document.getElementById('startBtn');"
+                    " return !!(el && (el.offsetWidth || 0) > 0); })()"
+                )
+            )
+        if has_start:
+            return page
+        context = getattr(self.page.raw, "context", None)
+        before = {id(raw) for raw in (getattr(context, "pages", []) or [])}
+        clicked = False
+        with contextlib.suppress(PwError):
+            clicked = bool(
+                await page.eval(
+                    "(() => {"
+                    " const nodes = Array.from(document.querySelectorAll('a,button,div,span'));"
+                    " const labels = ['重考', '开始重考'];"
+                    " const hit = nodes.find(el => labels.includes((el.innerText || '').trim())"
+                    "   && (el.offsetWidth || 0) > 0 && (el.offsetHeight || 0) > 0);"
+                    " if (!hit) return false; hit.click(); return true;"
+                    "})()"
+                )
+            )
+        if not clicked:
+            return page
+        self.emit("info", "结果页上点了「重考」，等待须知页…")
+        for _ in range(15):
+            await asyncio.sleep(1.5)
+            pages = list(getattr(context, "pages", []) or [])
+            for raw_page in pages:
+                url = str(getattr(raw_page, "url", "") or "")
+                if id(raw_page) in before and "examnotes" not in url:
+                    continue
+                if "examnotes" in url:
+                    return PwPage(raw_page)
+            if "examnotes" in str(page.url or ""):
+                return page
+        return page
 
     async def _open_notes_via_list(self, item: quiz_mod.ExamItem) -> PwPage | None:
         """在课程页「考试」tab 里点这一行的 goTest，返回打开的须知页。

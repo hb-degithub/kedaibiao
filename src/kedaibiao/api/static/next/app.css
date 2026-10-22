@@ -1614,3 +1614,58 @@ pre.code {
   gap: 10px;
   flex-wrap: wrap;
 }
+
+.captcha-panel { width: 100%; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.captcha-panel .captcha-bg { max-width: 100%; border-radius: 8px; border: 1px solid var(--line); }
+.captcha-panel .captcha-piece { height: 60px; border-radius: 6px; border: 1px solid var(--line); }
+
+/* ------------------------------------------------- 干跑计划：逐题改答案 -- */
+.plan-editor { display: flex; flex-direction: column; gap: 10px; }
+.plan-dirty { color: var(--accent); font-weight: 600; }
+.plan-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plan-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.plan-qno { font-weight: 600; color: var(--fg); }
+.plan-stem { color: var(--fg); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plan-options { display: flex; flex-direction: column; gap: 6px; }
+.plan-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.plan-opt:hover { border-color: var(--line); background: var(--surface-3); }
+.plan-opt input { margin-top: 2px; accent-color: var(--accent); flex: none; }
+.plan-opt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.plan-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 56px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg);
+}
+.plan-input:focus { border-color: var(--accent); outline: none; }
+.plan-ack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--warn);
+  font-size: 12px;
+  cursor: pointer;
+}
+.plan-ack input { accent-color: var(--warn); }

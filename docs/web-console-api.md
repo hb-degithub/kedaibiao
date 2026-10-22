@@ -779,7 +779,14 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
                    "source": "bank_hit", "confidence": 0.95, "needs_human": false } ],
     "note": "这是干跑结果，没有向平台提交任何内容。" }
   ```
-- `confirm=true`：真的调平台写接口
+
+  返回体里**另挂**了一份展示信封（`kind: "detail"` / `label: "干跑"` /
+  `fields` / `sections`），控制台检查器直接按它渲染逐题计划与置信度；
+  上面那些机器字段原样保留，CLI / 流水线 / 老控制台（`/classic`）继续消费。
+  与 unipus 的 `_plan_envelope` 是同一套约定：信封键与机器字段互不冲突。
+- `confirm=true`：真的调平台写接口。原生链路（iTEST）的结果同样会另挂
+  `kind: "detail"` 的信封（交卷步骤 / 页面回显 / 截图路径），没有 `message`
+  字段的平台也能在检查器里看到结果。
 
 **平台没实现提交时返回 `501 not_supported`**，`error` 会说明原因。
 目前 pigai / unipus 都是 `capabilities.submit = false`，

@@ -338,6 +338,14 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 )
             })
 
+        if path == "/api/platforms/chaoxing/captcha":
+            query = parse_qs(urlparse(self.path).query)
+            job_id = (query.get("job") or [""])[0]
+            info = svc.chaoxing_captcha(job_id) if job_id else None
+            if info is None:
+                return self._json(200, {"ok": False, "error": "当前页面没有滑块验证码"})
+            return self._json(200, {"ok": True, **info})
+
         if path == "/api/platforms/chaoxing/live":
             query = parse_qs(urlparse(self.path).query)
             job_id = (query.get("job") or [""])[0]
@@ -741,6 +749,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 str(payload.get("assignment_id") or ""),
                 viewer=viewer,
                 confirm=bool(payload.get("confirm", False)),
+                # 人工改过的答案（只随 confirm=true 生效），形状由服务层校验。
+                overrides=payload.get("answers"),
             ))
 
         if path != "/api/run":

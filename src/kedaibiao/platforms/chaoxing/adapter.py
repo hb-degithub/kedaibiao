@@ -577,6 +577,7 @@ class ChaoxingAutomation:
         action: str,
         exam_id: str = "",
         chapter: str = "",
+        relation_id: str = "",
     ) -> dict[str, Any]:
         """考试 / 测验的元信息：时间窗口、时长、剩余提交次数。
 
@@ -594,6 +595,22 @@ class ChaoxingAutomation:
             if action == "exam":
                 if not exam_id:
                     raise ValueError("exam 需要 exam_id")
+                if relation_id:
+                    # 已交卷的场次：考试须知会跳结果页，只有在「结果页」上能看到
+                    # 「允许重考 N 次，已重考 M 次」这句。
+                    look = (
+                        "https://mooc1.chaoxing.com/exam-ans/exam/test/look"
+                        f"?courseId={course_id}&classId={clazz_id}"
+                        f"&examId={exam_id}&examAnswerId={relation_id}&cpi={cpi}"
+                    )
+                    await page.goto(look, timeout=60000)
+                    await asyncio.sleep(2.2)
+                    text = await page.text("body")
+                    data = quiz_mod.parse_exam_notes(await page.html())
+                    data.update(quiz_mod.parse_exam_attempts_text(text))
+                    data["kind"] = "exam"
+                    data["text"] = text[:400]
+                    return data
                 url = (
                     "https://mooc1.chaoxing.com/exam-ans/exam/test/examcode/examnotes"
                     f"?courseId={course_id}&classId={clazz_id}&examId={exam_id}&cpi={cpi}"
@@ -651,14 +668,27 @@ class ChaoxingAutomation:
                 try:
                     if action == "exam":
                         exam_id = str(item.get("exam_id") or "")
-                        url = (
-                            "https://mooc1.chaoxing.com/exam-ans/exam/test/examcode/examnotes"
-                            f"?courseId={course_id}&classId={clazz_id}"
-                            f"&examId={exam_id}&cpi={cpi}"
-                        )
-                        await page.goto(url, timeout=60000)
-                        await asyncio.sleep(1.8)
-                        data = quiz_mod.parse_exam_notes(await page.html())
+                        relation_id = str(item.get("relation_id") or "")
+                        if relation_id:
+                            look = (
+                                "https://mooc1.chaoxing.com/exam-ans/exam/test/look"
+                                f"?courseId={course_id}&classId={clazz_id}"
+                                f"&examId={exam_id}&examAnswerId={relation_id}&cpi={cpi}"
+                            )
+                            await page.goto(look, timeout=60000)
+                            await asyncio.sleep(1.8)
+                            text = await page.text("body")
+                            data = quiz_mod.parse_exam_notes(await page.html())
+                            data.update(quiz_mod.parse_exam_attempts_text(text))
+                        else:
+                            url = (
+                                "https://mooc1.chaoxing.com/exam-ans/exam/test/examcode/examnotes"
+                                f"?courseId={course_id}&classId={clazz_id}"
+                                f"&examId={exam_id}&cpi={cpi}"
+                            )
+                            await page.goto(url, timeout=60000)
+                            await asyncio.sleep(1.8)
+                            data = quiz_mod.parse_exam_notes(await page.html())
                     else:
                         chapter = str(item.get("chapter") or "")
                         await page.goto(

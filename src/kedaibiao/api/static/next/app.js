@@ -2501,6 +2501,71 @@
     var currentJobId = '';
     var watcher = null;
 
+    function renderHumanGate(message) {
+      clear(humanBox);
+      humanBox.appendChild(el('div', '', '⏸ ' + message));
+      var okBtn = btn('我已完成，继续', 'btn-primary btn-sm', function () {
+        post('/api/jobs/' + encodeURIComponent(currentJobId) + '/human', {})
+          .then(function () { humanBox.hidden = true; })
+          .catch(function (e) { toast(describe(e)); });
+      });
+      humanBox.appendChild(okBtn);
+      var captcha = el('div', 'captcha-panel');
+      captcha.appendChild(el('div', 'hint-text', '正在读取验证码…'));
+      humanBox.appendChild(captcha);
+      loadCaptcha(captcha);
+    }
+
+    function loadCaptcha(host) {
+      get('/api/platforms/chaoxing/captcha?job=' + encodeURIComponent(currentJobId))
+        .then(function (info) {
+          clear(host);
+          if (!info || !info.ok) {
+            host.appendChild(el('div', 'hint-text', (info && info.error) || '没有读到验证码'));
+            return;
+          }
+          var linkRow = el('div', 'hint-text');
+          var bgLink = el('a', '', '背景图链接');
+          bgLink.href = info.bg_url; bgLink.target = '_blank'; bgLink.rel = 'noreferrer';
+          var pieceLink = el('a', '', '拼图链接');
+          pieceLink.href = info.piece_url; pieceLink.target = '_blank'; pieceLink.rel = 'noreferrer';
+          linkRow.appendChild(bgLink);
+          linkRow.appendChild(el('span', '', ' · '));
+          linkRow.appendChild(pieceLink);
+          linkRow.appendChild(el('span', '', ' · 缺口约 ' + info.gap_px + 'px'));
+          host.appendChild(linkRow);
+
+          var bg = el('img', 'captcha-bg');
+          bg.src = info.bg_image;
+          bg.alt = '滑块背景';
+          host.appendChild(bg);
+          var piece = el('img', 'captcha-piece');
+          piece.src = info.piece_image;
+          piece.alt = '拼图';
+          host.appendChild(piece);
+
+          host.appendChild(btn('按缺口自动拖一次', 'btn-sm btn-primary', function () {
+            var nx = info.handle_nx;
+            var ny = info.handle_ny;
+            var target = nx + info.gap_ratio;
+            sendPointer('down', nx, ny);
+            var step = 0;
+            var timer = setInterval(function () {
+              step += 1;
+              sendPointer('move', nx + (target - nx) * (step / 24), ny);
+              if (step >= 24) {
+                clearInterval(timer);
+                sendPointer('up', target, ny);
+              }
+            }, 40);
+          }));
+        })
+        .catch(function (e) {
+          clear(host);
+          host.appendChild(el('div', 'hint-text', '读取验证码失败：' + describe(e)));
+        });
+    }
+
     function sendPointer(kind, nx, ny) {
       if (!currentJobId) { return; }
       post('/api/platforms/chaoxing/pointer', {
@@ -2601,7 +2666,11 @@
     }
 
     function loadMeta() {
-      var payload = { action: target.action, course: target.course };
+      var payload = {
+        action: target.action,
+        course: target.course,
+        relation_id: String(target.relation_id || '')
+      };
       if (target.action === 'quiz') {
         payload.chapter = String(target.id || '').replace(/^quiz:/, '');
       } else {
@@ -2721,14 +2790,9 @@
               }
               if (state.human) {
                 humanBox.hidden = false;
-                clear(humanBox);
-                humanBox.appendChild(el('div', '', '⏸ ' + state.human));
-                var okBtn = btn('我已完成，继续', 'btn-primary btn-sm', function () {
-                  post('/api/jobs/' + encodeURIComponent(currentJobId) + '/human', {})
-                    .then(function () { humanBox.hidden = true; })
-                    .catch(function (e) { toast(describe(e)); });
-                });
-                humanBox.appendChild(okBtn);
+                if (!humanBox.querySelector('.captcha-panel')) {
+                  renderHumanGate(state.human);
+                }
               } else {
                 humanBox.hidden = true;
               }
@@ -3399,7 +3463,7 @@
                         action: 'exam',
                         id: retakeId,
                         title: (row.title || retakeId) + (rowState === '已完成' ? '（重考）' : ''),
-                        relation_id: String(row.retake_relation_id || ''),
+                        relation_id: String(row.answer_id || row.retake_relation_id || ''),
                         retake: true,
                         deadline: String(row.deadline || ''),
                         course: String(courseField.value || '').trim() || (row.course || '')
@@ -3453,7 +3517,11 @@
           if (String(id).indexOf('quiz:') === 0) {
             items.push({ action: 'quiz', chapter: String(id).slice(5) });
           } else {
-            items.push({ action: 'exam', exam_id: String(id) });
+            items.push({
+              action: 'exam',
+              exam_id: String(id),
+              relation_id: String(row.answer_id || row.retake_relation_id || '')
+            });
           }
           mapping.push(index);
         });
@@ -3470,7 +3538,10 @@
               if (meta.end_text && (!row.deadline || row.deadline === '—')) {
                 row.deadline = meta.end_text;
               }
-              if (meta.attempts_unlimited) {
+              if (meta.attempts_text) {
+                row.attempts_text = meta.attempts_text;
+                hasAttempt = true;
+              } else if (meta.attempts_unlimited) {
                 row.attempts_text = '不限';
                 hasAttempt = true;
               } else if (meta.attempts_remaining !== null && meta.attempts_remaining !== undefined) {
@@ -4217,6 +4288,162 @@
     paintAttempts([]);
   }
 
+  /* ---- 干跑计划：逐题改答案 ----
+     后端在通用提交链路（东软等）的干跑结果里带 editable=true，每题带
+     type / options / choices / text。这里把它渲染成可编辑表单：
+       - 单选/判断 → radio，多选 → checkbox，选项文案用平台题面；
+       - 填空/简答 → 输入框，预填当前答案；
+       - needs_human（置信度低于阈值或没答）的题额外给「我确认这题」勾选：
+         勾了即使不改内容，也按人工答案提交（跳过 min_confidence 门槛）。
+     collect() 只回传**改过或人工确认过**的题；没动的题仍由后端阈值把关，
+     这样「确认计划」这件事不会顺手把低置信度的题一起放过去。 */
+  var PLAN_TYPE_LABEL = {
+    single: '单选', multiple: '多选', judge: '判断',
+    fill: '填空', essay: '简答', unknown: '未知题型'
+  };
+
+  function planLetter(index) {
+    return String.fromCharCode(65 + index);
+  }
+
+  function sameChoices(a, b) {
+    var x = (a || []).slice().sort();
+    var y = (b || []).slice().sort();
+    if (x.length !== y.length) { return false; }
+    for (var i = 0; i < x.length; i++) { if (x[i] !== y[i]) { return false; } }
+    return true;
+  }
+
+  function planEditor(env) {
+    if (!isObj(env) || env.editable !== true) { return null; }
+    var answers = Array.isArray(env.answers) ? env.answers : [];
+    if (!answers.length) { return null; }
+
+    var node = el('div', 'plan-editor');
+    var entries = [];
+    var dirtyText = el('span', 'hint-text', '');
+
+    var chips = el('div', 'pills');
+    chips.appendChild(pill('共 ' + answers.length + ' 题', 'pill-mute'));
+    chips.appendChild(pill('已答 ' + dash(env.answered), 'pill-ok'));
+    var humanCount = answers.filter(function (a) { return a && a.needs_human; }).length;
+    if (humanCount) { chips.appendChild(dotPill('需人工确认 ' + humanCount, 'pill-warn')); }
+    if (env.min_confidence !== undefined && env.min_confidence !== null) {
+      var confText = '最低置信度 ' + env.min_confidence;
+      if (env.threshold !== undefined && env.threshold !== null) {
+        confText += ' / 阈值 ' + env.threshold;
+      }
+      chips.appendChild(pill(confText, 'pill-mute'));
+    }
+    chips.appendChild(dirtyText);
+    node.appendChild(chips);
+    node.appendChild(el('p', 'env-note',
+      '下面的答案可以直接改：选择题点选项，填空/简答改文字。' +
+      '只有改过或勾了「我确认」的题按人工答案提交，其余仍受置信度门槛约束。'));
+
+    function refreshDirty() {
+      var count = entries.filter(function (entry) {
+        return entry.ack || entry.changed();
+      }).length;
+      dirtyText.textContent = count ? '已改 ' + count + ' 题' : '还没改任何题';
+      dirtyText.className = count ? 'hint-text plan-dirty' : 'hint-text';
+    }
+
+    answers.forEach(function (q, qi) {
+      q = isObj(q) ? q : {};
+      var options = Array.isArray(q.options) ? q.options.slice() : [];
+      var qtype = String(q.type || 'unknown');
+      /* 判断题没给选项时用「对 / 错」兜底，否则人没法点。 */
+      if (!options.length && qtype === 'judge') { options = ['对', '错']; }
+      var textMode = options.length === 0;
+      var original = {
+        choices: Array.isArray(q.choices) ? q.choices.slice() : [],
+        text: String(q.text || '')
+      };
+      var index = q.index || (qi + 1);
+      var entry = { index: index, ack: false };
+      var card = el('div', 'plan-card');
+
+      var head = el('div', 'plan-card-head');
+      head.appendChild(el('span', 'plan-qno', '第 ' + index + ' 题'));
+      if (qtype !== 'unknown') { head.appendChild(pill(PLAN_TYPE_LABEL[qtype] || qtype, 'pill-mute')); }
+      if (q.needs_human) { head.appendChild(pill('需人工确认', 'pill-warn')); }
+      var confValue = (typeof q.confidence === 'number') ? q.confidence.toFixed(2) : '—';
+      head.appendChild(el('span', 'hint-text',
+        '置信度 ' + confValue + ' · 来源 ' + dash(q.source)));
+      card.appendChild(head);
+      card.appendChild(el('div', 'plan-stem', q.stem || '（平台没给题面）'));
+
+      var read;
+      if (textMode) {
+        var area = el('textarea', 'plan-input');
+        area.rows = 2;
+        area.value = original.text;
+        area.placeholder = '人工填写答案';
+        area.addEventListener('input', refreshDirty);
+        card.appendChild(area);
+        read = function () { return { choices: [], text: String(area.value || '').trim() }; };
+        entry.changed = function () { return read().text !== original.text.trim(); };
+      } else {
+        var group = el('div', 'plan-options' + (qtype === 'multiple' ? ' multi' : ''));
+        var boxes = [];
+        options.forEach(function (text, oi) {
+          var label = el('label', 'plan-opt');
+          var input = el('input', '');
+          input.type = qtype === 'multiple' ? 'checkbox' : 'radio';
+          input.name = 'plan-q' + index;
+          input.value = String(oi);
+          input.checked = original.choices.indexOf(oi) >= 0;
+          input.addEventListener('change', refreshDirty);
+          label.appendChild(input);
+          label.appendChild(el('span', '',
+            planLetter(oi) + '. ' + (String(text || '').trim() || '（空选项）')));
+          boxes.push(input);
+          group.appendChild(label);
+        });
+        card.appendChild(group);
+        read = function () {
+          var picked = [];
+          boxes.forEach(function (box) { if (box.checked) { picked.push(Number(box.value)); } });
+          return { choices: picked, text: '' };
+        };
+        entry.changed = function () { return !sameChoices(read().choices, original.choices); };
+      }
+      entry.read = read;
+
+      if (q.needs_human) {
+        var ackLabel = el('label', 'plan-ack');
+        var ack = el('input', '');
+        ack.type = 'checkbox';
+        ack.addEventListener('change', function () {
+          entry.ack = ack.checked;
+          refreshDirty();
+        });
+        ackLabel.appendChild(ack);
+        ackLabel.appendChild(el('span', '', '这题我人工确认过（提交时跳过置信度门槛）'));
+        card.appendChild(ackLabel);
+      }
+
+      entries.push(entry);
+      node.appendChild(card);
+    });
+
+    refreshDirty();
+
+    return {
+      node: node,
+      collect: function () {
+        var out = [];
+        entries.forEach(function (entry) {
+          if (!entry.ack && !entry.changed()) { return; }
+          var value = entry.read();
+          out.push({ index: entry.index, choices: value.choices, text: value.text });
+        });
+        return out;
+      }
+    };
+  }
+
   function openSubmitFlow(platName, assignmentId, row, canSubmit) {
     if (!canSubmit) {
       openInspector({
@@ -4237,7 +4464,13 @@
     }).then(function (env) {
       var body = el('div', '');
       body.appendChild(el('div', 'banner', '这是干跑：只规划、不写平台。核对下面的每题答案与置信度，再决定是否真交。'));
-      body.appendChild(renderEnvelope(env, {}));
+      /* 通用链路（东软等）的计划可以直接改答案；原生链路仍是只读信封。 */
+      var editor = planEditor(env);
+      if (editor) {
+        body.appendChild(editor.node);
+      } else {
+        body.appendChild(renderEnvelope(env, {}));
+      }
       var guard = { armed: false };
       var live = btn('确认真提交', 'btn-danger', function () {
         if (!guard.armed) {
@@ -4249,7 +4482,9 @@
         live.disabled = true;
         live.textContent = '提交中…';
         post('/api/assignments/submit', {
-          platform: platName, assignment_id: assignmentId, confirm: true
+          platform: platName, assignment_id: assignmentId, confirm: true,
+          /* 只带上改过/人工确认过的题；没改的题后端照旧走阈值门槛。 */
+          answers: editor ? editor.collect() : undefined
         }).then(function (res) {
           var finished = res && (res.server_finish === true || res.server_finish === 1 ||
             res.server_finish === '1');

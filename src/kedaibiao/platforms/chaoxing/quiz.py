@@ -1472,3 +1472,32 @@ def parse_work_meta(html: str) -> dict[str, Any]:
             else (f"剩 {remaining} 次" if remaining is not None else "")
         ),
     }
+
+
+#: 结果页上的重考次数：「本次考试允许重考 9 次，已重考 0 次」
+_RETAKE_RE = re.compile(r"允许重考\s*(\d+)\s*次[，,]\s*已重考\s*(\d+)\s*次")
+
+
+def parse_exam_attempts_text(text: str) -> dict[str, Any]:
+    """从考试结果页文本里取「允许/已用/剩余重考次数」。
+
+    交卷结果页会写「本次考试允许重考 9 次，已重考 0 次」，这是平台唯一给出
+    具体剩余次数的地方（考试须知对已交卷场次直接跳结果页）。
+    """
+    match = _RETAKE_RE.search(text or "")
+    if not match:
+        return {
+            "attempts_allowed": None,
+            "attempts_used": None,
+            "attempts_remaining": None,
+            "attempts_text": "",
+        }
+    allowed = int(match.group(1))
+    used = int(match.group(2))
+    remaining = max(0, allowed - used)
+    return {
+        "attempts_allowed": allowed,
+        "attempts_used": used,
+        "attempts_remaining": remaining,
+        "attempts_text": f"剩 {remaining} 次（允许 {allowed}，已重考 {used}）",
+    }

@@ -2495,6 +2495,7 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
                     "retake": bool(raw.get("retake")),
                     "retake_exam_id": str(raw.get("retake_exam_id") or ""),
                     "retake_relation_id": str(raw.get("retake_relation_id") or ""),
+                    "answer_id": str(raw.get("relation_id") or ""),
                     "attempts_text": str(raw.get("attempts_text") or ""),
                 }
             )

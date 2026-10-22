@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import json
@@ -44,7 +45,7 @@ from kedaibiao.config.settings import (
     load_settings,
     resolve_environ,
 )
-from kedaibiao.core.models import Credentials, TaskKind
+from kedaibiao.core.models import AnswerSource, Credentials, TaskKind
 from kedaibiao.platforms import load_builtin_adapters
 from kedaibiao.platforms.base import NotSupportedError
 from kedaibiao.runtime import (
@@ -282,6 +283,304 @@ def _pinco_submission_payload(item: Any) -> tuple[Any, list[Any]]:
             )
         )
     return assignment, answers
+
+
+# --------------------------------------------------------------------------
+# 提交结果的展示信封
+# --------------------------------------------------------------------------
+#
+# 为什么是「另挂」而不是直接返回信封：``/api/assignments/submit`` 的干跑结果
+# 里 ``answers`` / ``can_submit`` / ``note`` 这些**机器字段**同时在被 CLI、
+# 流水线与测试消费（契约见 docs/web-console-api.md）。信封键
+# （``kind`` / ``fields`` / ``sections``）与机器字段互不冲突，叠加即可 ——
+# 与 unipus 适配器里的 ``_plan_envelope`` 是同一套约定。
+
+
+def _text_or_empty(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _short_text(value: Any, limit: int = 140) -> str:
+    text = _text_or_empty(value)
+    if not text:
+        return "—"
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _planned_answer(item: dict[str, Any]) -> str:
+    """一行计划里「打算交的答案」：文本答案 → 选项 → ``—``。"""
+    for key in ("text", "answer", "planned_answer", "value"):
+        text = _text_or_empty(item.get(key))
+        if text:
+            return text
+    choices = item.get("choices")
+    if isinstance(choices, (list, tuple)) and choices:
+        return " / ".join(str(choice) for choice in choices)
+    return "—"
+
+
+def _confidence_text(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return f"{float(value):.3f}"
+
+
+#: 单题人工答案的文本上限。控制台是手输的，超过这个只可能是粘错东西。
+MAX_OVERRIDE_TEXT = 8000
+
+
+def _normalise_answer_overrides(raw: Any) -> list[dict[str, Any]] | None:
+    """校验控制台传来的人工答案覆盖，形状不对直接 400。
+
+    为什么在入口就把形状定死：等提交到一半才发现 payload 有问题，平台侧
+    可能已经进考场、扣次数了。这里只做纯数据校验，不碰平台。
+    """
+    if raw is None or raw == []:
+        return None
+    if not isinstance(raw, list):
+        raise ConsoleError("answers 必须是数组", kind="bad_request", status=400)
+    cleaned: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ConsoleError("answers 的每一项必须是对象", kind="bad_request", status=400)
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError):
+            raise ConsoleError(
+                "answers 里每项需要整数 index（题号从 1 开始）", kind="bad_request", status=400
+            ) from None
+        entry: dict[str, Any] = {"index": index}
+        if "choices" in item:
+            raw_choices = item.get("choices")
+            if raw_choices is None:
+                raw_choices = []
+            if not isinstance(raw_choices, list):
+                raise ConsoleError(
+                    f"answers 第 {index} 项的 choices 必须是数组", kind="bad_request", status=400
+                )
+            try:
+                choices = [int(choice) for choice in raw_choices]
+            except (TypeError, ValueError):
+                raise ConsoleError(
+                    f"answers 第 {index} 项的 choices 必须是整数下标",
+                    kind="bad_request",
+                    status=400,
+                ) from None
+            if any(choice < 0 for choice in choices):
+                raise ConsoleError(
+                    f"answers 第 {index} 项的 choices 不能是负数", kind="bad_request", status=400
+                )
+            entry["choices"] = choices
+        if "text" in item:
+            text = item.get("text")
+            if not isinstance(text, str):
+                raise ConsoleError(
+                    f"answers 第 {index} 项的 text 必须是字符串", kind="bad_request", status=400
+                )
+            if len(text) > MAX_OVERRIDE_TEXT:
+                raise ConsoleError(
+                    f"answers 第 {index} 项的 text 太长（上限 {MAX_OVERRIDE_TEXT} 字）",
+                    kind="bad_request",
+                    status=400,
+                )
+            entry["text"] = text
+        if "choices" not in entry and "text" not in entry:
+            raise ConsoleError(
+                f"answers 第 {index} 项既没有 choices 也没有 text", kind="bad_request", status=400
+            )
+        cleaned.append(entry)
+    return cleaned or None
+
+
+def _apply_answer_overrides(
+    answers: list[Any], overrides: list[dict[str, Any]]
+) -> None:
+    """把人工作答写回本次作答列表（原地改）。
+
+    改过的题标记 ``manual``、置信度按是否仍为空记 1.0 / 0.0：人已经确认过，
+    不应再被 ``min_confidence`` 阈值拦；清空的题仍然算「没答」，两条硬门槛
+    继续生效。
+    """
+    total = len(answers)
+    for entry in overrides:
+        index = entry["index"]
+        if not 1 <= index <= total:
+            raise ConsoleError(
+                f"answers 的 index {index} 超出范围（本次共 {total} 题）",
+                kind="bad_request",
+                status=400,
+            )
+        answer = answers[index - 1]
+        if "choices" in entry:
+            limit = len(answer.question.options)
+            bad = [choice for choice in entry["choices"] if limit and choice >= limit]
+            if bad:
+                raise ConsoleError(
+                    f"第 {index} 题的选项下标 {bad} 超出范围（共 {limit} 个选项）",
+                    kind="bad_request",
+                    status=400,
+                )
+            answer.choices = list(entry["choices"])
+        if "text" in entry:
+            answer.text = entry["text"].strip()
+        answer.source = AnswerSource.MANUAL
+        answer.confidence = 0.0 if answer.is_empty() else 1.0
+
+
+def _submit_plan_envelope(
+    plan: dict[str, Any], assignment_id: str
+) -> dict[str, Any]:
+    """干跑计划的展示信封：结论字段 + 逐题「打算怎么答」。
+
+    兼容两种计划形状：通用链路（``stem`` / ``text`` / ``choices``）与原生
+    链路（iTEST：``stem`` / ``answer`` / ``reason``）—— 逐题列表都叫
+    ``answers``，所以这里只按字段名兜底，不认平台。
+    """
+    items = [
+        item
+        for item in (plan.get("answers") or plan.get("questions") or [])
+        if isinstance(item, dict)
+    ]
+    threshold = plan.get("threshold")
+    rows: list[dict[str, Any]] = []
+    humans = 0
+    for index, item in enumerate(items, start=1):
+        confidence = item.get("confidence")
+        needs_human = item.get("needs_human") is True
+        too_low = (
+            isinstance(threshold, (int, float))
+            and not isinstance(threshold, bool)
+            and isinstance(confidence, (int, float))
+            and not isinstance(confidence, bool)
+            and confidence < threshold
+        )
+        if needs_human:
+            humans += 1
+        mark = _text_or_empty(item.get("reason"))
+        if not mark:
+            mark = "需人工确认" if needs_human else ("低于阈值" if too_low else "—")
+        rows.append(
+            {
+                "index": item.get("index") or item.get("no") or index,
+                "kind": _text_or_empty(item.get("kind")) or "—",
+                "stem": _short_text(
+                    item.get("stem") or item.get("question") or item.get("title")
+                ),
+                "answer": _planned_answer(item),
+                "confidence": _confidence_text(confidence),
+                "source": _text_or_empty(item.get("source")) or "—",
+                "mark": mark,
+            }
+        )
+
+    count = plan.get("question_count")
+    answered = plan.get("answered")
+    fields: list[dict[str, Any]] = [
+        {"label": "任务号", "value": assignment_id},
+        {"label": "题目数", "value": count if count is not None else len(items)},
+        {"label": "已答", "value": answered if answered is not None else "—"},
+        {"label": "需人工", "value": humans},
+        {"label": "最低置信度", "value": _confidence_text(plan.get("min_confidence"))},
+        {"label": "阈值 min_confidence", "value": _confidence_text(threshold)},
+    ]
+    if plan.get("can_submit") is not None:
+        fields.append(
+            {
+                "label": "可交卷",
+                "value": "是" if plan.get("can_submit") else "否（还有题没答案）",
+            }
+        )
+    missing = plan.get("missing")
+    if isinstance(missing, (list, tuple)) and missing:
+        fields.append({"label": "缺答案", "value": f"{len(missing)} 题"})
+
+    if rows:
+        section: dict[str, Any] = {
+            "label": f"逐题计划（{len(rows)} 题）",
+            "kind": "table",
+            "columns": [
+                column("index", "#"),
+                column("kind", "题型"),
+                column("stem", "题干"),
+                column("answer", "计划答案"),
+                column("confidence", "置信度", mono=True),
+                column("source", "来源"),
+                column("mark", "标记"),
+            ],
+            "rows": rows,
+        }
+    else:
+        section = {
+            "label": "逐题计划",
+            "kind": "text",
+            "text": "这份计划没有逐题内容（后端只返回了结论字段）。",
+        }
+    return {
+        "kind": "detail",
+        "action": "submit",
+        "label": "干跑",
+        "fields": fields,
+        "sections": [section],
+    }
+
+
+def _submit_result_envelope(
+    result: dict[str, Any], assignment_id: str
+) -> dict[str, Any]:
+    """真提交结果的展示信封：原生链路（iTEST）的结果没有 ``message`` 字段。"""
+    fields: list[dict[str, Any]] = [
+        {"label": "任务号", "value": assignment_id},
+        {"label": "已交卷", "value": "是" if result.get("submitted") else "否"},
+    ]
+    finish = result.get("server_finish")
+    fields.append(
+        {
+            "label": "平台回读 finish",
+            "value": "—" if finish is None else ("是" if finish else "否"),
+        }
+    )
+    if result.get("score") is not None:
+        fields.append({"label": "得分", "value": result.get("score")})
+    screenshot = result.get("screenshot")
+    if screenshot:
+        fields.append({"label": "交卷截图", "value": str(screenshot)})
+
+    sections: list[dict[str, Any]] = []
+    page_text = _text_or_empty(result.get("page_text"))
+    if page_text:
+        sections.append({"label": "交卷页面回显", "kind": "text", "text": page_text})
+    steps = result.get("steps") or []
+    step_rows: list[dict[str, Any]] = []
+    for step in steps:
+        if isinstance(step, dict):
+            step_rows.append(
+                {
+                    "name": _text_or_empty(step.get("name")) or "—",
+                    "ok": "是" if step.get("ok") else "否",
+                    "detail": _text_or_empty(step.get("detail")) or "—",
+                }
+            )
+        else:
+            step_rows.append({"name": _short_text(step), "ok": "—", "detail": "—"})
+    if step_rows:
+        sections.append(
+            {
+                "label": f"交卷步骤（{len(step_rows)} 步）",
+                "kind": "table",
+                "columns": [
+                    column("name", "步骤"),
+                    column("ok", "成功"),
+                    column("detail", "细节"),
+                ],
+                "rows": step_rows,
+            }
+        )
+    return {
+        "kind": "detail",
+        "action": "submit",
+        "fields": fields,
+        "sections": sections,
+    }
 
 
 class ConsoleService:
@@ -1374,6 +1673,7 @@ class ConsoleService:
                     action=action,
                     exam_id=str(params.get("exam_id") or ""),
                     chapter=str(params.get("chapter") or ""),
+                    relation_id=str(params.get("relation_id") or ""),
                 )
             )
             result["course"] = course.name
@@ -1726,6 +2026,75 @@ class ConsoleService:
             info["frame"] = frame
             info["at"] = time.time()
         return frame or None
+
+    def chaoxing_captcha(self, job_id: str) -> dict[str, Any] | None:
+        """把当前页面上的滑块验证码「拆出来」：背景图/拼图链接 + 缺口位置。
+
+        给控制台用的：手机上截图看不清时，可以直接打开原图；也可以按算出来的
+        缺口位置一键拖（人只负责点按钮）。
+        """
+        info = self._chaoxing_live.get(job_id)
+        if not info or info.get("loop") is None:
+            return None
+        loop = info["loop"]
+        page = info["page"]
+
+        async def collect() -> dict[str, Any] | None:
+            from kedaibiao.platforms.chaoxing import captcha as captcha_mod  # noqa: PLC0415
+
+            data = await page.eval(
+                """(() => {
+                    const bg = document.getElementById('cx_imgBg');
+                    const small = document.querySelector('.cx_imgBtn img');
+                    const handle = document.querySelector('.cx_rightBtn');
+                    if (!bg || !small || !handle) return null;
+                    const match = /url\\("?([^")]+)"?\\)/.exec(bg.style.backgroundImage || '');
+                    const box = (el) => {
+                        const b = el.getBoundingClientRect();
+                        return {x: b.x, y: b.y, w: b.width, h: b.height};
+                    };
+                    return {
+                        bgUrl: match ? match[1] : '',
+                        smallUrl: small.src || '',
+                        bg: box(bg),
+                        handle: box(handle),
+                    };
+                })()"""
+            )
+            if not data or not data.get("bgUrl"):
+                return None
+            context = page.raw.context
+            big = await (await context.request.get(data["bgUrl"], timeout=20000)).body()
+            small = await (await context.request.get(data["smallUrl"], timeout=20000)).body()
+            try:
+                gap = captcha_mod.find_gap_offset(big, small)
+            except Exception:  # noqa: BLE001 - 算不出来就只给图，不影响人工拖
+                gap = 0
+            bg_w = float(data["bg"].get("w") or 320) or 320
+            viewport = getattr(page.raw, "viewport_size", None) or {
+                "width": 1440, "height": 900,
+            }
+            vw = float(viewport.get("width") or 1440)
+            vh = float(viewport.get("height") or 900)
+            handle = data["handle"]
+            return {
+                "bg_url": data["bgUrl"],
+                "piece_url": data["smallUrl"],
+                "gap_px": gap,
+                "bg_width": bg_w,
+                "bg_image": "data:image/jpeg;base64," + base64.b64encode(big).decode(),
+                "piece_image": "data:image/png;base64," + base64.b64encode(small).decode(),
+                "handle_nx": (handle["x"] + handle["w"] / 2) / vw,
+                "handle_ny": (handle["y"] + handle["h"] / 2) / vh,
+                "gap_ratio": gap / bg_w,
+            }
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(collect(), loop)
+            return future.result(timeout=20)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("读取滑块验证码失败: %s", exc)
+            return None
 
     def chaoxing_pointer(
         self, job_id: str, kind: str, nx: float, ny: float
@@ -2505,11 +2874,18 @@ class ConsoleService:
         *,
         viewer: Viewer | None = None,
         confirm: bool = False,
+        overrides: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """针对**单个作业**作答并提交。
 
         ``confirm=False``（默认）= 只规划不提交，返回「打算交什么」。
         ``confirm=True`` 才会真的调平台的写接口。
+
+        ``overrides`` 是人工在控制台上改过的答案（只对 ``confirm=True`` 生效）：
+        ``[{"index": 1, "choices": [2]}, {"index": 3, "text": "……"}]``，
+        ``index`` 是干跑计划里的题号（1 起）。改过的题按 ``manual`` 处理、
+        置信度记 1.0 —— 人已经亲眼看过了，不再由阈值拦；没改的题照旧受
+        两条硬门槛约束。
 
         平台没实现提交时**明确拒绝**（501 not_supported），而不是假装成功 ——
         现在 pigai 仍是 ``capabilities.submit = False``；unipus 已实现但不能真交
@@ -2517,6 +2893,7 @@ class ConsoleService:
         """
         scope = self._check_platform(platform)
         assert scope is not None
+        overrides = _normalise_answer_overrides(overrides)
         cls: Any = adapters.get(scope)
         caps = getattr(cls, "capabilities", None)
         display = getattr(cls, "display_name", None) or scope
@@ -2531,11 +2908,14 @@ class ConsoleService:
         if not assignment_id:
             raise ConsoleError("缺少任务号", kind="bad_request", status=400)
 
+        edited = f"，人工改过 {len(overrides)} 题" if overrides else ""
         self._plog(scope, "info",
-                   f"$ 提交 {assignment_id}（{'真交，不可逆' if confirm else '干跑，不提交'}）")
+                   f"$ 提交 {assignment_id}（{'真交，不可逆' if confirm else '干跑，不提交'}{edited}）")
         try:
             result = asyncio.run(
-                self._submit_one(scope, assignment_id, viewer=viewer, confirm=confirm)
+                self._submit_one(
+                    scope, assignment_id, viewer=viewer, confirm=confirm, overrides=overrides
+                )
             )
         except ConsoleError as exc:
             self._plog(scope, "error", f"✗ 提交 {assignment_id}：{exc}")
@@ -2556,7 +2936,13 @@ class ConsoleService:
         return result
 
     async def _submit_one(
-        self, platform: str, assignment_id: str, *, viewer: Viewer | None, confirm: bool
+        self,
+        platform: str,
+        assignment_id: str,
+        *,
+        viewer: Viewer | None,
+        confirm: bool,
+        overrides: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         creds, cookie_file = self._resolve_login(platform, viewer)
         settings = load_settings(root=self.root, environ=self.environ)
@@ -2593,12 +2979,24 @@ class ConsoleService:
             # 原生作答链路的平台（iTEST）：取题/交卷都在浏览器里做，
             # 不走通用的 fetch_questions → answerer → submit 三段式。
             if getattr(adapter, "native_submit_flow", False):
+                if overrides:
+                    raise ConsoleError(
+                        "这个平台走原生提交链路（取题/交卷都在平台页面里完成），"
+                        "不支持在控制台逐题改答案；请到平台页面里改。",
+                        kind="bad_request",
+                        status=400,
+                    )
                 if not confirm:
                     plan = await adapter.native_plan(assignment_id)
                     plan.setdefault("title", target.title)
+                    # 原生链路里 unipus 自己挂了信封；iTEST 没有，这里补齐。
+                    if "kind" not in plan:
+                        plan.update(_submit_plan_envelope(plan, assignment_id))
                     return plan
                 result = await adapter.native_submit(assignment_id)
                 result.setdefault("title", target.title)
+                if "kind" not in result:
+                    result.update(_submit_result_envelope(result, assignment_id))
                 return result
 
             questions = list(target.questions)
@@ -2610,6 +3008,9 @@ class ConsoleService:
                 )
 
             answers = await runtime.pipeline.answerer.answer(questions)
+            if confirm and overrides:
+                # 人工在控制台上改过答案：写回这份作答列表，再走同一套硬门槛。
+                _apply_answer_overrides(answers, overrides)
             answerable = [a for a in answers if not a.is_empty()]
             weakest = min((a.confidence for a in answerable), default=0.0)
             plan = {
@@ -2621,10 +3022,15 @@ class ConsoleService:
                 "min_confidence": round(weakest, 4),
                 "threshold": runtime.settings.min_confidence,
                 "dry_run": not confirm,
+                # 控制台据此把干跑计划渲染成「可以逐题改答案」的编辑器。
+                # 原生链路（iTEST / U校园）的计划形状不同，不置这个标志。
+                "editable": True,
                 "answers": [
                     {
                         "index": i + 1,
                         "stem": (a.question.stem or "")[:120],
+                        "type": a.question.type.value,
+                        "options": list(a.question.options),
                         "choices": a.choices,
                         "text": a.text,
                         "source": a.source.value,
@@ -2638,6 +3044,7 @@ class ConsoleService:
             if not confirm:
                 plan["submitted"] = False
                 plan["note"] = "这是干跑结果，没有向平台提交任何内容。确认无误后带 confirm=true 再调用。"
+                plan.update(_submit_plan_envelope(plan, assignment_id))
                 return plan
 
             if not answerable:

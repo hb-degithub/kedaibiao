@@ -799,6 +799,30 @@ class TestSubmitPipeline(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["answered"], 1)
         self.assertIn("干跑", out["note"])
 
+    def test_dry_run_attaches_display_envelope(self) -> None:
+        """控制台的提交抽屉按展示信封渲染：干跑结果必须带 kind=detail + 逐题表。
+
+        回归：抽屉曾显示「这个动作没有返回结构化内容」—— 后端只回了
+        ``answers`` 机器字段，前端 renderEnvelope 认不出。
+        """
+        out = self.service.submit_assignment(SubmitCapableAdapter.name, "a1")
+        self.assertEqual(out["kind"], "detail")
+        self.assertEqual(out["label"], "干跑")
+        # 机器字段原样保留：CLI / 流水线 / 老控制台仍在消费
+        self.assertFalse(out["submitted"])
+        self.assertTrue(out["dry_run"])
+        self.assertEqual(out["answered"], 1)
+        labels = [field["label"] for field in out["fields"]]
+        self.assertIn("题目数", labels)
+        self.assertIn("已答", labels)
+        self.assertIn("最低置信度", labels)
+        table = next(section for section in out["sections"] if section["kind"] == "table")
+        self.assertEqual(len(table["rows"]), 1)
+        row = table["rows"][0]
+        self.assertEqual(row["stem"], "已知题")
+        self.assertEqual(row["confidence"], "1.000")
+        self.assertEqual(row["mark"], "—")
+
     def test_confirm_submits(self) -> None:
         out = self.service.submit_assignment(
             SubmitCapableAdapter.name, "a1", confirm=True
@@ -806,6 +830,57 @@ class TestSubmitPipeline(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(out["submitted"])
         self.assertTrue(out["ok"])
         self.assertEqual(out["score"], 88.0)
+
+    def test_dry_run_plan_is_editable_with_options(self) -> None:
+        """干跑计划要带上题型/选项，控制台才能让人逐题改答案。"""
+        out = self.service.submit_assignment(SubmitCapableAdapter.name, "a1")
+        self.assertTrue(out["editable"])
+        answer = out["answers"][0]
+        self.assertEqual(answer["index"], 1)
+        self.assertEqual(answer["options"], ["甲", "乙"])
+        self.assertIn("type", answer)
+
+    def test_confirm_applies_manual_override(self) -> None:
+        """人工改过的答案要真的提交上去，并标记为 manual / 置信度 1.0。"""
+        out = self.service.submit_assignment(
+            SubmitCapableAdapter.name,
+            "a1",
+            confirm=True,
+            overrides=[{"index": 1, "choices": [1], "text": ""}],
+        )
+        self.assertTrue(out["submitted"])
+        answer = out["answers"][0]
+        self.assertEqual(answer["choices"], [1])
+        self.assertEqual(answer["source"], "manual")
+        self.assertEqual(answer["confidence"], 1.0)
+        self.assertFalse(answer["needs_human"])
+
+    def test_override_index_out_of_range_rejected(self) -> None:
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.submit_assignment(
+                SubmitCapableAdapter.name, "a1", confirm=True,
+                overrides=[{"index": 2, "choices": [0]}],
+            )
+        self.assertEqual(cm.exception.status, 400)
+        self.assertEqual(cm.exception.kind, "bad_request")
+        self.assertIn("超出范围", str(cm.exception))
+
+    def test_override_bad_shape_rejected(self) -> None:
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.submit_assignment(
+                SubmitCapableAdapter.name, "a1", confirm=True,
+                overrides=[{"index": "一"}],
+            )
+        self.assertEqual(cm.exception.status, 400)
+
+    def test_override_choice_out_of_range_rejected(self) -> None:
+        with self.assertRaises(ConsoleError) as cm:
+            self.service.submit_assignment(
+                SubmitCapableAdapter.name, "a1", confirm=True,
+                overrides=[{"index": 1, "choices": [5]}],
+            )
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("选项下标", str(cm.exception))
 
     def test_low_confidence_blocks_confirm(self) -> None:
         """置信度不够时，即使 confirm=true 也拒绝提交。"""
