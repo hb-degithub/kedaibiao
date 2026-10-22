@@ -777,6 +777,7 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
     "threshold": 0.75, "dry_run": true, "submitted": false, "editable": true,
     "answers": [ { "index": 1, "stem": "…", "type": "single",
                    "options": ["甲", "乙"], "choices": [1], "text": "",
+                   "answer_text": "B. 乙",
                    "source": "bank_hit", "confidence": 0.95, "needs_human": false } ],
     "note": "这是干跑结果，没有向平台提交任何内容。" }
   ```
@@ -786,9 +787,14 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
   上面那些机器字段原样保留，CLI / 流水线 / 老控制台（`/classic`）继续消费。
   与 unipus 的 `_plan_envelope` 是同一套约定：信封键与机器字段互不冲突。
 
+  `choices` 是**下标**（平台写回、题库指纹都靠它），人看的答案一律走
+  `answer_text`（字母 + 选项原文，如 `A. 甲` / `A. 甲 / C. 丙`）；控制台的
+  「计划答案」列、CLI 摘要与老控制台都只展示 `answer_text`，不再出现裸 `0`。
+
   通用提交链路（东软等）的计划带 `editable: true`，每题额外带 `type` 与
   `options`（平台题面原文）—— 控制台据此把计划渲染成可编辑表单：选择题点
   选项、填空/简答改文字。`needs_human` 的题还有「我确认这题」勾选。
+  平台没回 `options` 的选择题会降级成「按字母填」（例如 `A` / `A,C`）。
   原生链路（iTEST / U校园）没有这个标志，计划只读。
 - `confirm=true`：真的调平台写接口。可以带 `answers` 把**人工改过的答案**
   一起提交（`index` 是干跑计划里的题号，1 起）：

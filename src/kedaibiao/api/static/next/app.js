@@ -4306,6 +4306,25 @@
     return String.fromCharCode(65 + index);
   }
 
+  function planLettersOf(choices) {
+    return (choices || []).map(function (i) { return planLetter(i); }).join(', ');
+  }
+
+  /* 平台没回选项原文时的兜底：让人按「A 或 A,C」填选择，解析回下标。 */
+  function parsePlanLetters(text) {
+    var out = [];
+    String(text || '').split(/[\s,，、;/]+/).forEach(function (token) {
+      token = token.toUpperCase();
+      if (!token) { return; }
+      if (/^[A-Z]$/.test(token)) {
+        out.push(token.charCodeAt(0) - 65);
+      } else if (/^\d+$/.test(token)) {
+        out.push(Number(token));
+      }
+    });
+    return out.filter(function (v, i, arr) { return arr.indexOf(v) === i; });
+  }
+
   function sameChoices(a, b) {
     var x = (a || []).slice().sort();
     var y = (b || []).slice().sort();
@@ -4365,6 +4384,7 @@
       /* 判断题没给选项时用「对 / 错」兜底，否则人没法点。 */
       if (!options.length && qtype === 'judge') { options = ['对', '错']; }
       var textMode = options.length === 0;
+      var choiceType = qtype === 'single' || qtype === 'multiple' || qtype === 'judge';
       var original = {
         choices: Array.isArray(q.choices) ? q.choices.slice() : [],
         text: String(q.text || '')
@@ -4384,7 +4404,20 @@
       card.appendChild(el('div', 'plan-stem', q.stem || '（平台没给题面）'));
 
       var read;
-      if (textMode) {
+      if (textMode && choiceType) {
+        /* 平台没回选项原文：退回「按字母填」，至少能改，也不显示裸下标。 */
+        card.appendChild(el('p', 'hint-text',
+          '平台没有回选项原文；按字母填选择（当前 ' +
+          (planLettersOf(original.choices) || '未作答') + '）'));
+        var letterInput = el('input', 'plan-input');
+        letterInput.type = 'text';
+        letterInput.value = planLettersOf(original.choices);
+        letterInput.placeholder = '例如 A 或 A,C';
+        letterInput.addEventListener('input', refreshDirty);
+        card.appendChild(letterInput);
+        read = function () { return { choices: parsePlanLetters(letterInput.value), text: '' }; };
+        entry.changed = function () { return !sameChoices(read().choices, original.choices); };
+      } else if (textMode) {
         var area = el('textarea', 'plan-input');
         area.rows = 2;
         area.value = original.text;

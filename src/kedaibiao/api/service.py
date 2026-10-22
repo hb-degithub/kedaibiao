@@ -307,15 +307,36 @@ def _short_text(value: Any, limit: int = 140) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+def answer_letters(choices: Any, options: Any = None) -> str:
+    """把选项下标翻译成人能读的答案：``[0]`` → ``A. 甲``。
+
+    计划里选择题的答案机器字段必须保留下标（平台写回、题库指纹都靠它），
+    但给人看的任何地方都不该出现裸 ``0``：控制台的「计划答案」列、CLI 摘要、
+    老控制台都走这里。有选项原文就带上，没有就只给字母。
+    """
+    if not isinstance(choices, (list, tuple)) or not choices:
+        return ""
+    texts = list(options) if isinstance(options, (list, tuple)) else []
+    parts: list[str] = []
+    for choice in choices:
+        if isinstance(choice, bool) or not isinstance(choice, int):
+            parts.append(str(choice))
+            continue
+        letter = chr(ord("A") + choice) if 0 <= choice < 26 else str(choice)
+        text = str(texts[choice]).strip() if 0 <= choice < len(texts) else ""
+        parts.append(f"{letter}. {text}" if text else letter)
+    return " / ".join(parts)
+
+
 def _planned_answer(item: dict[str, Any]) -> str:
-    """一行计划里「打算交的答案」：文本答案 → 选项 → ``—``。"""
-    for key in ("text", "answer", "planned_answer", "value"):
+    """一行计划里「打算交的答案」：文本答案 → 选项字母（带原文）→ ``—``。"""
+    for key in ("text", "answer", "answer_text", "planned_answer", "value"):
         text = _text_or_empty(item.get(key))
         if text:
             return text
     choices = item.get("choices")
     if isinstance(choices, (list, tuple)) and choices:
-        return " / ".join(str(choice) for choice in choices)
+        return answer_letters(choices, item.get("options")) or "—"
     return "—"
 
 
@@ -3036,6 +3057,11 @@ class ConsoleService:
                         "options": list(a.question.options),
                         "choices": a.choices,
                         "text": a.text,
+                        # 给人看的答案（"A. 甲" / "A. 甲 / C. 丙"）：机器字段
+                        # choices 仍是下标，但 CLI、日志、回退表格都不该出现裸 0。
+                        "answer_text": answer_letters(
+                            a.choices, a.question.options
+                        ) or a.text.strip(),
                         "source": a.source.value,
                         "confidence": a.confidence,
                         "needs_human": a.confidence < runtime.settings.min_confidence,

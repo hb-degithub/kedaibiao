@@ -2720,7 +2720,8 @@
      认不出来就退回通用 kind 渲染，绝不白屏、也不假装读懂了。 */
   var PLAN_LIST_KEYS = ['questions', 'plan', 'answers', 'items', 'records', 'rows',
                         'details', 'results'];
-  var PLAN_ANSWER_KEYS = ['answer', 'planned_answer', 'plannedAnswer', 'value', 'content', 'text'];
+  var PLAN_ANSWER_KEYS = ['answer', 'answer_text', 'planned_answer', 'plannedAnswer',
+                          'value', 'content', 'text'];
   var PLAN_CONF_KEYS = ['confidence', 'conf', 'confidence_score', 'confidenceScore', 'score'];
   var PLAN_HUMAN_KEYS = ['needs_human', 'needsHuman', 'need_human', 'human', 'needs_review'];
   var PLAN_STEM_KEYS = ['stem', 'question', 'question_text', 'title', 'prompt', 'topic'];

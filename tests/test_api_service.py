@@ -820,6 +820,7 @@ class TestSubmitPipeline(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(table["rows"]), 1)
         row = table["rows"][0]
         self.assertEqual(row["stem"], "已知题")
+        self.assertEqual(row["answer"], "A. 甲")   # 不显示裸下标 0
         self.assertEqual(row["confidence"], "1.000")
         self.assertEqual(row["mark"], "—")
 
@@ -839,6 +840,9 @@ class TestSubmitPipeline(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer["index"], 1)
         self.assertEqual(answer["options"], ["甲", "乙"])
         self.assertIn("type", answer)
+        # 人读的答案（字母 + 选项原文），机器字段 choices 仍是下标
+        self.assertEqual(answer["choices"], [0])
+        self.assertEqual(answer["answer_text"], "A. 甲")
 
     def test_confirm_applies_manual_override(self) -> None:
         """人工改过的答案要真的提交上去，并标记为 manual / 置信度 1.0。"""
@@ -899,6 +903,20 @@ class TestSubmitPipeline(unittest.IsolatedAsyncioTestCase):
                 SubmitCapableAdapter.name, "a1", confirm=True
             )
         self.assertEqual(cm.exception.status, 400)
+
+
+class TestAnswerDisplay(unittest.TestCase):
+    """选择题答案给人看时不能是裸下标（``0``）—— 统一翻成「A. 选项原文」。"""
+
+    def test_answer_letters(self) -> None:
+        from kedaibiao.api.service import answer_letters
+
+        self.assertEqual(answer_letters([0], ["甲", "乙"]), "A. 甲")
+        self.assertEqual(answer_letters([1, 0], ["甲", "乙"]), "B. 乙 / A. 甲")
+        self.assertEqual(answer_letters([1], None), "B")
+        self.assertEqual(answer_letters([], ["甲"]), "")
+        self.assertEqual(answer_letters([2], ["甲", "乙"]), "C")  # 下标越界只给字母
+        self.assertEqual(answer_letters([True], ["甲"]), "True")  # 布尔不是下标
 
 
 class TestParamValidation(unittest.TestCase):
