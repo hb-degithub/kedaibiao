@@ -36,6 +36,23 @@ def fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
+def _load_denylist() -> list[str]:
+    """读本机 ``.secret-denylist``（已 gitignore）；没有就返回空表。
+
+    真实姓名 / 学校 / 班级这类「正则认不出来」的值只登记在这里，
+    仓库里不出现明文 —— 所以断言也读它，而不是把真实值抄进测试。
+    """
+    path = FIXTURES.parent.parent.parent / ".secret-denylist"
+    if not path.is_file():
+        return []
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+
 # --------------------------------------------------------------------------
 # 构造样本（**非实测**，仅用于测边界：缺列、缺 title、表头错序、非详情页）
 # --------------------------------------------------------------------------
@@ -792,11 +809,31 @@ class TestSanitizedFixtures(unittest.TestCase):
                     self.assertNotIn(token, text)
 
     def test_real_personal_names_absent(self) -> None:
-        forbidden = ("张老师", "示例学院", "示例班级", "示例B层次")
-        for name, text in self._fixture_texts().items():
-            with self.subTest(fixture=name):
-                for token in forbidden:
-                    self.assertNotIn(token, text)
+        """真实姓名 / 学校 / 班级只登记在本机 ``.secret-denylist``，仓库里不留明文。
+
+        这里**不内联真实字面量**（那等于把要防的东西又抄一遍），改为两条：
+        1) 本机有 ``.secret-denylist`` 时，逐条断言 fixtures 里不含这些值；
+        2) 正向断言占位值确实存在 —— 证明脱敏真的做过，而不是样本里本来就没有。
+        """
+        texts = self._fixture_texts()
+        denylist = _load_denylist()
+        if denylist:
+            for name, text in texts.items():
+                with self.subTest(fixture=name):
+                    for token in denylist:
+                        self.assertNotIn(token, text)
+        self.assertTrue(
+            any("张老师" in text for text in texts.values()),
+            "出题人 / 创建人应脱敏为「张老师」",
+        )
+        self.assertTrue(
+            any("示例大学" in text or "示例学校" in text for text in texts.values()),
+            "学校名应脱敏为「示例大学」",
+        )
+        self.assertFalse(
+            any("示例" in text for text in texts.values()),
+            "年级 / 班级串应脱敏，不得保留「示例」这类原始标记",
+        )
 
     def test_write_page_fixtures_exist(self) -> None:
         # task-6 的两个新样本必须在库里（verifier 要定向复核）
