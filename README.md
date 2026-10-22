@@ -5,8 +5,12 @@
 课代表负责「收作业」：统一登录态、统一任务模型、统一作答与提交链路、统一执行留痕。
 平台差异全部关在适配器里，核心调度一行都不用改。
 
-**当前状态：框架骨架（v0.1.0）。** 核心层与题库层已完成并通过全量单测（零第三方依赖）；
-尚无任何真实平台适配器接入。
+**当前状态：v0.1.0 —— 框架 + 6 个真实平台适配器。** 核心层与题库层零第三方依赖，
+离线单测全绿（`pytest -q` 2041 项 / 约 30 秒；`make test` 走 unittest，1930 项）；
+U校园、东软智慧教育、超星学习通、iTEST、批改网、希沃品课均已接入。
+每个平台「实测到哪一步、哪些只有静态证据」写在
+[docs/verification/](docs/verification/) 与 [docs/research/](docs/research/) 里 ——
+README 只给结论，证据在文档里。
 
 ---
 
@@ -52,7 +56,7 @@
                     │  platforms/base.PlatformAdapter  (契约)    │
                     └───┬───────────┬───────────┬───────────────┘
                         │           │           │
-                    unipus/    neusoft/     超星/       智慧树/   …      适配层
+                 unipus/ neusoft/ chaoxing/ itest/ pigai/ pinco/       适配层
                         │           │           │
             ┌───────────┴───────────┴───────────┴───────────────┐
             │ 两种传输方式，按平台二选一                          │
@@ -98,6 +102,20 @@ PYTHONPATH=src python3 -m unittest discover -s tests -t .
 PYTHONPATH=src python3 -m kedaibiao doctor
 ```
 
+### 命令一览（CLI）
+
+| 子命令 | 作用 |
+| --- | --- |
+| `platforms` | 列出已注册的平台适配器 |
+| `doctor` | 环境自检（Python、可选依赖、存储可写、凭据状态） |
+| `config` | 打印生效配置（已脱敏） |
+| `run <平台> [--live]` | 跑一次任务流水线；默认干跑，`--live` 才真提交 |
+| `web` | 起 Web 控制台（默认 `127.0.0.1:8765`） |
+| `capture <平台>` | 从浏览器用户目录抓取登录态 cookie（浏览器会话型平台） |
+| `actions <平台>` | 列出该平台的只读动作 |
+| `action <平台> <动作> k=v…` | 执行一个平台动作；写操作默认干跑，`confirm=true` 才真发 |
+| `bank-stats` / `bank-export` / `bank-import` | 题库统计 / 导出 JSONL / 从 JSONL 导入 |
+
 ### 跑一次任务
 
 平台账号**只在控制台「账号」页绑定** —— `.env` 不再保存任何平台凭据。
@@ -126,7 +144,7 @@ PYTHONPATH=src python3 -m kedaibiao run <平台名> --live
 PYTHONPATH=src python3 -m kedaibiao web            # 默认绑 127.0.0.1:8765
 ```
 
-![控制台 · 概览](docs/screenshots/ui-overview-pigai.png)
+> 📷 控制台 · 概览 —— 截图只在本机保留（含真实平台数据，不入库）：`docs/screenshots/ui-overview-pigai.png`
 
 **左侧栏一列两段**：上半切平台，下半切该平台的功能。功能按任务命名 ——
 概览 / 课程 / 作业 / 题库 / 工具 / 运行日志 / 统计 / 账号。所有数据按「当前平台」
@@ -136,7 +154,7 @@ PYTHONPATH=src python3 -m kedaibiao web            # 默认绑 127.0.0.1:8765
 徽标与加载态；cookie 会落盘，同一次会话内后续访问会先探 `is_logged_in()`，
 有效就跳过登录。
 
-![控制台 · 作业](docs/screenshots/ui-assignments.png)
+> 📷 控制台 · 作业 —— 本地截图：`docs/screenshots/ui-assignments.png`
 
 默认只绑回环地址。要绑到别的地址（例如 Tailscale 网内）用
 `--host <地址> --allow-host <主机名>`，启动时会打印警告 —— 能访问到该地址的设备
@@ -159,7 +177,7 @@ PYTHONPATH=src python3 -m kedaibiao web
 #  http://127.0.0.1:8765/next      ← / 的别名，老书签不失效
 ```
 
-![控制台 v2 · 概览](docs/screenshots/v2/01-overview.png)
+> 📷 控制台 v2 · 概览 —— 本地截图：`docs/screenshots/v2/01-overview.png`
 
 和 v1 的差别只有排版与交互，**接口完全共用**：
 
@@ -179,42 +197,33 @@ PYTHONPATH=src python3 -m kedaibiao web
 
 设计说明与扩展方式见 [docs/web-console-v2-layout.md](docs/web-console-v2-layout.md)。
 
-| 运行日志（行式列表） | 跨平台统计 |
-| --- | --- |
-| ![运行日志](docs/screenshots/v2/04-logs.png) | ![统计](docs/screenshots/v2/05-stats.png) |
+> 📷 本地截图：运行日志（行式列表）、跨平台统计（`docs/screenshots/v2/04-logs.png`、`05-stats.png`）
 
-| 账号（多号 + 大模型） | 检查器（详情统一入口） |
-| --- | --- |
-| ![账号](docs/screenshots/v2/06-accounts.png) | ![检查器](docs/screenshots/v2/12-inspector.png) |
+> 📷 本地截图：账号（多号 + 大模型）、检查器（详情统一入口）（`06-accounts.png`、`12-inspector.png`）
 
-| 刷课（教材树 + 完成度 + 参数 + 日志） | iTEST 一键自动化 |
-| --- | --- |
-| ![刷课](docs/screenshots/v2/13-brush.png) | ![一键自动化](docs/screenshots/v2/15-itest.png) |
+> 📷 本地截图：刷课（教材树 + 完成度 + 参数 + 日志）、iTEST 一键自动化（`13-brush.png`、`15-itest.png`）
 
-| 考勤 / 签到 | 签到前的定位校验 |
-| --- | --- |
-| ![考勤](docs/screenshots/v2/32-attendance.png) | ![定位校验](docs/screenshots/v2/33-sign-guard.png) |
+> 📷 本地截图：考勤 / 签到、签到前的定位校验（`32-attendance.png`、`33-sign-guard.png`）
 
-| 批改网评分循环（提分） | 品课：计划 → 复核 → 提交 |
-| --- | --- |
-| ![评分循环](docs/screenshots/v2/40-pigai-grader.png) | ![品课复核](docs/screenshots/v2/41-pinco-plan.png) |
+> 📷 本地截图：批改网评分循环（提分）、品课（计划 → 复核 → 提交）（`40-pigai-grader.png`、`41-pinco-plan.png`）
 
 **「计划」页**：没做完的功能在界面上单独标注，点开能看到「为什么没做、计划怎么做、
 还差哪几步、有什么必须先确认的风险」——不让它们看起来像坏了。目前列了 5 项，
 其中 U校园口语评测按当前决定**只做前端标注、不接评测链路**。
 
-![计划页](docs/screenshots/v2/45-roadmap-page.png)
+> 📷 计划页 —— 本地截图：`docs/screenshots/v2/45-roadmap-page.png`
 
 改完前端想确认没写坏交互，跑自带的测试（都不碰真实平台账号）：
 
 ```bash
-timeout 600 .venv/bin/python -m pytest -q            # 1722 单测（离线）
+timeout 600 .venv/bin/python -m pytest -q            # 2041 单测（约 30 秒，离线）
 python3 scripts/api_matrix_check.py                  # 后端路由/安全/并发 125 项（自起临时服务）
 python3 scripts/ui_matrix_check.py  --base http://127.0.0.1:8765 --username admin --password '…'
 python3 scripts/ui_smoke_next.py    --base http://127.0.0.1:8765 --username admin --password '…'
 ```
 
-最近一次全面测试的结果与发现见 [docs/testing-report-2026-10-21.md](docs/testing-report-2026-10-21.md)。
+最近一次全面测试的结果与发现见 [docs/testing-report-2026-10-21.md](docs/testing-report-2026-10-21.md)
+（报告写于 1722 单测时点，此后单测已增长到 2041）。
 
 ### 平台只读动作（CLI）
 
@@ -436,9 +445,9 @@ PYTHONPATH=src python3 -m kedaibiao action unipus answers \
   `重考` 的 `goTest` 就是入口），已完成也能再进；
 - **工具页**：同样的能力也以平台动作形式提供（脚本/自动化用）。
 
-![控制台里的学习通](docs/screenshots/chaoxing/console-tab.png)
+> 📷 控制台里的学习通 —— 本地截图：`docs/screenshots/chaoxing/console-tab.png`
 
-![作业页里就地作答（题目信息 + 日志）](docs/screenshots/chaoxing/console-chaoxing-done.png)
+> 📷 作业页里就地作答（题目信息 + 日志）—— 本地截图：`docs/screenshots/chaoxing/console-chaoxing-done.png`
 
 ##### 自动化台（本地网页，推荐）
 
@@ -462,9 +471,9 @@ python3 scripts/chaoxing_studio.py
 - **运行日志**：勾选顶栏「前台显示」，会显示浏览器当前画面（视频播放、答题页
   都能看到）和实时日志。
 
-![学习通自动化台](docs/screenshots/chaoxing/studio.png)
+> 📷 学习通自动化台 —— 本地截图：`docs/screenshots/chaoxing/studio.png`
 
-![考试列表与交卷](docs/screenshots/chaoxing/studio-exam.png)
+> 📷 考试列表与交卷 —— 本地截图：`docs/screenshots/chaoxing/studio-exam.png`
 
 **滑块验证**：考试入口的风控滑块（`captcha.chaoxing.com`）默认**自动求解**
 （拼图轮廓比对求缺口 → 逐帧拖拽）。作答面板里可以切换成**人工过滑块**：
@@ -499,7 +508,7 @@ python3 scripts/chaoxing_studio.py --show
 `KEDAIBIAO_LLM_VISION_MODEL` 单独指定，UA 用 `KEDAIBIAO_LLM_USER_AGENT`）。
 模型不可用时降级规则答题器，报告里如实标低置信度。
 
-![学习通只读看板](docs/screenshots/chaoxing/overview.png)
+> 📷 学习通只读看板 —— 本地截图：`docs/screenshots/chaoxing/overview.png`
 
 ### 可选依赖
 
@@ -530,6 +539,28 @@ make install-browser   # playwright + chromium，浏览器型平台需要
 `Credentials.__repr__` 被重写为屏蔽密码，`.env`、`data/`、`*.storage_state.json`、
 `*.cookies.json` 全在 `.gitignore` 里 —— 凭据和登录态永远不进版本库。
 
+### 仓库里不会出现的东西（隐私边界）
+
+仓库要公开发布，所以**真实账号数据一律不进版本库**：
+
+| 类别 | 处理 |
+| --- | --- |
+| 凭据 / 会话 | `.env`、cookie、`storage_state*.json`、`data/`、数据库 —— 全部 `.gitignore` |
+| 截图 | `docs/screenshots/` 整目录忽略：截图里有真实课程名、作业号、账号信息，README 只留文字位置 |
+| 平台抓包 | `.har`、`docs/research/_raw/` 忽略；进仓库的 `tests/fixtures/` 是**脱敏后**的样本（账号 uid / personId / 页面令牌已换成 `1000000xx` 假值） |
+| 文档里的真实值 | 姓名 / 学校 / 班级 / 作业号换成占位或假值；真实值只登记在本机 `.secret-denylist`（该文件不入库） |
+
+三道闸，提交前自动/手动都能跑：
+
+```bash
+make check-secrets                                     # 查暂存区；pre-commit 钩子会自动跑
+python3 scripts/check_secrets.py --all                 # 查全部已跟踪文件
+.venv/bin/python -m pytest -q tests/test_privacy.py     # 路径 + 账号号段 + 本机 deny 列表
+```
+
+> **历史也要干净**：本仓库发布前用 `git filter-repo --replace-text` 清过一遍，
+> 校验命令与边界见 [docs/security.md §6](docs/security.md#6-发布与历史清理)。
+
 ---
 
 ## 5. 目录结构
@@ -545,12 +576,14 @@ make install-browser   # playwright + chromium，浏览器型平台需要
 │   ├── license-policy.md   第三方代码引用政策与已评估清单
 │   ├── security.md         敏感信息与入库纪律（凭据/截图/db 绝不入库）
 │   ├── naming.md           命名与标识符规范
+│   ├── verification/       每个平台「实测到哪一步」的验收记录（含未验证边界）
 │   └── research/           平台与依赖的调研报告（含证据来源）
 ├── src/kedaibiao/
 │   ├── runtime.py          运行时装配：配置·凭据·存储·传输 → 流水线
 │   ├── __main__.py         CLI
 │   ├── core/               模型 · 注册表 · 事件总线 · 调度器
 │   ├── platforms/          平台适配器（base.py 是契约）
+│   │   └── unipus/geetest/vendor/  MIT 原样 vendor 的极验求解 JS + NOTICE
 │   ├── browser/            Playwright 会话池（浏览器型平台）
 │   ├── net/                协议型 HTTP 客户端（协议型平台）
 │   ├── tasks/              流水线 · 答题器
@@ -593,17 +626,85 @@ make install-browser   # playwright + chromium，浏览器型平台需要
 
 ---
 
-## 7. 第三方代码引用政策
+## 7. 开源项目与第三方代码
 
-**引用任何开源项目之前，先读它的 LICENSE 并把结论写进
+### 7.1 政策（硬门槛）
+
+**引用任何开源项目之前，先读它的 LICENSE、把结论写进
 [docs/license-policy.md](docs/license-policy.md)，再动代码。**
-已有评估结论：
 
-| 项目 | 结论 | 原因摘要 |
+本项目以 **AGPL-3.0-only** 发布，因此：
+
+- ✅ 可并入 / 可依赖：MIT、BSD-2/3、ISC、Apache-2.0、LGPL、GPL-3.0
+  （须保留其声明并满足署名要求）；
+- ❌ 不可并入：带附加限制的许可 —— 「禁止商用」「仅限非商业」「衍生作品须同等条款」，
+  AGPL 第 7 条不允许在其之上再加限制；
+- ❌ 不可并入：无 LICENSE、无 SPDX 标识符、许可无法核验的代码；GPL-2.0-only 与
+  AGPL-3.0 不兼容，同样不可并入；
+- ❌ 不复制他人的代码、注释、文档文本与命名 —— 借鉴思路可以，搬运表达不行。
+
+### 7.2 已并入仓库的第三方代码（vendor）
+
+| 项目 | 许可 | 并入方式 | 归属声明 |
+| --- | --- | --- | --- |
+| [`sijiyo/projects`](https://github.com/sijiyo/projects) | MIT ✅ | **原样 vendor** `geetest3_slide/jiyan.js`：计算极验 v3 的 `get_w` / `get_encode_trace`。反混淆 JS 逐行翻译极易出错，故不改逻辑，只在文件头加说明 | [`vendor/NOTICE`](src/kedaibiao/platforms/unipus/geetest/vendor/NOTICE) + [`LICENSE.sijiyo-projects`](src/kedaibiao/platforms/unipus/geetest/vendor/LICENSE.sijiyo-projects) |
+| `driver.js` | AGPL-3.0-only | 本项目原创：把 `jiyan.js` 包成「stdin JSON → stdout JSON」，供 Python 侧 subprocess 调用 | 同上 |
+
+> MIT 与 AGPL-3.0 兼容，前提是**保留版权声明与许可文本** —— 上面这两份文件就是为此存在的。
+> 改 vendor 内容必须同步更新 `NOTICE`；完整清单见
+> [`vendor/README.md`](src/kedaibiao/platforms/unipus/geetest/vendor/README.md)。
+
+### 7.3 运行时依赖（全部可选）
+
+核心层（`core/`、`bank/`、`net/`、`config/`）**只用标准库**：`pyproject.toml` 的
+`dependencies = []`，什么都不装也能导入并跑全量单测。平台能力按需装：
+
+| 依赖 | 许可 | 用途 | 安装 |
+| --- | --- | --- | --- |
+| [Playwright](https://github.com/microsoft/playwright) + Chromium | Apache-2.0 | 浏览器型平台的会话与自动化（超星、iTEST、品课）、极验登录链路 | `make install-browser` |
+| [fontTools](https://github.com/fonttools/fonttools) | MIT | 学习通 `font-cxsecret` 字体混淆解码（读 cmap 做字形比对） | `pip install -e ".[chaoxing]"` |
+| [Pillow](https://github.com/python-pillow/Pillow) | MIT-CMU | 字形渲染比对、极验缺口定位（原方案用 OpenCV，这里用 Pillow 顶替） | 同上 |
+| [faster-whisper](https://github.com/SYSTRAN/faster-whisper)（含 CTranslate2） | MIT | iTEST 听力题本地转写，CPU 可跑 | `pip install -e ".[stt]"` |
+| [pytest](https://github.com/pytest-dev/pytest) · [ruff](https://github.com/astral-sh/ruff) · [mypy](https://github.com/python/mypy) | MIT | 开发与 CI | `make install-dev` |
+
+**预留未启用**：`pyproject.toml` 里的 `api`（FastAPI / uvicorn）与 `db`（SQLAlchemy）两组
+extra 目前没用到 —— 控制台是标准库 `http.server`，存储是 `sqlite3`。
+
+**外部程序**：极验 `w` 由 vendored `jiyan.js` 计算，需要本机有 **Node.js**（MIT）。
+只在登录时用到；没装则只有「极验滑块登录」不可用，其余功能不受影响。
+
+**外部服务**：大模型走任意 **OpenAI 兼容** HTTP 接口（`tasks/llm.py` 标准库实现，
+不依赖官方 SDK）；地址与模型在控制台「账号 → 大模型」或 `.env` 里配，不可用时降级规则答题器。
+
+### 7.4 只读参考、评估后不采用
+
+| 项目 | 许可 | 结论 |
 | --- | --- | --- |
-| [`Yunlk/uai-core`](https://github.com/Yunlk/uai-core) | ❌ 不可引用，只可借鉴思路 | 自定义非商业协议（无 SPDX），禁商用 + 衍生作品须同等条款；且是 U校园专用 Rust CLI，与本项目平台零重合。详见 [调研报告](docs/research/uai-core.md) |
+| [`vsmutok/PuzzleCaptchaSolver`](https://github.com/vsmutok/PuzzleCaptchaSolver) | MIT | 只**参考**缺口定位思路（其 OpenCV 实现未复制，改用 Pillow 重写） |
+| [`xKiian/GeekedTest`](https://github.com/xKiian/GeekedTest) | MIT | 只支持极验 v4，与本项目面对的 v3 场景不适用 |
+| [`DaKMaple/captcha_verify`](https://github.com/DaKMaple/captcha_verify) | **无协议** ❌ | 不可用：无授权即默认保留全部权利 |
+| [`whatsBeeHive/pigaiwang-toolkit`](https://github.com/whatsBeeHive/pigaiwang-toolkit) | 未评估 | 仅阅读其油猴脚本理解批改网页面结构，未复制、未并入 |
+| [`Yunlk/uai-core`](https://github.com/Yunlk/uai-core) | 自定义非商业协议 ❌ | 不可引用，只可借鉴思路：禁商用 + 衍生作品须同等条款，且是 U校园专用 Rust CLI，与本项目平台零重合。详见 [调研报告](docs/research/uai-core.md) |
 
-不引入 copyleft 代码、不引入许可不可核验的代码、不复制他人代码/注释/文档表达。
+评估口径（七问清单）与决策流程见 [docs/license-policy.md](docs/license-policy.md)；
+候选项目的原始对比表见 [docs/geetest-v3.md](docs/geetest-v3.md#3-开源方案已核协议)。
+
+### 7.5 合规边界
+
+极验是**商业反机器人产品**。vendored 求解器只服务于使用者本人账号的自动登录，
+不用于批量注册、撞库、薅羊毛或任何未经授权的第三方账号操作 —— 见
+[`vendor/NOTICE`](src/kedaibiao/platforms/unipus/geetest/vendor/NOTICE) 的「合规边界」一节。
+
+### 7.6 致谢
+
+感谢这些项目（按用途排序）：**Python 标准库与 CPython**（承载整个核心层）、
+**Playwright**（浏览器自动化）、**fontTools** 与 **Pillow**（字形与图像）、
+**faster-whisper / CTranslate2**（及其上游 OpenAI Whisper，本地语音转写）、
+**sijiyo/projects**（极验 v3 求解）、**Node.js**、**SQLite**，
+以及 **pytest / ruff / mypy** 工具链。许可与归属以上表为准。
+
+> 各教学平台的协议事实来自本项目自己的抓包、实测与回读，不来自任何第三方 SDK 或
+> 未授权的代码搬运；证据出处逐条写在 `docs/research/` 与 `docs/verification/`。
 
 ---
 
@@ -623,10 +724,20 @@ make install-browser   # playwright + chromium，浏览器型平台需要
         症状是「内容/目录能读、进度/答案 401」）
 - [ ] **M2 作答闭环**：题型解析、题库回填、提交与判分校验
   - [x] 内容/标准答案解密与子题对齐（U1/U2 部分解决）
-  - [x] 提交链路：载荷语义已用**一组已满分任务**真实提交验证（`code=0`、得分率 1.0、
-        回读 `finish=True`）；其余题型（口语/角色扮演/上传/纯学习组）未实测
-- [ ] **M3 调度与观测**：Web 控制台、定时跑批、通知渠道、失败重试面板
-- [ ] **M4 多平台**：接入第二个平台，验证适配器契约是否真的够用
+  - [x] U校园提交链路：载荷语义已用**一组已满分任务**真实提交验证（`code=0`、
+        得分率 1.0、回读 `finish=True`）；其余题型（口语 / 角色扮演 / 上传 / 纯学习组）未实测
+  - [x] 东软：刷资源后回读 `studyStatus` 判定完成；交卷默认只存草稿，
+        `KEDAIBIAO_NEUSOFT_ALLOW_SUBMIT=1` 才真交
+  - [x] iTEST：取卷 → 大模型生成答案单 → 逐项填卷核验 → 交卷需把确认串写成「交卷」
+  - [x] 批改网：提交编码形态已由真实探测确认（单次百分号编码）
+  - [x] 超星：字体混淆解码 + 视觉模型答题 + 逐题回读，默认干跑
+  - [ ] 剩余：口语评测（U校园）、上传题、纯学习组 —— 只有模块与闸门，线上行为未实测
+- [x] **M3 调度与观测**：Web 控制台（v2 `/` + v1 `/classic`，接口共用）、
+      通知渠道（console / webhook，Server 酱 · 钉钉 · 飞书 · Bark 都能套）、执行留痕与题库
+  - [ ] 定时跑批：目前靠系统 cron 或手动触发，插件内还没有时间表
+  - [ ] 失败重试面板：重试策略已在 `core/scheduler.py`，缺可视化
+- [x] **M4 多平台**：适配器契约已被 **6 个平台**验证（U校园、东软、超星、iTEST、批改网、
+      希沃品课），新增平台不需要改核心调度
 
 **M1 的验收标准是「只读跑通」** —— 在没有任何一次写操作的前提下，把某个平台的
 课程与作业清单完整拉下来并落库。
@@ -676,7 +787,10 @@ AGPL-3.0 是**强传染**许可，且覆盖网络服务（第 13 条：通过网
   具体到本项目：[`Yunlk/uai-core`](https://github.com/Yunlk/uai-core) 就属于这一类，
   **不能并入本仓库**，详见 [docs/license-policy.md](docs/license-policy.md)。
 
-接入新平台时，请先过一遍 [docs/license-policy.md](docs/license-policy.md) 的决策流程。
+接入新平台时，请先过一遍 [docs/license-policy.md](docs/license-policy.md) 的决策流程；
+第三方代码的实际归属声明在
+[vendor/NOTICE](src/kedaibiao/platforms/unipus/geetest/vendor/NOTICE)，
+完整依赖清单与许可见 [§7 开源项目与第三方代码](#7-开源项目与第三方代码)。
 
 > 想改用 `AGPL-3.0-or-later`（允许未来升到 AGPL-4.0）：把 `pyproject.toml` 的
 > `license` 改成 `"AGPL-3.0-or-later"` 即可，其余不变。
