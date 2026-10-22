@@ -774,6 +774,7 @@ class ChaoxingAutomation:
                 emit=emit,
                 captcha_mode=captcha_mode,
                 human_gate=human_gate,
+                on_page=on_page,
             )
             report = await runner.run_exam(
                 item, confirm=confirm, on_items=on_items, force=force

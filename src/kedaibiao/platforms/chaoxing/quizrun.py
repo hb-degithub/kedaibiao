@@ -217,6 +217,7 @@ class ChaoxingQuiz:
         human_gate: Callable[[str, str], Any] | None = None,
         use_ocr: bool | None = None,
         captcha_mode: str | None = None,
+        on_page: Callable[[Any], None] | None = None,
     ) -> None:
         self.page = page
         self.course_id = str(course_id)
@@ -245,6 +246,17 @@ class ChaoxingQuiz:
         self._questions: dict[str, quiz_mod.Question] = {}
         #: 已经点过「我已阅读并同意」的页面 URL（同一个页面不能点第二次，会取消勾选）
         self._agreed: set[str] = set()
+        #: 页面切换回调（控制台「前台显示」需要知道最新的页面）
+        self._on_page = on_page
+
+    def _switch_page(self, page: Any) -> None:
+        """切到新页面（重考/答题页常开新标签），并通知前台画面跟着切。"""
+        self.page = page
+        if self._on_page is not None:
+            try:
+                self._on_page(page)
+            except Exception:  # noqa: BLE001 - 前台显示失败不影响作答
+                log.debug("on_page 回调失败", exc_info=True)
 
     def emit(self, level: str, message: str) -> None:
         try:
@@ -406,10 +418,10 @@ class ChaoxingQuiz:
             await self.page.goto(url, timeout=90000)
             notes_page = self.page
         else:
-            self.page = notes_page
+            self._switch_page(notes_page)
         if item.retake:
             # 重考可能先落到「交卷结果页」，要在那里点「重考」才会进带 reset=true 的须知页
-            self.page = await self._ensure_notes_page(self.page)
+            self._switch_page(await self._ensure_notes_page(self.page))
             notes_page = self.page
         self.emit("info", f"考试须知：{item.title}（{item.status}）")
         # 重考 / 首次进入都走同一套：同意 → 开始 →（可能先弹安全验证）→ 确认进入 → 答题页。
@@ -424,15 +436,10 @@ class ChaoxingQuiz:
             if not await self._start_clicked() and not await self._page_has_captcha():
                 clicked = False
                 with contextlib.suppress(PwError):
-                    clicked = bool(
-                        await self.page.eval(
-                            "(() => { const b = document.getElementById('startBtn');"
-                            " if (!b || !(b.offsetWidth || 0)) return false;"
-                            " b.click(); return true; })()"
-                        )
-                    )
+                    await self.page.click("#startBtn", timeout=8000)
+                    clicked = True
                 if clicked:
-                    self.emit("info", "已点「开始考试 / 开始重考」，等待滑块或确认层…")
+                    self.emit("info", f"已点「开始考试 / 开始重考」（{self.page.url[:80]}）")
                 await asyncio.sleep(1.5)
             if await self._page_has_face_capture():
                 handled = await self._wait_human(
@@ -461,6 +468,9 @@ class ChaoxingQuiz:
                     else:
                         captcha_solves += 1
                         await self._solve_captcha()
+                    continue
+                if await self._confirm_retest():
+                    self.emit("info", "已确认「重考」，等待滑块或答题页…")
                     continue
                 if await self._confirm_enter_visible():
                     await self._confirm_enter_dialog()
@@ -642,6 +652,20 @@ class ChaoxingQuiz:
             await self.page.click(".face_agreement", timeout=8000)
             self._agreed.add(url)
         await asyncio.sleep(0.6)
+
+    async def _confirm_retest(self) -> bool:
+        """重考确认弹层（#confirmRetestWin）：点它的「确认」才真正进卷。"""
+        return bool(
+            await self.page.eval(
+                "(() => {"
+                " const win = document.getElementById('confirmRetestWin');"
+                " if (!win || !(win.offsetWidth || 0)) return false;"
+                " const btn = win.querySelector('.confirm, a.confirm, .jb_btn.confirm');"
+                " if (!btn) return false;"
+                " btn.click(); return true;"
+                "})()"
+            )
+        )
 
     async def _confirm_enter_visible(self) -> bool:
         """确认层现在在不在（只查一次，不轮询）。"""

@@ -196,6 +196,8 @@ User-Agent**，否则被 Cloudflare 挡成 403（error 1010）。
   `goTest('<courseid>',<examId>,<recordId>,<重考截止>,...)`），说明可以再交一次；
   解析成 `ExamItem.retake/retake_exam_id/retake_deadline_text`，控制台显示
   「可重考」并给「重考」按钮；平台没给出具体剩余次数时只标「可重考」；
+- **重考多一层确认**：须知页点「开始重考」后弹的是 `#confirmRetestWin`（不是普通考试的
+  `#confirmEnterWin`），要再点它的「确认」才会 `enterExam()`；漏了这步就永远停在须知页；
 - **重考要按平台自己的入口点**：直接拼 `examnotes?examId=` 只会落到「查看答案」页
   （0 题）。现在改成在课程页「考试」tab 里找到这一行的 `goTest(...)` 并执行，
   打开的是带 `&reset=true` 的须知页（按钮文案「开始重考」），
@@ -203,6 +205,8 @@ User-Agent**，否则被 Cloudflare 挡成 403（error 1010）。
 - **风控是硬门**：同一场连续进多次会一直弹滑块；自动解开了前端遮罩但平台仍
   判不通过（换新题）。现在的策略是最多自动解 2 次，仍不过就停下并提示人工，
   不再反复刷验证码；
+- **验证码原图**：`/api/platforms/chaoxing/captcha` 把滑块拆出来（背景图/拼图链接 +
+  缺口像素），验证码在 iframe 里也能找；控制台直接给链接和「按缺口自动拖一次」；
 - **控制台前台画面**：任务运行中每 1~2 秒按需截一帧（`/api/platforms/chaoxing/live`），
   页面里实时显示；「人工过滑块」模式下可以在**画面上直接拖**（手机也行），
   前端把归一化坐标发给 `/api/platforms/chaoxing/pointer`，后台回到任务自己的
