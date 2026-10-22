@@ -10,7 +10,7 @@
 平台差异全部关在适配器里，核心调度一行都不用改。
 
 **当前状态：v0.1.0 —— 框架 + 6 个真实平台适配器。** 核心层与题库层零第三方依赖，
-离线单测全绿（`pytest -q` 2041 项 / 约 30 秒；`make test` 走 unittest，1930 项）；
+离线单测全绿（`pytest -q` 2075 项 / 约 30 秒；`make test` 走 unittest，1964 项）；
 U校园、东软智慧教育、超星学习通、iTEST、批改网、希沃品课均已接入。
 每个平台「实测到哪一步、哪些只有静态证据」写在
 [docs/verification/](docs/verification/) 与 [docs/research/](docs/research/) 里 ——
@@ -171,6 +171,7 @@ PYTHONPATH=src python3 -m kedaibiao doctor
 | `doctor` | 环境自检（Python、可选依赖、存储可写、凭据状态） |
 | `config` | 打印生效配置（已脱敏） |
 | `run <平台> [--live]` | 跑一次任务流水线；默认干跑，`--live` 才真提交 |
+| `schedule [--once] [--dry-run]` | 定时跑批：按 `[[schedule.jobs]]` 执行；默认干跑 |
 | `web` | 起 Web 控制台（默认 `127.0.0.1:8765`） |
 | `capture <平台>` | 从浏览器用户目录抓取登录态 cookie（浏览器会话型平台） |
 | `actions <平台>` | 列出该平台的只读动作 |
@@ -198,6 +199,36 @@ PYTHONPATH=src python3 -m kedaibiao run <平台名> --live
 常用限定参数：`--limit 3`（本次最多 3 个作业）、`--kinds homework,exam`（只处理指定类型）。
 
 跑完可以用 `make bank-stats` 看题库命中率与执行记录。
+
+### 定时跑批
+
+不用系统 cron 也能定时：在 `config/local.toml` 里写任务，`kedaibiao web` 启动时
+自动拉起后台线程（退出时自动停），也可以单独常驻：
+
+```toml
+# config/local.toml（不入库）
+[schedule]
+enabled = true          # web 启动时是否自动起线程
+tick = 30.0             # 每 30 秒检查一次到期任务
+
+[[schedule.jobs]]
+name = "unipus-daily"
+platform = "unipus"
+every = "24h"           # s / m / h / d；纯数字按秒
+live = false            # 默认干跑，改成 true 才会真提交
+limit = 0               # 0 = 不限
+kinds = ""              # 空 = 全部；或 course,homework,exam,practice
+```
+
+```bash
+kedaibiao schedule                 # 常驻循环（Ctrl-C 退出）
+kedaibiao schedule --once          # 只跑到期的任务一次
+kedaibiao schedule --once --dry-run  # 即使任务写了 live=true 也强制干跑
+```
+
+**安全默认**：整个功能默认关闭；每个任务默认 `live=false`；任务串行执行、
+单任务失败不影响下一轮。到期判定与配置校验见
+[`tasks/schedule.py`](src/kedaibiao/tasks/schedule.py)。
 
 ### Web 控制台
 
@@ -277,14 +308,14 @@ PYTHONPATH=src python3 -m kedaibiao web
 改完前端想确认没写坏交互，跑自带的测试（都不碰真实平台账号）：
 
 ```bash
-timeout 600 .venv/bin/python -m pytest -q            # 2041 单测（约 30 秒，离线）
+timeout 600 .venv/bin/python -m pytest -q            # 2075 单测（约 30 秒，离线）
 python3 scripts/api_matrix_check.py                  # 后端路由/安全/并发 125 项（自起临时服务）
 python3 scripts/ui_matrix_check.py  --base http://127.0.0.1:8765 --username admin --password '…'
 python3 scripts/ui_smoke_next.py    --base http://127.0.0.1:8765 --username admin --password '…'
 ```
 
 最近一次全面测试的结果与发现见 [docs/testing-report-2026-10-21.md](docs/testing-report-2026-10-21.md)
-（报告写于 1722 单测时点，此后单测已增长到 2041）。
+（报告写于 1722 单测时点，此后单测已增长到 2075）。
 
 ### 平台只读动作（CLI）
 
@@ -799,7 +830,8 @@ extra 目前没用到 —— 控制台是标准库 `http.server`，存储是 `sq
   - [ ] 剩余：口语评测（U校园）、上传题、纯学习组 —— 只有模块与闸门，线上行为未实测
 - [x] **M3 调度与观测**：Web 控制台（v2 `/` + v1 `/classic`，接口共用）、
       通知渠道（console / webhook，Server 酱 · 钉钉 · 飞书 · Bark 都能套）、执行留痕与题库
-  - [ ] 定时跑批：目前靠系统 cron 或手动触发，插件内还没有时间表
+  - [x] 定时跑批（2026-10-22）：`[[schedule.jobs]]` + `kedaibiao schedule`，
+        web 启动时自动拉起、退出自动停；默认关闭、默认干跑、任务串行
   - [ ] 失败重试面板：重试策略已在 `core/scheduler.py`，缺可视化
 - [x] **M4 多平台**：适配器契约已被 **6 个平台**验证（U校园、东软、超星、iTEST、批改网、
       希沃品课），新增平台不需要改核心调度

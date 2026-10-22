@@ -31,3 +31,20 @@
 
 # 通知
 # notify = "console"
+
+# ---- 定时跑批（默认关闭；见 src/kedaibiao/tasks/schedule.py）----
+# 打开后，`kedaibiao web` 启动时会拉起后台线程按间隔跑任务，退出时自动停。
+# 也可以不用控制台：`kedaibiao schedule --once` 跑一次，或常驻 `kedaibiao schedule`。
+#
+# [schedule]
+# enabled = false          # 整个功能的总开关
+# tick = 30.0              # 每 30 秒检查一次有没有任务到期
+#
+# [[schedule.jobs]]
+# name = "unipus-daily"    # 任务名（唯一）
+# platform = "unipus"      # 平台机器名，见 `kedaibiao platforms`
+# every = "24h"            # s / m / h / d 后缀；纯数字按秒
+# live = false             # 默认干跑；写操作必须显式改成 true
+# limit = 0                # 0 = 不限
+# kinds = ""               # 空 = 全部；或 course,homework,exam,practice
+# enabled = true

@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -61,6 +62,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--kinds",
         default="",
         help="只处理这些类型，逗号分隔：course,homework,exam,practice",
+    )
+
+    sched_p = sub.add_parser(
+        "schedule", parents=[root_parent],
+        help="定时跑批：按 config 里的 [[schedule.jobs]] 定时执行（默认干跑）",
+    )
+    sched_p.add_argument(
+        "--once", action="store_true", help="只跑到期的任务一次，然后退出"
+    )
+    sched_p.add_argument(
+        "--dry-run", action="store_true",
+        help="本次强制干跑（即使任务里写了 live = true）",
     )
 
     web_p = sub.add_parser("web", parents=[root_parent], help="启动 Web 控制台")
@@ -343,6 +356,84 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if report.failed == 0 else 1
 
 
+def _pretty_interval(seconds: float) -> str:
+    if seconds % 86400 == 0:
+        return f"{seconds / 86400:g}d"
+    if seconds % 3600 == 0:
+        return f"{seconds / 3600:g}h"
+    if seconds % 60 == 0:
+        return f"{seconds / 60:g}m"
+    return f"{seconds:g}s"
+
+
+def cmd_schedule(args: argparse.Namespace) -> int:
+    from dataclasses import replace
+
+    from kedaibiao.tasks.schedule import (
+        ScheduleConfigError,
+        ScheduleRunner,
+        execute_job,
+        load_plan,
+    )
+
+    try:
+        plan = load_plan(args.root)
+    except ScheduleConfigError as exc:
+        print(f"✗ 定时配置有误：{exc}")
+        return 2
+
+    state = "启用" if plan.enabled else "未启用（web 启动时不会自动跑，--once 仍可手动跑一次）"
+    print(f"定时跑批：{state}   tick={plan.tick:g}s   任务 {len(plan.jobs)} 个")
+    for job in plan.jobs:
+        kinds = ",".join(sorted(k.value for k in job.kinds)) or "全部"
+        live = "是" if job.live else "否（干跑）"
+        print(
+            f"  - {job.name:20s} {job.platform:10s}"
+            f" 每 {_pretty_interval(job.every_seconds):>5s}"
+            f"   live={live}   kinds={kinds}   limit={job.limit or '不限'}"
+        )
+    if not plan.jobs:
+        print("  （没有任务；在 config/local.toml 里加 [[schedule.jobs]]）")
+        return 0
+
+    def _execute(job):  # noqa: ANN001 - 内部闭包，参数由 runner 传入
+        return execute_job(args.root, replace(job, live=False) if args.dry_run else job)
+
+    runner = ScheduleRunner(plan, _execute)
+
+    if args.once or not plan.enabled:
+        finished = runner.run_pending()
+        if not finished:
+            print("本轮没有到期的任务。")
+            return 0
+        failed = 0
+        for item in finished:
+            result = item.get("result") or {}
+            ok = item["ok"] and result.get("ok", True)
+            if ok:
+                print(f"✓ {item['name']}：{result.get('summary', '完成')}")
+            else:
+                failed += 1
+                reason = item.get("error") or result.get("summary") or "有作业失败"
+                print(f"✗ {item['name']}：{reason}")
+        return 0 if not failed else 1
+
+    print("后台循环已开始（Ctrl-C 退出）。到期的任务会串行执行。")
+    try:
+        while True:  # pragma: no cover - 交互式循环，测试走 --once / run_pending
+            for item in runner.run_pending():
+                result = item.get("result") or {}
+                if item["ok"] and result.get("ok", True):
+                    print(f"✓ {item['name']}：{result.get('summary', '完成')}")
+                else:
+                    reason = item.get("error") or result.get("summary") or "有作业失败"
+                    print(f"✗ {item['name']}：{reason}")
+            time.sleep(plan.tick)
+    except KeyboardInterrupt:
+        print("\n已停止。")
+        return 0
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     # 延迟导入：不起控制台就不该加载 http.server
     from kedaibiao.api.server import serve
@@ -353,7 +444,25 @@ def cmd_web(args: argparse.Namespace) -> int:
         return 2
 
     service = ConsoleService(root=args.root)
-    serve(service, host=args.host, port=args.port, allow_hosts=args.allow_host)
+
+    # 定时跑批：只在配置显式 enabled 时启动后台线程，退出时一定停掉
+    from kedaibiao.tasks.schedule import ScheduleConfigError, ScheduleRunner, execute_job, load_plan
+
+    runner = None
+    try:
+        plan = load_plan(args.root)
+    except ScheduleConfigError as exc:
+        print(f"✗ 定时配置有误，控制台仍会启动但不跑定时任务：{exc}")
+        plan = None
+    if plan is not None and plan.enabled and plan.jobs:
+        runner = ScheduleRunner(plan, lambda job: execute_job(args.root, job))
+        runner.start()
+        print(f"⏱  定时跑批已启用：{len(plan.jobs)} 个任务，tick={plan.tick:g}s")
+    try:
+        serve(service, host=args.host, port=args.port, allow_hosts=args.allow_host)
+    finally:
+        if runner is not None:
+            runner.stop()
     return 0
 
 
@@ -657,6 +766,7 @@ HANDLERS = {
     "bank-export": cmd_bank_export,
     "bank-import": cmd_bank_import,
     "run": cmd_run,
+    "schedule": cmd_schedule,
     "web": cmd_web,
     "capture": cmd_capture,
     "actions": cmd_actions,
