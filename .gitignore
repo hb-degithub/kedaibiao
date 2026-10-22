@@ -51,8 +51,11 @@ dist-web/
 # 永不入库、永不随交付物分发（含打包/压缩/镜像）。
 # 本项目是 AGPL-3.0；把非 AGPL 兼容的源码放进交付物会造成许可冲突。
 # 约定做法见 docs/license-policy.md：一次性浅克隆到 /tmp 读取，读完即弃。
-.reference/
-vendor/
+# 注意：只忽略仓库根目录下的临时参考克隆；**项目自己的 vendor 要入库**
+# （src/kedaibiao/platforms/unipus/geetest/vendor/ 是 MIT 原样 vendor 的极验求解
+# JS + NOTICE；它随仓库分发，缺了会让 geetest 登录失效、测试失败）。
+/.reference/
+/.vendor/
 
 # ---- 编辑器 / 系统 ----
 .idea/
