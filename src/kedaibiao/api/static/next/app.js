@@ -3298,17 +3298,68 @@
     return '';
   }
 
+  /* 行内「提交」为什么不可用：原因不止一种，去处也各不相同，不能糊成一句
+     「该平台未声明提交能力」—— pigai / pinco 都声明了 submit，只是不该走通用链路。
+     返回 null 表示可提交；否则 {label, tone, why}（label 给页头 pill，why 给悬停）。 */
+  function submitGate(platName, plat) {
+    var caps = (plat && plat.capabilities) || {};
+    if (!plat || !plat.name) {
+      /* platformOf() 拿到空 = 这页没有 /api/platforms 的能力表：常见是登录态过期，
+         401 在 loadGlobals 里被静默吞掉。这时所有平台都会「不可提交」，要说清楚。 */
+      return {
+        label: '平台信息未加载（刷新或重新登录）',
+        tone: 'pill-warn',
+        why: '这页没拿到 /api/platforms 的能力表，行内提交一律先禁用；'
+          + '刷新页面或重新登录后，才会按各平台声明的能力显示。'
+      };
+    }
+    if (platName === 'pinco') {
+      /* 品课的提交必须走「计划 → 人工复核 → 提交」，行内直提必被守卫拒绝。 */
+      return {
+        label: '提交走「提交计划（复核）」',
+        tone: 'pill-mute',
+        why: '品课只接受「计划 → 人工复核 → digest 提交」，行内直提会被守卫拒绝；'
+          + '入口是作业页顶上那颗「提交计划（复核）」。'
+      };
+    }
+    if (platName === 'chaoxing') {
+      /* 学习通没有通用提交链路，但有自己的作答动作：别让用户以为「不能交」。 */
+      return {
+        label: '提交走「工具 · 做考试」',
+        tone: 'pill-mute',
+        why: '学习通的取题与交卷都在它自己的答题窗口里（fetch_questions / submit 均未声明），'
+          + '通用提交链路用不了；作业行的「做考试 / 做测验 / 重考」就是入口。'
+      };
+    }
+    if (caps.submit !== true) {
+      return {
+        label: '该平台未声明提交能力',
+        tone: 'pill-warn',
+        why: '适配器没有声明 submit 能力，控制台不会给提交入口，也不会假装成功。'
+      };
+    }
+    if (caps.fetch_questions !== true) {
+      /* 能提交 ≠ 能作答：pigai 声明 submit=True，但没有 fetch_questions，
+         走通用提交必然 400「没有取到题目」。这种按钮不该出现。 */
+      return {
+        label: platName === 'pigai' ? '提交走「评分循环」' : '取不到题（改用平台自己的动作）',
+        tone: 'pill-warn',
+        why: platName === 'pigai'
+          ? '批改网声明了 submit，但没有取题能力（fetch_questions），通用提交必然 400；'
+            + '写入口是作业详情里的「批改网评分循环（提分）」。'
+          : '该平台声明了 submit，但没有取题能力（fetch_questions），通用提交拿不到题目；'
+            + '请改用平台自己的写入口。'
+      };
+    }
+    return null;
+  }
+
   function pageAssignments(page, seq) {
     if (needsPlatformPage(page, seq)) { return; }
     var platName = state.platform;
     var plat = platformOf(platName) || {};
-    var caps = plat.capabilities || {};
-    /* 能提交 ≠ 能作答：pigai 声明 submit=True，但没有 fetch_questions，
-       走通用提交必然 400「没有取到题目」。这种按钮不该出现。 */
-    /* 品课的提交必须走「计划 → 人工复核 → 提交」，行内直提必被守卫拒绝；
-       所以这里也把它排除，入口只有上面那个「提交计划（复核）」。 */
-    var canSubmit = caps.submit === true && caps.fetch_questions === true
-      && platName !== 'pinco';
+    var gate = submitGate(platName, plat);
+    var canSubmit = gate === null;
 
     var courseField = el('input');
     courseField.type = 'text';
@@ -3318,10 +3369,10 @@
 
     var actions = [];
     if (!canSubmit) {
-      /* 学习通没有通用提交链路，但有自己的作答动作：别让用户以为「不能交」 */
-      actions.push(pill(
-        platName === 'chaoxing' ? '提交走「工具 · 做考试」' : '该平台未声明提交能力',
-        platName === 'chaoxing' ? 'pill-mute' : 'pill-warn'));
+      /* 页头只给「为什么不能直提 + 该去哪」，原因分别写在 submitGate() 里 */
+      var gatePill = pill(gate.label, gate.tone);
+      gatePill.title = gate.why;
+      actions.push(gatePill);
     }
     if (plat.native_submit_flow) {
       actions.push(btn('一键全部提交', 'btn-sm', function () { openBatchSubmit(platName); }));
@@ -3489,11 +3540,8 @@
                     });
                   });
                 }
-                var why = caps.submit !== true
-                  ? '该平台未声明提交能力'
-                  : '该平台没有取题能力，通用提交会失败（改用平台自己的动作）';
                 var tag = el('span', 'hint-text', '不可提交');
-                tag.title = why;
+                tag.title = gate.why;
                 return tag;
               }
               return btn('提交', 'btn-sm', function () {
@@ -3596,10 +3644,7 @@
         '之前只认作业类型，这类任务被整批过滤掉了。',
       '「提交」是两步的：先 confirm=false 干跑，把每题打算怎么答、置信度多少摊开；确认后才 confirm=true 真交。',
       canSubmit ? '该平台声明了 submit 能力，所以行内提交可用。'
-        : (caps.submit === true
-          ? '该平台声明了 submit，但没有取题能力（fetch_questions），行内提交保持禁用；'
-            + 'pigai 请打开作业详情，用里面的「批改网评分循环（提分）」。'
-          : '该平台没有声明 submit 能力，提交入口保持禁用。'),
+        : gate.why,
       '后端还会拦两道门槛：一题都没答出来、或最低置信度低于阈值，都会 400 拒绝。',
       platName === 'unipus'
         ? '注意：口语 / 角色扮演题目前不做语音评测 —— 提交的是空录音，平台会记 0 分；'
