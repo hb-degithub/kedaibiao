@@ -394,6 +394,8 @@ GET_CASES: list[tuple[str, set[int], str | None, bool]] = [
     ("/api/overview?platform=" + FAKE, {200}, None, True),
     ("/api/statistics", {200}, None, True),
     ("/api/settings", {200}, None, True),
+    ("/api/settings/llm", {200}, None, True),
+    ("/api/schedule", {200}, None, True),
     ("/api/runs", {200}, None, True),
     ("/api/runs?platform=" + FAKE, {200}, None, True),
     ("/api/submissions", {200}, None, True),

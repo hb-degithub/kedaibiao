@@ -100,6 +100,17 @@ class TestLlmConfig(unittest.TestCase):
         self.assertEqual(status["model"], "", "清空后不再有覆盖值")
         self.assertNotIn("model", status["override_fields"])
 
+    def test_status_is_readonly_view_of_center(self) -> None:
+        """工具页首屏读的就是这个视图：必须可读，且不含密钥。"""
+        self.service.update_llm_config(SUPER, {
+            "base_url": "https://g.example/v1", "model": "m", "api_key": "sk-hidden",
+        })
+        status = self.service.llm_status()
+        for key in ("enabled", "ocr_model", "escalate_enabled",
+                    "escalate_threshold", "fallback_model", "editable"):
+            self.assertIn(key, status)
+        self.assertNotIn("sk-hidden", repr(status))
+
     # -- OCR / 升级 -------------------------------------------------------
 
     def test_ocr_and_escalation_fields_roundtrip(self) -> None:

@@ -384,6 +384,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return self._json(200, svc.statistics(owner_id=self._owner_param(), viewer=viewer))
         if path == "/api/settings":
             return self._json(200, svc.settings_view())
+        if path == "/api/settings/llm":
+            # 只读视图：工具页（LLM 配置中心）首屏靠它；密钥只报有没有设
+            return self._json(200, svc.llm_status())
         if path == "/api/platforms":
             return self._json(200, svc.platforms())
         if path == "/api/schedule":
