@@ -1621,6 +1621,8 @@ pre.code {
 
 /* ------------------------------------------------- 干跑计划：逐题改答案 -- */
 .plan-editor { display: flex; flex-direction: column; gap: 10px; }
+.plan-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.plan-title { font-weight: 600; font-size: 14px; color: var(--fg); }
 .plan-dirty { color: var(--accent); font-weight: 600; }
 .plan-card {
   border: 1px solid var(--line);

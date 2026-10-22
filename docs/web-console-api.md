@@ -774,8 +774,9 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
   ```json
   { "platform": "pigai", "assignment_id": "1000001", "title": "…",
     "question_count": 3, "answered": 3, "min_confidence": 0.91,
-    "threshold": 0.75, "dry_run": true, "submitted": false,
-    "answers": [ { "index": 1, "stem": "…", "choices": [1], "text": "",
+    "threshold": 0.75, "dry_run": true, "submitted": false, "editable": true,
+    "answers": [ { "index": 1, "stem": "…", "type": "single",
+                   "options": ["甲", "乙"], "choices": [1], "text": "",
                    "source": "bank_hit", "confidence": 0.95, "needs_human": false } ],
     "note": "这是干跑结果，没有向平台提交任何内容。" }
   ```
@@ -784,9 +785,26 @@ body 可为 `{}`（仍要求 `Content-Type: application/json`）。
   `fields` / `sections`），控制台检查器直接按它渲染逐题计划与置信度；
   上面那些机器字段原样保留，CLI / 流水线 / 老控制台（`/classic`）继续消费。
   与 unipus 的 `_plan_envelope` 是同一套约定：信封键与机器字段互不冲突。
-- `confirm=true`：真的调平台写接口。原生链路（iTEST）的结果同样会另挂
-  `kind: "detail"` 的信封（交卷步骤 / 页面回显 / 截图路径），没有 `message`
-  字段的平台也能在检查器里看到结果。
+
+  通用提交链路（东软等）的计划带 `editable: true`，每题额外带 `type` 与
+  `options`（平台题面原文）—— 控制台据此把计划渲染成可编辑表单：选择题点
+  选项、填空/简答改文字。`needs_human` 的题还有「我确认这题」勾选。
+  原生链路（iTEST / U校园）没有这个标志，计划只读。
+- `confirm=true`：真的调平台写接口。可以带 `answers` 把**人工改过的答案**
+  一起提交（`index` 是干跑计划里的题号，1 起）：
+
+  ```json
+  { "platform": "neusoft", "assignment_id": "1000001", "confirm": true,
+    "answers": [ { "index": 1, "choices": [2], "text": "" },
+                 { "index": 3, "choices": [], "text": "人工填的答案" } ] }
+  ```
+
+  只有列出来的题会被覆盖：按 `manual` 记来源、置信度记 1.0，不再被
+  `min_confidence` 拦；没列的题照旧走两条硬门槛。`index` 越界、`choices`
+  下标越界、类型不对一律 400，不会带着坏数据去碰平台。
+  原生链路（iTEST / U校园）不支持逐题覆盖答案，带了 `answers` 直接 400。
+  结果同样会另挂 `kind: "detail"` 的信封（iTEST 的交卷步骤 / 页面回显 /
+  截图路径），没有 `message` 字段的平台也能在检查器里看到结果。
 
 **平台没实现提交时返回 `501 not_supported`**，`error` 会说明原因。
 目前 pigai / unipus 都是 `capabilities.submit = false`，

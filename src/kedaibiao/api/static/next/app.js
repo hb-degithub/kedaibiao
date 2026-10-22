@@ -4323,6 +4323,15 @@
     var entries = [];
     var dirtyText = el('span', 'hint-text', '');
 
+    if (env.title || env.label || env.platform) {
+      var titleRow = el('div', 'plan-head');
+      if (env.title) { titleRow.appendChild(el('span', 'plan-title', String(env.title))); }
+      if (env.label) { titleRow.appendChild(pill(String(env.label), 'pill-warn')); }
+      if (env.platform) { titleRow.appendChild(pill(String(env.platform), 'pill-accent')); }
+      node.appendChild(titleRow);
+    }
+    if (env.note) { node.appendChild(el('p', 'env-note', String(env.note))); }
+
     var chips = el('div', 'pills');
     chips.appendChild(pill('共 ' + answers.length + ' 题', 'pill-mute'));
     chips.appendChild(pill('已答 ' + dash(env.answered), 'pill-ok'));

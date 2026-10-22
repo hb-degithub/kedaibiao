@@ -2909,8 +2909,11 @@ class ConsoleService:
             raise ConsoleError("缺少任务号", kind="bad_request", status=400)
 
         edited = f"，人工改过 {len(overrides)} 题" if overrides else ""
-        self._plog(scope, "info",
-                   f"$ 提交 {assignment_id}（{'真交，不可逆' if confirm else '干跑，不提交'}{edited}）")
+        self._plog(
+            scope,
+            "info",
+            f"$ 提交 {assignment_id}（{'真交，不可逆' if confirm else '干跑，不提交'}{edited}）",
+        )
         try:
             result = asyncio.run(
                 self._submit_one(

@@ -653,6 +653,47 @@ class TestSecurity(ServerTestBase):
             self.assertNotIn("Access-Control", key)
 
 
+class TestSubmitRoute(ServerTestBase):
+    """`/api/assignments/submit` 只锁「HTTP 路由 → 服务层」的接线。
+
+    提交链路的业务（覆盖答案、置信度门槛、平台写接口）在
+    tests/test_api_service.py 的 TestSubmitPipeline 里用假适配器覆盖。
+    """
+
+    def test_route_passes_human_answers_to_service(self) -> None:
+        answers = [{"index": 1, "choices": [1]}, {"index": 2, "text": "人工答案"}]
+        with mock.patch.object(
+            self.service, "submit_assignment", return_value={"submitted": True}
+        ) as handler:
+            status, body, _ = self.call(
+                "/api/assignments/submit",
+                method="POST",
+                json_body={
+                    "platform": PLATFORM,
+                    "assignment_id": "a1",
+                    "confirm": True,
+                    "answers": answers,
+                },
+            )
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["submitted"])
+        kwargs = handler.call_args.kwargs
+        self.assertTrue(kwargs["confirm"])
+        self.assertEqual(kwargs["overrides"], answers)
+
+    def test_route_without_answers_passes_none(self) -> None:
+        with mock.patch.object(
+            self.service, "submit_assignment", return_value={"dry_run": True}
+        ) as handler:
+            status, _, _ = self.call(
+                "/api/assignments/submit",
+                method="POST",
+                json_body={"platform": PLATFORM, "assignment_id": "a1"},
+            )
+        self.assertEqual(status, 200)
+        self.assertIsNone(handler.call_args.kwargs["overrides"])
+
+
 class TestPincoReviewRoutes(ServerTestBase):
     """品课两条路由：只锁「HTTP 路由 → 服务层」的接线。
 
