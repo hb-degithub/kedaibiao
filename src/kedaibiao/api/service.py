@@ -3262,6 +3262,8 @@ class ConsoleService:
             plan["ok"] = result.ok
             plan["score"] = result.score
             plan["message"] = result.message
+            # 顶层也带一份：前端据此把列表里的行标成「已完成」。
+            plan["server_finish"] = (result.raw or {}).get("server_finish")
             # 结果也走展示信封：没有 message 的平台、或只交了草稿的情况，
             # 用户都要能在抽屉里一眼看清「到底交没交」。
             plan.update(
