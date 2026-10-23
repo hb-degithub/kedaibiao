@@ -6236,6 +6236,7 @@
       sub: [scopeChip(), '每个平台可以有多个号，随时切当前号'],
       actions: [
         btn('新增账号', 'btn-sm btn-primary', function () { openAddAccount(); }),
+        btn('验证码登录', 'btn-sm', function () { openCaptchaLogin(); }),
         btn('刷新', 'btn-sm', function () { renderPage(); })
       ]
     }));
@@ -6529,6 +6530,159 @@
   }
 
   /* ================================================================ 工具 */
+
+  /* ============================================ 验证码登录（自动 → 人工兜底） */
+
+  /* 后端行为：先自动识别图片码（用已配的大模型），识别不出/码不对就把验证码
+     图交回来，由人输入。这里只负责：开会话、轮询状态、把图与输入框摆出来。 */
+  function openCaptchaLogin() {
+    var platSel = el('select');
+    state.platforms.forEach(function (p) {
+      var o = el('option', '', (p.display_name || p.name) + '（' + p.name + '）');
+      o.value = p.name;
+      platSel.appendChild(o);
+    });
+    if (state.platform) { platSel.value = state.platform; }
+
+    var username = input('text', '', '平台用户名 / 手机号');
+    var password = input('password', '', '平台密码');
+    var msg = el('span', 'hint-text', '');
+    var sessionHost = el('div', '');
+    var sid = '';
+    var timer = null;
+    var lastState = '';
+
+    function stopPolling() {
+      if (timer) { clearInterval(timer); timer = null; }
+    }
+
+    function post2(action, payload) {
+      return post('/api/accounts/login/' + encodeURIComponent(sid) + '/' + action,
+        payload || {});
+    }
+
+    function render(snap) {
+      if (!snap) { return; }
+      sid = snap.session_id || sid;
+      lastState = String(snap.state || '');
+      clear(sessionHost);
+      var box = el('div', '');
+      var tone = lastState === 'done' ? 'pill-ok'
+        : (lastState === 'failed' ? 'pill-danger' : 'pill-warn');
+      box.appendChild(pill('状态 ' + lastState, tone));
+      if (snap.message) { box.appendChild(el('p', 'env-note', snap.message)); }
+
+      if (lastState === 'done') {
+        stopPolling();
+        box.appendChild(actionRow([
+          btn('保存登录态到账号', 'btn-primary btn-sm', function () {
+            post2('finish', {}).then(function (r) {
+              toast('登录态已保存' + (r && r.path ? ('：' + r.path) : ''));
+              refreshAfterAccountChange();
+            }).catch(function (e) { msg.textContent = describe(e); });
+          }),
+          btn('丢弃', 'btn-sm', function () { post2('cancel', {}); stopPolling(); })
+        ]));
+        sessionHost.appendChild(box);
+        return;
+      }
+      if (lastState === 'failed' || lastState === 'cancelled') {
+        stopPolling();
+        box.appendChild(actionRow([btn('关闭', 'btn-sm', function () {
+          post2('cancel', {});
+          clear(sessionHost);
+        })]));
+        sessionHost.appendChild(box);
+        return;
+      }
+
+      if (snap.image_b64) {
+        var img = el('img');
+        img.src = 'data:image/png;base64,' + snap.image_b64;
+        img.alt = '验证码';
+        img.style.maxWidth = '220px';
+        img.style.borderRadius = '6px';
+        box.appendChild(img);
+      } else {
+        box.appendChild(el('p', 'hint-text', '（暂无验证码图：可能不需要验证码，或页面还在加载）'));
+      }
+
+      var code = input('text', '', '看图输入验证码');
+      var smsCode = input('text', '', '短信验证码');
+      box.appendChild(actionRow([code]));
+      box.appendChild(actionRow([smsCode]));
+
+      var acts = el('div', 'auto-foot');
+      acts.appendChild(btn('提交验证码', 'btn-sm btn-primary', function () {
+        post2('code', { code: code.value }).then(render).catch(function (e) {
+          msg.textContent = describe(e);
+        });
+      }));
+      acts.appendChild(btn('获取短信码', 'btn-sm', function () {
+        post2('sms', { action: 'send' }).then(render).catch(function (e) {
+          msg.textContent = describe(e);
+        });
+      }));
+      acts.appendChild(btn('提交短信码', 'btn-sm', function () {
+        post2('sms', { action: 'code', code: smsCode.value }).then(render).catch(function (e) {
+          msg.textContent = describe(e);
+        });
+      }));
+      acts.appendChild(btn('取消', 'btn-sm btn-ghost', function () {
+        post2('cancel', {}).catch(function () { /* 取消失败无所谓 */ });
+        stopPolling();
+        clear(sessionHost);
+      }));
+      box.appendChild(acts);
+      sessionHost.appendChild(box);
+    }
+
+    function poll() {
+      if (!sid) { return; }
+      get('/api/accounts/login/' + encodeURIComponent(sid)).then(function (snap) {
+        render(snap);
+      }).catch(function () { stopPolling(); });
+    }
+
+    var startBtn = btn('开始登录', 'btn-primary', function () {
+      if (!username.value.trim() || !password.value) {
+        msg.textContent = '用户名和密码都要填。';
+        return;
+      }
+      startBtn.disabled = true;
+      msg.textContent = '正在打开登录页…（会先自动试一次验证码）';
+      post('/api/accounts/login/start', {
+        platform: platSel.value,
+        username: username.value,
+        password: password.value
+      }).then(function (snap) {
+        msg.textContent = '';
+        render(snap);
+        stopPolling();
+        timer = setInterval(poll, 1500);
+      }).catch(function (e) {
+        msg.textContent = describe(e);
+      }).then(function () { startBtn.disabled = false; });
+    });
+
+    var form = el('div', 'form-grid');
+    form.appendChild(fieldWrap('平台', platSel, '只支持已核实的登录页（目前：超星）'));
+    form.appendChild(fieldWrap('用户名', username, ''));
+    form.appendChild(fieldWrap('密码', password, '不落盘、不回显'));
+
+    var body = el('div', '');
+    body.appendChild(form);
+    body.appendChild(actionRow([startBtn, msg]));
+    body.appendChild(sessionHost);
+    body.appendChild(hintBlock([
+      '流程：打开登录页 → 填账号密码 → 遇到验证码**先自动识别**（用「工具」页配的大模型读图）→ 识别不出或码不对，才把图交给你输入。',
+      '自动识别最多试 2 次：错码会让平台刷新验证码，硬撞只会把账号打进更严的风控。',
+      '短信登录：点「获取短信码」触发平台发短信，收到后填进「短信验证码」再提交。',
+      '登录成功后点「保存登录态到账号」：会把浏览器会话落到该平台当前账号名下，之后跑批直接用它。',
+      '只支持已核实登录页的平台；没列出的平台请用「新增账号」的密码登录，或在本机浏览器登录后抓 Cookie。'
+    ]));
+    openInspector({ title: '验证码登录', sub: '先自动过码，不行再人工输入', body: body });
+  }
 
   /* ================================================================ 工具（统一 LLM 配置中心） */
 

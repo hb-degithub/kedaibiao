@@ -376,6 +376,7 @@ GET_CASES: list[tuple[str, set[int], str | None, bool]] = [
     ("/api/auth/me", {200}, None, True),
     ("/api/users", {200}, None, True),
     ("/api/accounts", {200}, None, True),
+    ("/api/accounts/login/lg-404", {404}, "not_found", True),
     ("/api/users/999", {404}, "not_found", False),  # 已知死分支：恒 404
     # 平台级只读
     ("/api/platforms", {200}, None, True),
@@ -427,6 +428,10 @@ POST_CASES: list[tuple[str, dict[str, Any], set[int], str | None, bool]] = [
     ("/api/accounts", {"platform": "ghost", "username": "u"}, {404}, "unknown_platform", True),
     ("/api/accounts/999/activate", {}, {404}, "not_found", True),
     ("/api/accounts/999/login", {"password": "x"}, {404}, "not_found", True),
+    # 交互式登录：平台不在已核实清单里 → 501 not_supported（不是 500）
+    ("/api/accounts/login/start",
+     {"platform": FAKE, "username": "u", "password": "p"},
+     {501}, "not_supported", True),
     ("/api/accounts/999/update", {}, {404}, "not_found", True),
     ("/api/accounts/999/delete", {}, {404}, "not_found", True),
     # iTEST

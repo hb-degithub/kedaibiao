@@ -323,6 +323,10 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return self._json(200, svc.users(viewer))
         if path.startswith("/api/users/"):
             return self._error(404, f"没有这个路由: {path}", "not_found")
+        if path.startswith("/api/accounts/login/"):
+            rest = path[len("/api/accounts/login/") :].strip("/")
+            if rest and "/" not in rest:
+                return self._json(200, svc.login_session_state(rest))
         if path == "/api/accounts":
             return self._json(200, svc.accounts(
                 viewer,
@@ -456,6 +460,45 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         disabled=payload.get("disabled"),
                         note=payload.get("note"),
                     ))
+            return self._error(404, f"没有这个路由: {path}", "not_found")
+
+        # -- 交互式登录（验证码先自动过，不行再人工） --
+        if path == "/api/accounts/login/start":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.start_interactive_login(
+                viewer,
+                str(payload.get("platform") or ""),
+                username=str(payload.get("username") or ""),
+                password=str(payload.get("password") or ""),
+            ))
+        if path.startswith("/api/accounts/login/"):
+            parts = path[len("/api/accounts/login/") :].split("/")
+            session_id = parts[0]
+            if len(parts) != 2:
+                return self._error(404, f"没有这个路由: {path}", "not_found")
+            action = parts[1]
+            if action == "code":
+                payload = self._body_json()
+                code = str((payload or {}).get("code") or "") if isinstance(payload, dict) else ""
+                return self._json(200, self.service.login_session_code(session_id, code))
+            if action == "sms":
+                payload = self._body_json()
+                payload = payload if isinstance(payload, dict) else {}
+                return self._json(200, self.service.login_session_sms(
+                    session_id,
+                    action=str(payload.get("action") or "send"),
+                    code=str(payload.get("code") or ""),
+                ))
+            if action == "finish":
+                payload = self._body_json()
+                payload = payload if isinstance(payload, dict) else {}
+                return self._json(200, self.service.finish_interactive_login(
+                    viewer, session_id, account_id=payload.get("account_id"),
+                ))
+            if action == "cancel":
+                return self._json(200, self.service.cancel_interactive_login(session_id))
             return self._error(404, f"没有这个路由: {path}", "not_found")
 
         # -- 平台账号 --

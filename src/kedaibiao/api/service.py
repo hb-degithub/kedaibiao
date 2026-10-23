@@ -1674,6 +1674,118 @@ class ConsoleService:
             "accounts": [a.public() for a in rows],
         }
 
+    # -- 交互式登录（验证码先自动过，不行再人工） -------------------------
+
+    def _login_sessions(self) -> Any:
+        """懒建登录会话管理器：只用一次的过程，不必绑在服务构造里。"""
+        with self._lock:
+            manager = getattr(self, "_interactive_logins", None)
+            if manager is None:
+                from kedaibiao.browser.login_session import LoginSessionManager
+
+                manager = LoginSessionManager(
+                    environ=self.environ, ttl=300.0, max_sessions=2
+                )
+                self._interactive_logins = manager
+            return manager
+
+    def start_interactive_login(
+        self, viewer: Viewer, platform: str, *, username: str, password: str
+    ) -> dict[str, Any]:
+        """开一个登录会话：先自动过验证码，过不去就等人工输入。"""
+        self._check_platform(platform)
+        if not viewer.authenticated:
+            raise ConsoleError("未登录", kind="unauthorized", status=401)
+        from kedaibiao.browser.login_session import LoginSessionError
+
+        try:
+            return self._login_sessions().start(
+                platform, username=username, password=password
+            )
+        except LoginSessionError as exc:
+            kind = "not_supported" if exc.kind == "not_supported" else "bad_request"
+            status = 501 if exc.kind == "not_supported" else 400
+            if exc.kind == "busy":
+                status = 409
+            raise ConsoleError(str(exc), kind=kind, status=status) from exc
+
+    def login_session_state(self, session_id: str) -> dict[str, Any]:
+        from kedaibiao.browser.login_session import LoginSessionError
+
+        try:
+            return self._login_sessions().snapshot(session_id)
+        except LoginSessionError as exc:
+            raise ConsoleError(str(exc), kind="not_found", status=404) from exc
+
+    def login_session_code(self, session_id: str, code: str) -> dict[str, Any]:
+        from kedaibiao.browser.login_session import LoginSessionError
+
+        try:
+            return self._login_sessions().submit_code(session_id, code)
+        except LoginSessionError as exc:
+            raise ConsoleError(str(exc), kind="bad_request", status=400) from exc
+
+    def login_session_sms(
+        self, session_id: str, *, action: str = "send", code: str = ""
+    ) -> dict[str, Any]:
+        from kedaibiao.browser.login_session import LoginSessionError
+
+        manager = self._login_sessions()
+        try:
+            if action == "code":
+                return manager.submit_sms(session_id, code)
+            return manager.send_sms(session_id)
+        except LoginSessionError as exc:
+            raise ConsoleError(str(exc), kind="bad_request", status=400) from exc
+
+    def finish_interactive_login(
+        self, viewer: Viewer, session_id: str, *, account_id: int | None = None
+    ) -> dict[str, Any]:
+        """登录成功后把浏览器登录态落到该账号的会话文件，并记一次成功。"""
+        from kedaibiao.browser.login_session import LoginSessionError
+
+        manager = self._login_sessions()
+        try:
+            state = manager.snapshot(session_id)
+        except LoginSessionError as exc:
+            raise ConsoleError(str(exc), kind="not_found", status=404) from exc
+        if state.get("state") != "done":
+            raise ConsoleError(
+                f"登录还没完成（当前 {state.get('state')}）", kind="bad_request", status=400
+            )
+        account = (
+            self._require_account(viewer, account_id)
+            if account_id
+            else self._with_accounts(
+                lambda st: st.active_for(
+                    viewer.user_id if viewer.authenticated else 0, state["platform"]
+                )
+            )
+        )
+        if account is None:
+            raise ConsoleError(
+                "这个平台还没有绑定账号：先在账号页添加一个（登录态才能落到它名下）",
+                kind="no_credentials", status=400,
+            )
+        settings = self.settings
+        target = account.cookie_path(settings.session_dir)
+        ok = manager.save_state(session_id, str(target))
+        self._with_accounts(
+            lambda st: st.record_login(
+                account.id, ok=bool(ok),
+                note="浏览器交互登录（自动过验证码 / 人工输入）" if ok else "保存登录态失败",
+            )
+        )
+        manager.close(session_id)
+        return {"ok": bool(ok), "account": account.public(), "path": str(target)}
+
+    def cancel_interactive_login(self, session_id: str) -> dict[str, Any]:
+        try:
+            self._login_sessions().close(session_id)
+        except Exception:  # noqa: BLE001 - 取消失败不算错
+            log.debug("关闭登录会话失败", exc_info=True)
+        return {"ok": True}
+
     def add_account(
         self, viewer: Viewer, platform: str, *,
         label: str = "", username: str = "", password: str = "",
