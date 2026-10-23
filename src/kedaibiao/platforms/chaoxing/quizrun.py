@@ -287,13 +287,26 @@ class ChaoxingQuiz:
         raise PwError("没有找到章节测验 iframe（doHomeWorkNew）")
 
     async def list_exams(self) -> list[quiz_mod.ExamItem]:
-        """打开课程页 → 「考试」tab → 解析考试/作业/测验列表（只读）。"""
-        await self.page.goto(
-            COURSE_URL.format(
-                courseid=self.course_id, clazzid=self.clazz_id, cpi=self.cpi
-            ),
-            timeout=60000,
+        """打开课程页 → 「考试」tab → 解析考试/作业/测验列表（只读）。
+
+        打开课程页**重试一次**：实测（2026-10-23）批量读 6 门课时偶发
+        ``net::ERR_TIMED_OUT``，一次抖动就会让整门课的作业读不出来。
+        """
+        url = COURSE_URL.format(
+            courseid=self.course_id, clazzid=self.clazz_id, cpi=self.cpi
         )
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                await self.page.goto(url, timeout=60000)
+                last_error = None
+                break
+            except Exception as exc:  # noqa: BLE001 - 只重试一次，仍失败再上抛
+                last_error = exc
+                if attempt == 0:
+                    await asyncio.sleep(1.5)
+        if last_error is not None:
+            raise PwError(f"打开课程页失败（已重试一次）: {last_error}") from last_error
         await self.page.wait_for("span.nav_content", timeout=30000)
         await self.page.click_text("考试", timeout=15000)
         deadline = time.time() + 30

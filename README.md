@@ -322,8 +322,10 @@ python3 scripts/ui_matrix_check.py  --base http://127.0.0.1:8765 --username admi
 python3 scripts/ui_smoke_next.py    --base http://127.0.0.1:8765 --username admin --password '…'
 ```
 
-最近一次全面测试的结果与发现见 [docs/testing-report-2026-10-21.md](docs/testing-report-2026-10-21.md)
-（报告写于 1722 单测时点，此后单测已增长到 2108）。
+最近一次全面测试（离线 + 六平台实时只读 + 提交干跑/闸门）见
+[docs/testing-report-2026-10-23.md](docs/testing-report-2026-10-23.md)；
+2026-10-21 的控制台专项报告见
+[docs/testing-report-2026-10-21.md](docs/testing-report-2026-10-21.md)。
 
 ### 课程页 / 作业页「先数一遍，再逐门读」
 

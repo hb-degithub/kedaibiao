@@ -3556,7 +3556,13 @@ class ConsoleService:
                 questions = await adapter.fetch_questions(target)
             if not questions:
                 raise ConsoleError(
-                    "没有取到题目，无法作答", kind="bad_request", status=400
+                    (
+                        "批改网没有取题目接口（fetch_questions=False），通用提交拿不到题。"
+                        "它的提交走「作业页 → 该行『评分循环』」：读稿件 / 交正文 /"
+                        " 等批改 / 改写重交。"
+                        if platform == "pigai"
+                        else "没有取到题目，无法作答"
+                    ), kind="bad_request", status=400
                 )
 
             # 控制台是**人工复核**，不是自动批跑：低于阈值的候选答案不能丢，
