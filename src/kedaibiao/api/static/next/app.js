@@ -3666,6 +3666,13 @@
       function assignmentRowAction(row) {
         var id = assignmentIdOf(row);
         if (!id) { return el('span', 'hint-text', '—'); }
+        if (platName === 'pigai') {
+          /* 批改网的写入口不是通用「提交」，而是评分循环（读稿件 → 交正文 →
+             等批改 → 按批注改写）。行内直接给入口，别只显示「不可提交」让人不知道点哪。 */
+          return btn('评分循环', 'btn-sm', function () {
+            openAssignmentAt(platName, [row], 0, canSubmit);
+          });
+        }
         if (!canSubmit) {
           if (platName === 'chaoxing') {
             /* 不跳工具页：就地展开作答面板（题目信息 + 日志 + 分数） */
