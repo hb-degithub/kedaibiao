@@ -323,6 +323,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return self._json(200, svc.users(viewer))
         if path.startswith("/api/users/"):
             return self._error(404, f"没有这个路由: {path}", "not_found")
+        if path == "/api/accounts/login/platforms":
+            return self._json(200, {"platforms": svc.auto_captcha_platforms()})
+        if path.startswith("/api/accounts/auto-login/"):
+            rest = path[len("/api/accounts/auto-login/") :].strip("/")
+            if rest and "/" not in rest:
+                return self._json(200, svc.auto_login_state(rest))
         if path.startswith("/api/accounts/login/"):
             rest = path[len("/api/accounts/login/") :].strip("/")
             if rest and "/" not in rest:
@@ -461,6 +467,18 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         note=payload.get("note"),
                     ))
             return self._error(404, f"没有这个路由: {path}", "not_found")
+
+        # -- 滑块类平台：自动求解登录（复用 geetest 求解器） --
+        if path == "/api/accounts/auto-login/start":
+            payload = self._body_json()
+            if not isinstance(payload, dict):
+                raise ConsoleError("请求体必须是 JSON 对象", kind="bad_request", status=400)
+            return self._json(200, self.service.start_auto_login(
+                viewer,
+                str(payload.get("platform") or ""),
+                username=str(payload.get("username") or ""),
+                password=str(payload.get("password") or ""),
+            ))
 
         # -- 交互式登录（验证码先自动过，不行再人工） --
         if path == "/api/accounts/login/start":

@@ -6651,6 +6651,43 @@
       sessionHost.appendChild(box);
     }
 
+    var autoSid = '';
+
+    function renderAuto(snap) {
+      if (!snap) { return; }
+      autoSid = snap.session_id || autoSid;
+      var st = String(snap.state || '');
+      clear(sessionHost);
+      var box = el('div', '');
+      box.appendChild(pill('状态 ' + st,
+        st === 'done' ? 'pill-ok' : (st === 'failed' ? 'pill-danger' : 'pill-warn')));
+      if (snap.message) { box.appendChild(el('p', 'env-note', snap.message)); }
+      if (st === 'done') {
+        stopPolling();
+        box.appendChild(actionRow([
+          btn('完成', 'btn-primary btn-sm', function () {
+            closeInspector();
+            refreshAfterAccountChange();
+          })
+        ]));
+      } else if (st === 'failed') {
+        stopPolling();
+        box.appendChild(hintBlock([
+          '自动求解没成功：可能是滑块判错、账号需要短信二次验证，或平台要求人脸。',
+          '下一步：在本机浏览器登录一次，然后用「capture」把 Cookie 抓过来；',
+          '或（有桌面环境时）用 --show 人工过滑块。'
+        ]));
+      }
+      sessionHost.appendChild(box);
+    }
+
+    function pollAuto() {
+      if (!autoSid) { return; }
+      get('/api/accounts/auto-login/' + encodeURIComponent(autoSid))
+        .then(renderAuto)
+        .catch(function () { stopPolling(); });
+    }
+
     function poll() {
       if (!sid) { return; }
       get('/api/accounts/login/' + encodeURIComponent(sid)).then(function (snap) {
@@ -6664,6 +6701,21 @@
         return;
       }
       startBtn.disabled = true;
+      if (SLIDER_PLATFORMS[platSel.value]) {
+        msg.textContent = '正在打开登录页并自动求解滑块（可能要 10~30 秒）…';
+        post('/api/accounts/auto-login/start', {
+          platform: platSel.value,
+          username: username.value,
+          password: password.value
+        }).then(function (snap) {
+          renderAuto(snap);
+          stopPolling();
+          timer = setInterval(pollAuto, 1500);
+        }).catch(function (e) {
+          msg.textContent = describe(e);
+        }).then(function () { startBtn.disabled = false; });
+        return;
+      }
       msg.textContent = '正在打开登录页…（会先自动试一次验证码）';
       post('/api/accounts/login/start', {
         platform: platSel.value,
@@ -6679,10 +6731,25 @@
       }).then(function () { startBtn.disabled = false; });
     });
 
+    var modeHint = el('span', 'hint-text', '');
+    var SLIDER_PLATFORMS = { unipus: 1, itest: 1 };
+    function refreshMode() {
+      if (SLIDER_PLATFORMS[platSel.value]) {
+        modeHint.textContent = '这个平台是**极验滑块**：后台会自动求解（复用现有 geetest 求解器），'
+          + '点「开始登录」即可，不需要你输验证码。';
+      } else if (platSel.value === 'chaoxing') {
+        modeHint.textContent = '超星是**图片验证码**：先自动识别，识别不出或码不对，才把图给你输入。';
+      } else {
+        modeHint.textContent = '这个平台还没接验证码登录：请用普通密码登录，或在本机浏览器登录后抓 Cookie。';
+      }
+    }
+    platSel.addEventListener('change', refreshMode);
+
     var form = el('div', 'form-grid');
-    form.appendChild(fieldWrap('平台', platSel, '只支持已核实的登录页（目前：超星）'));
+    form.appendChild(fieldWrap('平台', platSel, ''));
     form.appendChild(fieldWrap('用户名', username, ''));
     form.appendChild(fieldWrap('密码', password, '不落盘、不回显'));
+    form.appendChild(modeHint);
 
     var body = el('div', '');
     body.appendChild(form);
@@ -6695,7 +6762,8 @@
       '登录成功后点「保存登录态到账号」：会把浏览器会话落到该平台当前账号名下，之后跑批直接用它。',
       '只支持已核实登录页的平台；没列出的平台请用「新增账号」的密码登录，或在本机浏览器登录后抓 Cookie。'
     ]));
-    openInspector({ title: '验证码登录', sub: '先自动过码，不行再人工输入', body: body });
+    refreshMode();
+    openInspector({ title: '验证码登录', sub: '滑块自动求解 / 图片码自动识别，失败再人工', body: body });
   }
 
   /* ================================================================ 工具（统一 LLM 配置中心） */

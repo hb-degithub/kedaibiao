@@ -719,6 +719,8 @@ class ConsoleService:
         #: 每次都重跑答题链的话，模型可能给出**另一套**答案 —— 人确认过的东西
         #: 就作废了，而且低置信度题的集合还可能变，门槛会莫名其妙地又亮一次。
         self._submit_plans: dict[str, dict[str, Any]] = {}
+        #: 滑块自动登录会话（unipus / itest）
+        self._auto_logins: dict[str, dict[str, Any]] = {}
         #: 定时跑批器（``tasks/schedule.py``）。只有 web 进程里才会启动，
         #: 其它入口（CLI/测试）保持为 None，``schedule_status`` 也能照常读配置。
         self._schedule_runner: Any = None
@@ -1688,6 +1690,99 @@ class ConsoleService:
                 )
                 self._interactive_logins = manager
             return manager
+
+    #: 登录验证码是**极验滑块**、且已内置自动求解的平台。
+    #: 复用 ``unipus/geetest``（U校园与 iTEST 共用，已实测可用），不需要人工看图。
+    AUTO_SLIDER_PLATFORMS = ("unipus", "itest")
+
+    def auto_captcha_platforms(self) -> list[dict[str, Any]]:
+        """告诉前端：哪些平台能「自动过验证码」，各是哪种机制。"""
+        items = [
+            {
+                "platform": p,
+                "kind": "slider",
+                "label": "极验滑块（自动求解，复用 geetest v3 求解器）",
+            }
+            for p in self.AUTO_SLIDER_PLATFORMS
+        ]
+        from kedaibiao.browser.login_session import SPECS
+
+        for name in SPECS:
+            items.append({
+                "platform": name,
+                "kind": "image",
+                "label": "图片验证码（先自动识别，失败转人工输入）+ 短信码",
+            })
+        return items
+
+    def start_auto_login(
+        self, viewer: Viewer, platform: str, *, username: str, password: str
+    ) -> dict[str, Any]:
+        """滑块类平台：直接走平台既有的「浏览器 + 极验求解」登录，后台跑、可轮询。"""
+        self._check_platform(platform)
+        if not viewer.authenticated:
+            raise ConsoleError("未登录", kind="unauthorized", status=401)
+        if platform not in self.AUTO_SLIDER_PLATFORMS:
+            raise ConsoleError(
+                f"{platform} 不是滑块自动求解平台；请用「验证码登录」（图片/短信）"
+                "或普通密码登录",
+                kind="not_supported", status=501,
+            )
+        if not username.strip() or not password:
+            raise ConsoleError("账号和密码都要填", kind="bad_request", status=400)
+
+        account = self._with_accounts(
+            lambda st: st.find(viewer.user_id, platform, username.strip())
+        )
+        if account is None:
+            account = self._with_accounts(
+                lambda st: st.add(viewer.user_id, platform, username=username.strip())
+            )
+
+        with self._lock:
+            self._seq += 1
+            sid = f"al-{self._seq}"
+            entry: dict[str, Any] = {
+                "session_id": sid,
+                "platform": platform,
+                "state": "running",
+                "message": "正在打开登录页并自动求解滑块…",
+                "account_id": account.id,
+                "started_at": _now(),
+            }
+            self._auto_logins[sid] = entry
+
+        def run() -> None:
+            try:
+                ok, note = self._login_account(account, password)
+            except Exception as exc:  # noqa: BLE001 - 线程边界：异常翻成失败状态
+                ok, note = False, f"{type(exc).__name__}: {exc}"
+            try:
+                self._with_accounts(
+                    lambda st: st.record_login(account.id, ok=ok, note=note)
+                )
+            except Exception:  # noqa: BLE001
+                log.debug("记录登录结果失败", exc_info=True)
+            with self._lock:
+                entry["state"] = "done" if ok else "failed"
+                entry["message"] = (
+                    f"登录成功（{note}）" if ok else f"登录失败：{note}"
+                )
+                entry["finished_at"] = _now()
+
+        threading.Thread(
+            target=run, name=f"kedaibiao-auto-login-{sid}", daemon=True
+        ).start()
+        return dict(entry)
+
+    def auto_login_state(self, session_id: str) -> dict[str, Any]:
+        with self._lock:
+            entry = self._auto_logins.get(session_id)
+        if entry is None:
+            raise ConsoleError(
+                f"没有这个自动登录会话：{session_id}", kind="not_found", status=404
+            )
+        return dict(entry)
 
     def start_interactive_login(
         self, viewer: Viewer, platform: str, *, username: str, password: str

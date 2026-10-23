@@ -35,6 +35,21 @@
 | `api/server.py` | `POST /api/accounts/login/start`、`GET /api/accounts/login/<sid>`、`POST .../code`、`POST .../sms`、`POST .../finish`、`POST .../cancel` |
 | 控制台「账号」页 | 按钮「验证码登录」→ 会话面板（截图 + 验证码框 + 短信框 + 保存登录态） |
 
+## 滑块类平台：复用已有的极验求解器
+
+U校园、iTEST 的登录验证码是**极验 v3 滑块**，仓库里早就有求解器
+（`platforms/unipus/geetest/`：取图 → 还原背景 → 缺口定位 → 轨迹 → `w` 计算），
+两个平台的 `adapter.login()` 在遇到验证码业务码时已经自动退回浏览器求解。
+所以这块**不需要新写**，只是把入口接到同一个地方：
+
+- 前端「验证码登录」选中 unipus / iTEST 时，提示「极验滑块，自动求解」，点开始
+  直接调 `POST /api/accounts/auto-login/start`（后台线程跑既有登录链路）；
+- 状态可轮询 `GET /api/accounts/auto-login/<sid>`；成功后登录态已落盘；
+- 求解失败（滑块判错 / 需要二次验证 / 人脸）→ 提示去本机浏览器登录后 capture。
+
+`ConsoleService.AUTO_SLIDER_PLATFORMS = ("unipus", "itest")` 是唯一的清单：
+其它平台传这个接口会得到 501，避免「以为在自动解其实不会」。
+
 ## 已核实的平台
 
 | 平台 | 状态 | 依据 |

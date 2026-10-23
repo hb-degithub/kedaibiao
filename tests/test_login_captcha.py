@@ -196,3 +196,59 @@ class SpecCoverageTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoSliderPlatformsTest(unittest.TestCase):
+    """滑块类平台复用已有的 geetest 求解器，不需要人工看图。"""
+
+    def test_only_unipus_and_itest_are_slider_platforms(self) -> None:
+        from kedaibiao.api.service import ConsoleService
+
+        self.assertEqual(
+            set(ConsoleService.AUTO_SLIDER_PLATFORMS), {"unipus", "itest"},
+            "只有这两个平台的登录会弹极验，且已有自动求解",
+        )
+
+    def test_platforms_endpoint_lists_both_mechanisms(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from kedaibiao.api.service import ConsoleService
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "config").mkdir()
+        (root / "config" / "local.toml").write_text(
+            f'[kedaibiao]\ndb_url = "sqlite:///{root}/x.db"\n'
+            f'session_dir = "{root}/s"\nnotify = "null"\n',
+            encoding="utf-8",
+        )
+        service = ConsoleService(root=root, environ={})
+        items = {i["platform"]: i["kind"] for i in service.auto_captcha_platforms()}
+        self.assertEqual(items.get("unipus"), "slider")
+        self.assertEqual(items.get("itest"), "slider")
+        self.assertEqual(items.get("chaoxing"), "image")
+
+    def test_auto_login_rejects_non_slider_platform(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from kedaibiao.api.service import ConsoleError, ConsoleService, Viewer
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "config").mkdir()
+        (root / "config" / "local.toml").write_text(
+            f'[kedaibiao]\ndb_url = "sqlite:///{root}/x.db"\n'
+            f'session_dir = "{root}/s"\nnotify = "null"\n',
+            encoding="utf-8",
+        )
+        service = ConsoleService(root=root, environ={})
+        super_viewer = Viewer(user_id=1, is_superadmin=True, username="admin")
+        with self.assertRaises(ConsoleError) as ctx:
+            service.start_auto_login(
+                super_viewer, "neusoft", username="u", password="p"
+            )
+        self.assertEqual(ctx.exception.status, 501)
