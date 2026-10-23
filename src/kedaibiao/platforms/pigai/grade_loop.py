@@ -236,23 +236,35 @@ class GradeLoop:
                 current = await grading.fetch_snapshot(self.adapter, rid=rid, eid=eid)
                 if not current.graded and current.raw_state in grading.PENDING_STATES:
                     # 交过但还没出分：再等等看（超时不算失败，交给用户决定）
+                    probe_key: list[str] = []
                     current = await grading.wait_for_grade(
                         self.adapter, self.http, base=self.base, rid=rid, eid=eid,
                         timeout=self.analysis_timeout,
                         on_tick=lambda i, st, _t: self._emit(
                             "attempt.analysis", attempt=0, tick=i, state=st),
+                        on_key=probe_key.append,
                     )
             except grading.AnalysisTimeout as exc:
-                result.final_eid = eid
-                result.stop_reason = STOP_TIMEOUT
-                result.message = (
-                    f"已有稿件（{eid}）还没出分：{exc}。"
-                    "可以「继续等待 N 秒」或「手动获取一次」，不需要重新提交。"
-                )
-                self._emit("attempt.timeout", attempt=0, eid=eid, error=str(exc))
-                self._emit("loop.finish", stop_reason=result.stop_reason,
-                           best_score=None, message=result.message)
-                return result
+                # 旧稿取分也一样：先补读一次，再自动延长一轮
+                rescued0 = await self._rescue_after_timeout(rid, eid)
+                if rescued0 is None:
+                    rescued0 = await self._extend_wait(
+                        rid, eid, key=probe_key[0] if probe_key else "", attempt=0
+                    )
+                if rescued0 is not None:
+                    current = rescued0
+                    self._emit("attempt.rescued", attempt=0, eid=eid)
+                else:
+                    result.final_eid = eid
+                    result.stop_reason = STOP_TIMEOUT
+                    result.message = (
+                        f"已有稿件（{eid}）还没出分：{exc}（已自动延长过一次）。"
+                        "可以「继续等待 N 秒」或「手动获取一次」，不需要重新提交。"
+                    )
+                    self._emit("attempt.timeout", attempt=0, eid=eid, error=str(exc))
+                    self._emit("loop.finish", stop_reason=result.stop_reason,
+                               best_score=None, message=result.message)
+                    return result
             except grading.AnalysisFailed as exc:
                 # 平台拒绝触发分析（例如这篇早就批过了）—— 不是失败，按「暂时没分」处理
                 self._emit("attempt.error", attempt=0, error=str(exc))
@@ -357,17 +369,24 @@ class GradeLoop:
                     result.message = record.note
                     break
 
+                key_box: list[str] = []
                 snapshot = await grading.wait_for_grade(
                     self.adapter, self.http, base=self.base, rid=rid, eid=eid,
                     timeout=self.analysis_timeout,
                     on_tick=lambda i, s2, _t: self._emit("attempt.analysis",
                                                          attempt=attempt, tick=i,
                                                          state=s2),
+                    # 记下轮询 key：等超时后再延长一轮时直接续等，不重复触发分析
+                    on_key=key_box.append,
                 )
             except grading.AnalysisTimeout as exc:
                 # 超时的最后一刻平台可能刚放分：免费补读一次（只读，不再提交）。
-                # 差别很大 —— 抢回来就是正常结果，抢不回来才报 timeout。
+                # 差别很大 —— 抢回来就是正常结果，抢不回来再自动延长一轮。
                 rescued = await self._rescue_after_timeout(rid, eid)
+                if rescued is None:
+                    rescued = await self._extend_wait(
+                        rid, eid, key=key_box[0] if key_box else "", attempt=attempt
+                    )
                 if rescued is None:
                     record.note = f"等批改超时：{exc}"
                     result.attempts.append(record)
@@ -376,8 +395,9 @@ class GradeLoop:
                     result.stop_reason = STOP_TIMEOUT
                     result.final_eid = eid
                     result.message = (
-                        f"{record.note}。稿件号 {eid} 已经交上去了，只是分数还没出 —— "
-                        "不需要重新提交：点「继续等待」或「只取分（不提交）」再试。"
+                        f"{record.note}（已自动延长过一次）。稿件号 {eid} 已经交上去了，"
+                        "只是分数还没出 —— 不需要重新提交：点「继续等待」或"
+                        "「只取分（不提交）」再试。"
                     )
                     break
                 self._emit("attempt.rescued", attempt=attempt, eid=eid)
@@ -449,6 +469,32 @@ class GradeLoop:
         self._emit("loop.finish", stop_reason=result.stop_reason,
                    best_score=result.best_score, message=result.message)
         return result
+
+    async def _extend_wait(
+        self, rid: str, eid: str, *, key: str, attempt: int
+    ) -> Any:
+        """等分超时后自动**再等一轮**（默认 60 秒）。
+
+        有 key 就续等（不重复触发分析）；没有 key 只能重新走完整流程 ——
+        极端情况下平台会拒绝重复分析，那就当没有分，交给用户决定。
+        返回已出分的快照，抢不到返回 ``None``。
+        """
+        extra = max(30.0, min(60.0, self.analysis_timeout / 3))
+        self._emit("attempt.extending", attempt=attempt, extra_seconds=round(extra))
+        from kedaibiao.platforms.pigai import grading
+
+        try:
+            return await grading.wait_for_grade(
+                self.adapter, self.http, base=self.base, rid=rid, eid=eid,
+                timeout=extra,
+                on_tick=lambda i, s2, _t: self._emit(
+                    "attempt.analysis", attempt=attempt, tick=i, state=s2, extended=True
+                ),
+                resume_key=key,
+            )
+        except Exception as exc:  # noqa: BLE001 - 延长失败就按超时处理
+            log.debug("等分自动延长失败：%s", exc)
+            return None
 
     async def _rescue_after_timeout(self, rid: str, eid: str) -> Any:
         """等分超时后再免费读一次快照；已出分就返回，否则 ``None``。

@@ -4094,6 +4094,7 @@
     'attempt.rewriting': '第 {attempt} 轮：按批注改写（改写前 {word_count} 词）',
     'attempt.rewritten': '第 {attempt} 轮：改写完成（{word_count} 词）',
     'attempt.rescued': '第 {attempt} 轮：超时那一刻正好出分，按正常结果继续',
+    'attempt.extending': '第 {attempt} 轮：还没出分，自动再等 {extra_seconds} 秒（不重新提交）',
     'attempt.resubmit_without_score': '第 {attempt} 轮：没有分数，按选择继续改写重交',
     'attempt.timeout': '第 {attempt} 轮：等分超时（{error}）',
     'attempt.error': '第 {attempt} 轮：出错（{error}）',
@@ -4405,8 +4406,9 @@
           waited = Math.max(0, Math.round((Date.parse(ev.at) - Date.parse(slot.firstAt)) / 1000));
         }
         var state = ev.state && ev.state !== '?' ? ('，平台状态 ' + ev.state) : '';
+        var stage = ev.extended ? '（自动延长中）' : '';
         slot.textNode.textContent = '第 ' + ev.attempt + ' 轮：等批改… 已等 '
-          + waited + 's（第 ' + ev.tick + ' 次轮询' + state + '）';
+          + waited + 's' + stage + '（第 ' + ev.tick + ' 次轮询' + state + '）';
         return;
       }
       if (kind === 'attempt.submitted' && ev.reused) {
@@ -4418,8 +4420,9 @@
         return;
       }
       if (kind === 'attempt.rewritten' || kind === 'attempt.timeout' ||
-          kind === 'attempt.graded' || kind === 'loop.finish') {
-        analysisSlots = {};   // 这一轮等分结束，下一轮重新开始合并
+          kind === 'attempt.extending' || kind === 'attempt.graded' ||
+          kind === 'loop.finish') {
+        analysisSlots = {};   // 这一轮等分结束（或进入延长阶段），重新合并
       }
       appendLog(gradeEventLine(ev));
     }

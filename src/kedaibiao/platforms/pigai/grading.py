@@ -25,6 +25,7 @@ import asyncio
 import logging
 import re
 import urllib.parse
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -159,6 +160,16 @@ def _post_form(http: Any, path: str, fields: dict[str, str], referer: str) -> An
     )
 
 
+#: 前几次轮询把服务端给的 ``sleep`` 压到 :data:`FAST_POLL_CAP` 秒。
+#:
+#: 为什么：平台建议的间隔约 12 秒，而实际常常 20~40 秒就出分；一开始就按 12 秒
+#: 等，等于最坏情况白等一轮。前几次探得密一点能更早拿到结果，之后立刻回到
+#: 服务端给的节奏 —— 只在**开头**提速，避免整段高频请求。
+#: 如果平台对节奏变敏感（出现 429 / 拒绝），把 ``FAST_POLLS`` 调成 0 即可关闭。
+FAST_POLLS = 3
+FAST_POLL_CAP = 2.0
+
+
 async def start_analysis(http: Any, *, base: str, rid: str, eid: str) -> str:
     """触发分析，返回轮询用的 key。"""
     referer = f"{base}/index.php?c=v2&a=write&rid={rid}"
@@ -209,7 +220,11 @@ async def poll_analysis(
         if current in ("error", "fail", "failed"):
             raise AnalysisFailed(f"分析失败：{text[:200]}")
         sleep_ms = re.search(r'"sleep"\s*:\s*(\d+)', text)
-        await asyncio.sleep((int(sleep_ms.group(1)) if sleep_ms else 1500) / 1000.0)
+        delay = (int(sleep_ms.group(1)) if sleep_ms else 1500) / 1000.0
+        if i < FAST_POLLS:
+            # 开头几次探密一点：出分往往比平台建议的 12 秒早
+            delay = min(delay, FAST_POLL_CAP)
+        await asyncio.sleep(delay)
     raise AnalysisTimeout("轮询次数用尽仍未完成")
 
 
@@ -292,11 +307,28 @@ async def wait_for_grade(
     eid: str,
     timeout: float = 180.0,
     on_tick: Any = None,
+    on_key: Any = None,
+    resume_key: str = "",
 ) -> EssaySnapshot:
     """完整走一遍：触发分析 → 轮询 → 读分。
 
     若已经出分（列表里是数字）就直接读，不重复触发分析。
+
+    ``resume_key`` 非空时**跳过触发**，直接用这个 key 续等 —— 给「等超时后
+    再延长一轮」用：重复调 ``processStartIcomet`` 既没必要，也可能被平台拒。
+    ``on_key`` 把本次的轮询 key 交回调用方，便于之后续等。
     """
+    if resume_key:
+        key = resume_key
+        await poll_analysis(http, base=base, rid=rid, key=key, timeout=timeout,
+                            on_tick=on_tick)
+        for attempt in range(6):
+            await asyncio.sleep(2.0 if attempt else 0.5)
+            snapshot = await fetch_snapshot(adapter, rid=rid, eid=eid)
+            if snapshot.graded:
+                return snapshot
+        return snapshot
+
     snapshot = await fetch_snapshot(adapter, rid=rid, eid=eid)
     if snapshot.graded:
         return snapshot
@@ -305,6 +337,9 @@ async def wait_for_grade(
 
     try:
         key = await start_analysis(http, base=base, rid=rid, eid=eid)
+        if on_key is not None:
+            with suppress(Exception):  # 回调失败不影响主流程
+                on_key(key)
     except AnalysisFailed as exc:
         # 平台拒绝触发分析（常见：这篇已经批过了 / 分析队列不认这个 eid）。
         # 不是致命错误 —— 把原因带回给调用方，界面提示「手动获取 / 直接改写重交」。

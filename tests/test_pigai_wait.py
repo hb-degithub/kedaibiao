@@ -146,3 +146,188 @@ class TestStartGradeLoopTimeoutParam(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _Text:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def text(self) -> str:
+        return self._text
+
+
+class _PollHTTP:
+    """假 HTTP：``process`` 一直回「分析中 + sleep 12000ms」。"""
+
+    def __init__(self, states: list[str] | None = None) -> None:
+        self.calls = 0
+        self.states = list(states or [])
+
+    async def request(self, method: str, path: str, **kwargs: object) -> _Text:
+        self.calls += 1
+        state = self.states.pop(0) if self.states else "doing"
+        if state in ("ok", "done"):
+            return _Text('{"s":"ok"}')
+        return _Text('{"s":"' + state + '","sleep":12000}')
+
+
+class TestFastEarlyPolling(unittest.IsolatedAsyncioTestCase):
+    """平台建议 12 秒一轮，但头几次探密一点能更早拿到分。"""
+
+    async def test_first_polls_are_capped_then_follow_server(self) -> None:
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        # 第 6 次轮询才完成：足够看到「前 3 次提速 + 之后回落到 12s」
+        http = _PollHTTP(states=["doing"] * 5 + ["ok"])
+        with mock.patch.object(grading.asyncio, "sleep", fake_sleep):
+            await grading.poll_analysis(http, base="https://www.pigai.org",
+                                        rid="R", key="K", timeout=999)
+
+        self.assertTrue(sleeps, "至少要睡一次")
+        fast = sleeps[: grading.FAST_POLLS]
+        self.assertTrue(all(s <= grading.FAST_POLL_CAP for s in fast),
+                        f"前 {grading.FAST_POLLS} 次该被压到 {grading.FAST_POLL_CAP}s：{fast}")
+        if len(sleeps) > grading.FAST_POLLS:
+            self.assertEqual(sleeps[grading.FAST_POLLS], 12.0,
+                             "之后回到服务端建议的节奏")
+
+    async def test_fast_polls_can_be_disabled(self) -> None:
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        http = _PollHTTP(states=["doing", "ok"])
+        with mock.patch.object(grading.asyncio, "sleep", fake_sleep), \
+             mock.patch.object(grading, "FAST_POLLS", 0):
+            await grading.poll_analysis(http, base="", rid="R", key="K", timeout=999)
+
+        self.assertEqual(sleeps[0], 12.0, "关掉提速后完全按服务端节奏")
+
+
+class TestResumeKeySkipsTrigger(unittest.IsolatedAsyncioTestCase):
+    """超时延长时用旧 key 续等，不重复触发分析。"""
+
+    async def test_resume_key_does_not_call_start_analysis(self) -> None:
+        http = _PollHTTP(states=["ok"])
+        triggered: list[str] = []
+
+        async def fake_start(*a: object, **k: object) -> str:
+            triggered.append("start")
+            return "K-NEW"
+
+        class _Adapter:
+            async def list_finished_essays(self) -> list[object]:
+                return []
+
+        async def fake_fetch(*a: object, **k: object) -> object:
+            return FakeSnapshot(91.0, True, "已批改")
+
+        with mock.patch.object(grading, "start_analysis", fake_start), \
+             mock.patch.object(grading, "fetch_snapshot", fake_fetch):
+            snap = await grading.wait_for_grade(
+                _Adapter(), http, base="", rid="R", eid="E", timeout=5,
+                resume_key="K-OLD",
+            )
+
+        self.assertEqual(triggered, [], "续等不该再触发 processStartIcomet")
+        self.assertTrue(snap.graded)
+
+
+class TestAutoExtendAfterTimeout(unittest.IsolatedAsyncioTestCase):
+    """等分超时后自动再等一轮；延长期间出分就按正常结果继续。"""
+
+    async def test_extends_once_then_succeeds(self) -> None:
+        from kedaibiao.platforms.pigai.grade_loop import GradeLoop
+        calls: list[float] = []
+
+        async def wait(*a: object, **k: object) -> object:
+            calls.append(float(k.get("timeout") or 0))
+            if len(calls) == 1:
+                raise grading.AnalysisTimeout("等待分析超时（180s）")
+            snap = FakeSnapshot(93.0, True, "已批改")
+            snap.raw_state = "已批改"
+            return snap
+
+        async def no_score(*a: object, **k: object) -> object:
+            return FakeSnapshot(None, False, "分析中")
+
+        async def fetch(*a: object, **k: object) -> object:
+            return FakeSnapshot(None, False, "分析中")
+
+        class _Adapter:
+            submits = 0
+
+            async def submit(self, assignment: object, answers: object) -> object:
+                from types import SimpleNamespace
+                self.submits += 1
+                return SimpleNamespace(ok=True, message="ok", raw={"eid": "E-OLD"})
+
+            async def list_finished_essays(self) -> list[object]:
+                # 没有旧稿：直接进「提交初始正文 → 等分」的分支，
+                # 这才是超时延长要覆盖的路径（旧稿取分是另一条路）
+                return []
+
+            async def list_pending_assignments(self) -> list[object]:
+                from kedaibiao.core.models import Assignment
+                return [Assignment(remote_id="R", title="T")]
+
+        async def rewrite(snap: object, essay: str, n: int) -> str:
+            return "v1"
+
+        loop = GradeLoop(adapter=_Adapter(), http=object(), base="",
+                         target_score=90, max_attempts=1, rewrite=rewrite)
+        events: list[dict] = []
+        loop.on_event = events.append
+
+        with mock.patch.object(grading, "wait_for_grade", wait), \
+             mock.patch.object(grading, "fetch_snapshot", fetch):
+            result = await loop.run(rid="R", topic="T", initial_essay="v0")
+
+        kinds = [e["kind"] for e in events]
+        self.assertIn("attempt.extending", kinds, "超时后应当自动延长一轮")
+        self.assertEqual(result.stop_reason, "reached", "延长期间拿到分就不算超时")
+        self.assertEqual(result.best_score, 93.0, f"calls={calls}")
+
+
+class TestExistingEssayAlsoExtends(unittest.IsolatedAsyncioTestCase):
+    """旧稿取分超时也走「抢救 + 自动延长」，不要一超时就整轮结束。"""
+
+    async def test_existing_pending_extends_then_scores(self) -> None:
+        from kedaibiao.platforms.pigai.grade_loop import GradeLoop
+        from kedaibiao.platforms.pigai.protocol import EssayRow
+
+        calls = {"wait": 0}
+
+        async def wait(*a: object, **k: object) -> object:
+            calls["wait"] += 1
+            if calls["wait"] == 1:
+                raise grading.AnalysisTimeout("等待分析超时（180s）")
+            return FakeSnapshot(96.0, True, "已批改")
+
+        async def fetch(*a: object, **k: object) -> object:
+            return FakeSnapshot(None, False, "分析中")
+
+        class _Adapter:
+            async def submit(self, assignment: object, answers: object) -> object:
+                raise AssertionError("拿到分之前不该提交")
+
+            async def list_finished_essays(self) -> list[object]:
+                return [EssayRow(rid="R", eid="E-OLD", title="T", score_raw="未截止")]
+
+        loop = GradeLoop(adapter=_Adapter(), http=object(), base="",
+                         target_score=90, max_attempts=1, rewrite=None)
+        events: list[dict] = []
+        loop.on_event = events.append
+
+        with mock.patch.object(grading, "wait_for_grade", wait), \
+             mock.patch.object(grading, "fetch_snapshot", fetch):
+            result = await loop.run(rid="R", topic="T", initial_essay="v0")
+
+        kinds = [e["kind"] for e in events]
+        self.assertIn("attempt.extending", kinds)
+        self.assertEqual(result.stop_reason, "reached", "延长后拿到 96 分")
+        self.assertEqual(result.best_score, 96.0)
