@@ -4091,7 +4091,9 @@
     'attempt.submitted': '第 {attempt} 轮：已提交（稿件号 {eid}）',
     'attempt.analysis': '第 {attempt} 轮：等批改…（{tick}）',
     'attempt.graded': '第 {attempt} 轮：{score} 分（批注 {feedback_count} 条）',
-    'attempt.rewriting': '第 {attempt} 轮：按批注改写（{word_count} 词）',
+    'attempt.rewriting': '第 {attempt} 轮：按批注改写（改写前 {word_count} 词）',
+    'attempt.rewritten': '第 {attempt} 轮：改写完成（{word_count} 词）',
+    'attempt.rescued': '第 {attempt} 轮：超时那一刻正好出分，按正常结果继续',
     'attempt.resubmit_without_score': '第 {attempt} 轮：没有分数，按选择继续改写重交',
     'attempt.timeout': '第 {attempt} 轮：等分超时（{error}）',
     'attempt.error': '第 {attempt} 轮：出错（{error}）',
@@ -4374,15 +4376,58 @@
       var row = el('div');
       var stamp = line && line.at ? time(line.at) : '';
       row.appendChild(el('span', 't', stamp ? stamp.slice(11) + '  ' : '  '));
-      row.appendChild(el('span', (line && line.level) || 'info', (line && line.text) || ''));
+      var textNode = el('span', (line && line.level) || 'info', (line && line.text) || '');
+      row.appendChild(textNode);
       logView.appendChild(row);
       while (logView.childNodes.length > 400) { logView.removeChild(logView.firstChild); }
       logView.scrollTop = logView.scrollHeight;
+      return { node: row, textNode: textNode };
+    }
+
+    /* 合并「等批改」用：attempt → {node, textNode, firstAt} */
+    var analysisSlots = {};
+
+    function paintEvent(ev) {
+      var kind = String((ev && ev.kind) || '');
+      if (kind === 'attempt.analysis') {
+        var slot = analysisSlots[ev.attempt];
+        if (!slot) {
+          var made = appendLog({
+            at: ev.at, level: 'warn',
+            text: '第 ' + ev.attempt + ' 轮：等批改…'
+          });
+          slot = analysisSlots[ev.attempt] = {
+            node: made.node, textNode: made.textNode, firstAt: ev.at
+          };
+        }
+        var waited = 0;
+        if (slot.firstAt && ev.at) {
+          waited = Math.max(0, Math.round((Date.parse(ev.at) - Date.parse(slot.firstAt)) / 1000));
+        }
+        var state = ev.state && ev.state !== '?' ? ('，平台状态 ' + ev.state) : '';
+        slot.textNode.textContent = '第 ' + ev.attempt + ' 轮：等批改… 已等 '
+          + waited + 's（第 ' + ev.tick + ' 次轮询' + state + '）';
+        return;
+      }
+      if (kind === 'attempt.submitted' && ev.reused) {
+        appendLog({
+          at: ev.at, level: 'warn',
+          text: '第 ' + ev.attempt + ' 轮：已提交，但平台没给新稿号（沿用 '
+            + (ev.eid || '—') + '）—— 可能是覆盖提交，稿次不会增加'
+        });
+        return;
+      }
+      if (kind === 'attempt.rewritten' || kind === 'attempt.timeout' ||
+          kind === 'attempt.graded' || kind === 'loop.finish') {
+        analysisSlots = {};   // 这一轮等分结束，下一轮重新开始合并
+      }
+      appendLog(gradeEventLine(ev));
     }
 
     function clearLog() {
       clear(logView);
       renderedEvents = 0;
+      analysisSlots = {};
     }
 
     function resetStart() {
@@ -4470,9 +4515,11 @@
       var attempts = Array.isArray(job.attempts) ? job.attempts : [];
       var events = Array.isArray(job.events) ? job.events : [];
 
-      /* 日志逐行：job 没有通用任务的 logs，用 events 翻；seen 只追加新增的 */
+      /* 日志逐行：job 没有通用任务的 logs，用 events 翻；seen 只追加新增的。
+         「等批改…」每 10 秒来一条，逐条打会刷屏 —— 同一轮合并成一行，
+         只更新「已等 N 秒」，其余事件照常追加。 */
       for (var i = renderedEvents; i < events.length; i++) {
-        appendLog(gradeEventLine(events[i]));
+        paintEvent(events[i]);
       }
       renderedEvents = events.length;
 

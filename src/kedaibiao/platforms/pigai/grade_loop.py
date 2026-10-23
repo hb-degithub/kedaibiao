@@ -29,11 +29,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -311,17 +311,21 @@ class GradeLoop:
                     break
                 self._emit("attempt.rewriting", attempt=attempt,
                            score=current.score if current.graded else None,
+                           word_count=_word_count(essay),
                            raw_state=getattr(current, "raw_state", ""))
                 try:
-                    essay = await self.rewrite(current, essay, attempt)
+                    rewritten = await self.rewrite(current, essay, attempt)
                 except Exception as exc:  # noqa: BLE001
                     result.stop_reason = STOP_ERROR
                     result.message = f"改写失败：{type(exc).__name__}: {exc}"
                     break
-                if not essay or not essay.strip():
+                if not rewritten or not rewritten.strip():
                     result.stop_reason = STOP_ERROR
                     result.message = "改写返回了空正文"
                     break
+                essay = rewritten
+                self._emit("attempt.rewritten", attempt=attempt,
+                           word_count=_word_count(essay))
 
             self._emit("attempt.start", attempt=attempt, word_count=_word_count(essay))
             record = AttemptRecord(attempt=attempt, essay_text=essay)
@@ -335,11 +339,17 @@ class GradeLoop:
                     [Answer(question=None, text=essay,
                             source=AnswerSource.LLM, confidence=0.9)],  # type: ignore[arg-type]
                 )
-                eid = str((submitted.raw or {}).get("eid") or "")
+                new_eid = str((submitted.raw or {}).get("eid") or "")
+                reused = bool(eid) and (not new_eid or new_eid == eid)
+                if new_eid:
+                    eid = new_eid
                 record.eid = eid
                 record.note = submitted.message
                 self._emit("attempt.submitted", attempt=attempt, eid=eid,
-                           ok=submitted.ok, message=submitted.message)
+                           ok=submitted.ok, message=submitted.message,
+                           # 平台没回新稿号 / 回来的还是上一稿：多半是覆盖提交，
+                           # 明确告诉用户，别让他以为「交了一篇新的」。
+                           reused=reused)
                 if not submitted.ok:
                     record.note = submitted.message or "提交被拒"
                     result.attempts.append(record)
@@ -355,17 +365,23 @@ class GradeLoop:
                                                          state=s2),
                 )
             except grading.AnalysisTimeout as exc:
-                record.note = f"等批改超时：{exc}"
-                result.attempts.append(record)
-                self._emit("attempt.timeout", attempt=attempt, eid=eid,
-                           error=record.note)
-                result.stop_reason = STOP_TIMEOUT
-                result.final_eid = eid
-                result.message = (
-                    f"{record.note}。稿件号 {eid} 已提交，"
-                    "可以「继续等待 N 秒」或「手动获取一次」，不需要重新提交。"
-                )
-                break
+                # 超时的最后一刻平台可能刚放分：免费补读一次（只读，不再提交）。
+                # 差别很大 —— 抢回来就是正常结果，抢不回来才报 timeout。
+                rescued = await self._rescue_after_timeout(rid, eid)
+                if rescued is None:
+                    record.note = f"等批改超时：{exc}"
+                    result.attempts.append(record)
+                    self._emit("attempt.timeout", attempt=attempt, eid=eid,
+                               error=record.note)
+                    result.stop_reason = STOP_TIMEOUT
+                    result.final_eid = eid
+                    result.message = (
+                        f"{record.note}。稿件号 {eid} 已经交上去了，只是分数还没出 —— "
+                        "不需要重新提交：点「继续等待」或「只取分（不提交）」再试。"
+                    )
+                    break
+                self._emit("attempt.rescued", attempt=attempt, eid=eid)
+                snapshot = rescued
             except grading.AnalysisFailed as exc:
                 # 平台说「没找到作文」之类：不算崩，按「还没出分」处理
                 record.note = f"平台拒绝分析：{exc}"
@@ -433,6 +449,24 @@ class GradeLoop:
         self._emit("loop.finish", stop_reason=result.stop_reason,
                    best_score=result.best_score, message=result.message)
         return result
+
+    async def _rescue_after_timeout(self, rid: str, eid: str) -> Any:
+        """等分超时后再免费读一次快照；已出分就返回，否则 ``None``。
+
+        只读操作（详情页 + 列表），不会触发分析、更不会提交。
+        """
+        if not eid:
+            return None
+        try:
+            from kedaibiao.platforms.pigai import grading
+
+            snapshot = await grading.fetch_snapshot(self.adapter, rid=rid, eid=eid)
+        except Exception as exc:  # noqa: BLE001 - 抢分失败就走正常超时路径
+            log.debug("超时后补读快照失败：%s", exc)
+            return None
+        if getattr(snapshot, "graded", False):
+            return snapshot
+        return None
 
     async def _probe_existing(self, rid: str) -> Any:
         """已提交作文列表里属于这个 rid 的最新一行（没有返回 None）。"""

@@ -280,3 +280,105 @@ class TestRewritePrompt(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("没有总评和批注", prompt)
         self.assertIn("常见提分点", prompt)
+
+
+class TestTimeoutRescue(Base):
+    """等分超时后先免费补读一次：刚好出分就按正常结果走，不要报 timeout。"""
+
+    async def test_timeout_but_score_just_appeared(self) -> None:
+        adapter = Adapter([old_row("70")])
+        calls = {"fetch": 0}
+
+        async def fetch(*a, **k):
+            calls["fetch"] += 1
+            # 第一次：旧稿分数；第二次（超时后补读）：新稿 93 分
+            return Snap(70.0) if calls["fetch"] == 1 else Snap(93.0)
+
+        async def wait(*a, **k):
+            import kedaibiao.platforms.pigai.grading as grading
+            raise grading.AnalysisTimeout("等待分析超时（180s）")
+
+        self.patch_grading(fetch=fetch, wait=wait)
+        loop, _ = self.make_loop(adapter, max_attempts=1)
+        events: list[dict] = []
+        loop.on_event = events.append
+        result = await loop.run(rid="R", topic="T", initial_essay="v1")
+
+        self.assertEqual(result.stop_reason, "reached", "抢救到分数就不是 timeout 了")
+        self.assertEqual(result.best_score, 93.0)
+        self.assertEqual(adapter.submits, 1)
+        kinds = [e["kind"] for e in events]
+        self.assertIn("attempt.rescued", kinds)
+        self.assertNotIn("attempt.timeout", kinds)
+
+    async def test_timeout_without_score_still_reports_timeout(self) -> None:
+        adapter = Adapter([])
+
+        async def fetch(*a, **k):
+            return Snap(None, state="分析中")
+
+        async def wait(*a, **k):
+            import kedaibiao.platforms.pigai.grading as grading
+            raise grading.AnalysisTimeout("等待分析超时（180s）")
+
+        self.patch_grading(fetch=fetch, wait=wait)
+        loop, _ = self.make_loop(adapter, max_attempts=1)
+        result = await loop.run(rid="R", topic="T", initial_essay="v1")
+
+        self.assertEqual(result.stop_reason, "timeout")
+        self.assertIn("不需要重新提交", result.message)
+        self.assertIn("已经交上去了", result.message)
+
+
+class TestEventsCarryWordCounts(Base):
+    async def test_rewrite_events_carry_before_and_after_counts(self) -> None:
+        adapter = Adapter([old_row("70")])
+
+        async def fetch(*a, **k):
+            # 已有稿件的正文来自快照 —— 改写前的词数就是它的词数
+            return Snap(70.0, essay_text="one two three four")
+
+        async def wait(*a, **k):
+            return Snap(95.0)
+
+        self.patch_grading(fetch=fetch, wait=wait)
+        loop, _ = self.make_loop(adapter, max_attempts=1)
+        events: list[dict] = []
+        loop.on_event = events.append
+        await loop.run(rid="R", topic="T", initial_essay="v0")
+
+        rewriting = next(e for e in events if e["kind"] == "attempt.rewriting")
+        rewritten = next(e for e in events if e["kind"] == "attempt.rewritten")
+        self.assertEqual(rewriting["word_count"], 4, "改写前词数 = 现有稿件词数")
+        self.assertEqual(rewritten["word_count"], 1, "改写后词数（fake 改写器返回 v1）")
+
+
+class TestReusedEidNotice(Base):
+    async def test_submit_without_new_eid_is_flagged(self) -> None:
+        """平台没回新稿号时要说清楚：多半是覆盖提交，不是新稿次。"""
+        adapter = Adapter([old_row("70")])
+        adapter.submit = lambda assignment, answers: _submit_with_eid("E-OLD")
+
+        async def fetch(*a, **k):
+            return Snap(70.0)
+
+        async def wait(*a, **k):
+            return Snap(92.0)
+
+        self.patch_grading(fetch=fetch, wait=wait)
+        loop, _ = self.make_loop(adapter, max_attempts=1)
+        events: list[dict] = []
+        loop.on_event = events.append
+        await loop.run(rid="R", topic="T", initial_essay="v1")
+
+        submitted = next(e for e in events if e["kind"] == "attempt.submitted")
+        self.assertTrue(submitted.get("reused"), "沿用旧稿号要标出来")
+
+
+async def _submit_with_eid(eid: str):
+    class _R:
+        ok = True
+        message = "ok"
+        raw = {"eid": eid}
+
+    return _R()
