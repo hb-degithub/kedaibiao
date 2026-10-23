@@ -4273,8 +4273,9 @@
     host.appendChild(box);
 
     body.appendChild(el('p', 'env-note',
-      'pigai 没有声明 fetch_questions：控制台的通用「提交」因此不可用（作业列表里显示「不可提交」）。'
-      + '这个循环是唯一的写入口 —— 读已有稿件 → 首次交初始正文 → 等批改 → 按批注改写 → 再交；'
+      'pigai 没有声明 fetch_questions，所以没有一个「直接提交」按钮：拿不到题就没法组答案。'
+      + '提交动作本身就在这个循环的第一轮 —— 读已有稿件（没有就交初始正文）→ 等批改 → '
+      + '按批注改写 → 再交。只想交一稿、不追分，勾下面「只交一次（不追分）」。'
       + '「开始提分循环」要点两次才会真的提交。'));
 
     /* --- 参数 --- */
@@ -4296,8 +4297,11 @@
     var essayField = fieldWrap('初始正文', essay, '填了就用你的稿子开局；不填让大模型起草');
     essayField.classList.add('field-wide');
     params.appendChild(essayField);
+    var submitOnce = checkbox(false);
     params.appendChild(fieldWrap('不等分直接重交', resubmit,
       '拿不到分数也按批注改写重交（只有允许反复提交的作业才有效）'));
+    params.appendChild(fieldWrap('只交一次（不追分）', submitOnce,
+      '勾上就只提交一稿、不改写不重交；已有稿件的作业会再交一稿（计入修改历史）'));
     var paramsSec = el('div', 'section');
     paramsSec.appendChild(el('div', 'section-title', '参数'));
     paramsSec.appendChild(params);
@@ -4544,9 +4548,16 @@
 
     /* --- 动作 --- */
     function startLoop() {
-      var target = numField(targetInput, 90, 1, 100);
+      var once = !!submitOnce.querySelector('input').checked;
+      // 「只交一次」= 轮次 1 + 目标分 100（不可能达到）→ 交完一稿就停，
+      // 不改写、不重交。它仍然走同一个接口，不额外开后门。
+      var target = once ? 100 : numField(targetInput, 90, 1, 100);
       var rounds = Math.round(numField(attemptsInput, 3, 1, 10));
       var timeout = numField(timeoutInput, 180, 20, 1800);
+      if (once) {
+        rounds = 1;
+        toast('只交一次：提交一稿后立即停止，不改写不重交');
+      }
       targetInput.value = String(target);
       attemptsInput.value = String(rounds);
       timeoutInput.value = String(timeout);
