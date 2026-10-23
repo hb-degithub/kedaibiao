@@ -1227,6 +1227,7 @@ async def _pinco_learning(adapter: Any, params: dict[str, Any]) -> dict[str, Any
 
     rows: list[dict[str, Any]] = []
     failures: list[str] = []
+
     for course in courses:
         try:
             items = list(await adapter.list_learning_tasks(course))
@@ -2519,6 +2520,79 @@ async def _list_assignments_maybe_with_state(adapter: Any, course: Any) -> list[
     return list(await adapter.list_assignments(course))
 
 
+def _assignment_row(
+    item: Any, *, course_name: str, raw: dict[str, Any], with_state: bool
+) -> dict[str, Any]:
+    """把一条 Assignment 变成表格行（两条读取路径共用，字段口径必须一致）。"""
+    return {
+        "course": course_name or "—",
+        "id": item.remote_id,
+        # 前端双击详情 / 提交都按 assignment_id 调接口；
+        # 这里显式给一份，免得前端去猜列名映射。
+        "assignment_id": item.remote_id,
+        "title": item.title,
+        "kind": _KIND_LABEL.get(item.kind, item.kind.value),
+        "deadline": _fmt_deadline(item.deadline) or "—",
+        "state": _assignment_state(item, with_state=with_state),
+        "score": str(raw.get("score_text") or ""),
+        # 让前端知道这行能不能重考 / 还剩几次（不额外开页面）
+        "retake": bool(raw.get("retake")),
+        "retake_exam_id": str(raw.get("retake_exam_id") or ""),
+        "retake_relation_id": str(raw.get("retake_relation_id") or ""),
+        "answer_id": str(raw.get("relation_id") or ""),
+        "attempts_text": str(raw.get("attempts_text") or ""),
+    }
+
+
+def _assignments_table(
+    *,
+    name: str,
+    rows: list[dict[str, Any]],
+    courses: int,
+    failures: list[str],
+    only: str,
+    with_state: bool,
+    note_hint: str = "",
+) -> dict[str, Any]:
+    """作业表格的统一构造（标题、说明、列定义都只写一份）。"""
+    scope = f"（课程 {only}）" if only else "（全部课程）"
+    return table(
+        platform=name,
+        action="assignments",
+        label="作业",
+        title=f"作业 / 任务{scope} —— {len(rows)} 项",
+        note=(
+            "只读数据，不会提交任何内容。"
+            + (
+                "学习通的作业/测验/考试来自课程页「考试」tab，"
+                "状态与分数是平台自己回的（不需要回读）。"
+                if name == "chaoxing" else
+                (
+                    "状态列按逐组回读的 progress/v2 判定（已完成 = 平台已记账）。"
+                    if with_state else
+                    "状态列默认不读：平台目录本身没有完成度，这里显示「—」；"
+                    "要看真实状态请传 with_state=1（逐组回读，慢但准）。"
+                )
+            )
+            + (f"{note_hint}" if note_hint else "")
+            + _skipped_note(failures, courses)
+        ),
+        columns=[
+            column("course", "课程"),
+            column("id", "任务号", mono=True),
+            column("title", "名称"),
+            column("kind", "类型"),
+            column("deadline", "截止"),
+            column("state", "状态"),
+        ]
+        + ([column("score", "分数")] if any(row.get("score") for row in rows) else []),
+        rows=rows,
+        empty_hint="这些课程下没有作业 / 任务。",
+        # 前端逐门读取时拿它显示「已读 X/N 门」
+        meta={"courses": courses, "failures": len(failures)},
+    )
+
+
 async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     name = getattr(adapter, "name", "?")
     caps = _caps(adapter)
@@ -2566,8 +2640,40 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
                 }
                 for course in courses
             ],
-            meta={"courses": len(courses), "phase": "courses_only"},
+            meta={
+                "courses": len(courses),
+                "phase": "courses_only",
+                # 有 list_assignments_all 的平台（东软）可以一次性拿到「含未归属课程」
+                # 的完整清单；前端读完后用它做一次对账，避免逐门过滤漏掉任务。
+                "authoritative_all": hasattr(adapter, "list_assignments_all"),
+            },
         )
+
+    # 平台能「一次列出全部任务」时优先走它：按课程逐个过滤会漏掉课程归属
+    # 对不上的任务（课程表里没有这门课 / 任务行缺 teachCourseId），
+    # 表现就是「作业读少了」。
+    if not only and hasattr(adapter, "list_assignments_all"):
+        try:
+            everything = list(await adapter.list_assignments_all())
+        except Exception as error:  # noqa: BLE001 - 退回到逐门读取，不整页失败
+            log.warning("list_assignments_all 失败，退回逐门读取：%s", error)
+            everything = None
+        if everything is not None:
+            all_rows = [
+                _assignment_row(
+                    item,
+                    course_name=item.course_name,
+                    raw=item.raw or {},
+                    with_state=with_state,
+                )
+                for item in everything
+            ]
+            return _assignments_table(
+                name=name, rows=all_rows, courses=len(courses), failures=[],
+                only=only, with_state=with_state,
+                note_hint="列表来自「全部学期的学习任务」，包含课程归属对不上的任务"
+                          "（按任务行自己的课程名归类）。",
+            )
 
     rows: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -2583,62 +2689,22 @@ async def _generic_assignments(adapter: Any, params: dict[str, Any]) -> dict[str
             failures.append(f"{course.name or course.remote_id}（{error}）")
             continue
         for item in items:
-            raw = item.raw or {}
             rows.append(
-                {
-                    "course": course.name or course.remote_id,
-                    "id": item.remote_id,
-                    # 前端双击详情 / 提交都按 assignment_id 调接口；
-                    # 这里显式给一份，免得前端去猜列名映射。
-                    "assignment_id": item.remote_id,
-                    "title": item.title,
-                    "kind": _KIND_LABEL.get(item.kind, item.kind.value),
-                    "deadline": _fmt_deadline(item.deadline) or "—",
-                    "state": _assignment_state(item, with_state=with_state),
-                    "score": str(raw.get("score_text") or ""),
-                    # 让前端知道这行能不能重考 / 还剩几次（不额外开页面）
-                    "retake": bool(raw.get("retake")),
-                    "retake_exam_id": str(raw.get("retake_exam_id") or ""),
-                    "retake_relation_id": str(raw.get("retake_relation_id") or ""),
-                    "answer_id": str(raw.get("relation_id") or ""),
-                    "attempts_text": str(raw.get("attempts_text") or ""),
-                }
-            )
-
-    scope = f"（课程 {only}）" if only else "（全部课程）"
-    return table(
-        platform=name,
-        action="assignments",
-        label="作业",
-        title=f"作业 / 任务{scope} —— {len(rows)} 项",
-        note=(
-            "只读数据，不会提交任何内容。"
-            + (
-                "学习通的作业/测验/考试来自课程页「考试」tab，"
-                "状态与分数是平台自己回的（不需要回读）。"
-                if name == "chaoxing" else
-                (
-                    "状态列按逐组回读的 progress/v2 判定（已完成 = 平台已记账）。"
-                    if with_state else
-                    "状态列默认不读：平台目录本身没有完成度，这里显示「—」；"
-                    "要看真实状态请传 with_state=1（逐组回读，慢但准）。"
+                _assignment_row(
+                    item,
+                    course_name=course.name or course.remote_id,
+                    raw=item.raw or {},
+                    with_state=with_state,
                 )
             )
-            + _skipped_note(failures, len(courses))
-        ),
-        columns=[
-            column("course", "课程"),
-            column("id", "任务号", mono=True),
-            column("title", "名称"),
-            column("kind", "类型"),
-            column("deadline", "截止"),
-            column("state", "状态"),
-        ]
-        + ([column("score", "分数")] if any(row.get("score") for row in rows) else []),
+
+    return _assignments_table(
+        name=name,
         rows=rows,
-        empty_hint="这些课程下没有作业 / 任务。",
-        # 前端逐门读取时拿它显示「已读 X/N 门」
-        meta={"courses": len(courses), "failures": len(failures)},
+        courses=len(courses),
+        failures=failures,
+        only=only,
+        with_state=with_state,
     )
 
 

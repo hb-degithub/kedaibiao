@@ -3858,6 +3858,9 @@
         var collected = [];
         var failures = [];
         var template = null;
+        // 平台能一次性列出「全部任务」（含课程归属对不上的）时，逐门读完再用它
+        // 做一次对账：逐门过滤会漏掉课程表里没有、但任务行自己带课程名的作业。
+        var authoritative = !!(listEnv.meta && listEnv.meta.authoritative_all);
         var progressText = el('span', 'hint-text', '');
 
         function paint(done) {
@@ -3919,6 +3922,21 @@
           });
         }, Promise.resolve()).then(function () {
           if (seq !== state.pageSeq) { return; }
+          if (!authoritative) { return finish(); }
+          return post(base, {}).then(function (full) {
+            if (seq !== state.pageSeq) { return; }
+            var rows = (full && full.rows) || [];
+            var missed = rows.length - collected.length;
+            template = full;
+            collected = rows;
+            finish(missed > 0 ? missed : 0);
+          }).catch(function () {
+            if (seq !== state.pageSeq) { return; }
+            finish();  // 对账失败就用逐门结果，不整页报错
+          });
+        });
+
+        function finish(missed) {
           // 全部读完：用标准渲染收尾（带行内提交按钮、检查器、状态补丁）
           var merged = {};
           Object.keys(template || {}).forEach(function (k) { merged[k] = template[k]; });
@@ -3926,6 +3944,7 @@
           merged.title = '作业 / 任务（全部课程） —— 共 ' + collected.length + ' 条';
           merged.note = (template && template.note ? template.note + ' ' : '')
             + '已逐门读取 ' + courses.length + ' 门课程'
+            + (missed ? ('；再用全量清单对账，补回 ' + missed + ' 条课程归属对不上的任务') : '')
             + (failures.length ? ('，其中 ' + failures.length + ' 门失败（见上方清单）') : '') + '。';
           clear(host);
           if (failures.length) {
@@ -3960,7 +3979,7 @@
             }),
             { aside: pill(collected.length + ' 条', 'pill-mute') }));
           loadBtn.disabled = false;
-        });
+        }
       }).catch(function (e) {
         if (seq !== state.pageSeq) { return; }
         // courses_only 不支持（旧后端 / 平台没有 list_courses）→ 退回一次性汇总

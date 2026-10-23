@@ -264,6 +264,31 @@ class NeusoftAdapter(PlatformAdapter):
         self.log.debug("东软：%s 命中 %d 个作业", course.name, len(matched))
         return [_to_core_assignment(task) for task in matched]
 
+    async def list_assignments_all(self) -> list[Assignment]:
+        """列**全部学期**的作业 / 测验（不按课程过滤，含「课程归属对不上」的）。
+
+        为什么需要它：平台的作业是学期级列表，任务行里可能没有可匹配的课程
+        （``teachCourseId`` 缺失或课程不在本学期课程表里）。按课程逐个过滤时
+        这些任务会被 ``_task_belongs`` 判为「不属于任何课」而静默丢掉 ——
+        用户看到的就是「作业读少了」。这里按学期整体取，来源是任务行自己的
+        ``courseName``，不依赖课程表。
+        """
+        terms = await self.list_terms()
+        out: list[Assignment] = []
+        seen: set[str] = set()
+        for term in terms:
+            try:
+                tasks = await self._tasks_for_term(term.id)
+            except Exception as error:  # noqa: BLE001 - 单个学期失败不影响其它学期
+                self.log.warning("学期 %s 的学习任务读取失败：%s", term.name, error)
+                continue
+            for task in tasks:
+                if task.test_id in seen:
+                    continue
+                seen.add(task.test_id)
+                out.append(_to_core_assignment(task))
+        return out
+
     async def _tasks_for_term(self, term_id: str) -> list[homework.StudyTask]:
         cached = self._tasks_by_term.get(term_id)
         if cached is None:

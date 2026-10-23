@@ -179,6 +179,29 @@ class AssignmentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(items[1].kind, TaskKind.EXAM)
         self.assertFalse(items[0].finished)
 
+    async def test_all_assignments_include_tasks_of_unknown_course(self) -> None:
+        """「作业读少了」的根因回归：课程归属对不上的任务不能丢。
+
+        ``list_assignments(course)`` 靠 teachCourseId / 课程名匹配，匹配不上就
+        判为「不属于这门课」。平台确实存在这类任务（课程表里没有这门课），
+        逐门过滤时它们会被静默丢掉 —— ``list_assignments_all`` 必须能把它们
+        按任务行自己的课程名带出来。
+        """
+        self.transport.json("GET", "/getTeachTermDropDown", [
+            {"id": TERM_ID, "name": "2026-2027学年-第1学期"},
+        ])
+        adapter = make_adapter(self.transport)
+        items = await adapter.list_assignments_all()
+
+        ids = [item.remote_id for item in items]
+        self.assertIn(TEST_ID, ids)
+        self.assertIn("300000000000000004", ids, "单元测试也算可作答任务")
+        self.assertIn("300000000000000003", ids, "别的课的作业也要在全部清单里")
+        self.assertNotIn("300000000000000002", ids, "视频（type=1）不是作业")
+        orphan = next(item for item in items if item.remote_id == "300000000000000003")
+        self.assertEqual(orphan.course_name, "另一门课", "课程名来自任务行本身")
+        self.assertFalse(orphan.finished, "studyStatus=1 不是完成（完成是 2）")
+
     async def test_term_tasks_are_cached(self) -> None:
         adapter = make_adapter(self.transport)
         await adapter.list_assignments(course())
