@@ -3663,6 +3663,56 @@
       loadBtn.disabled = true;
       var payload = course ? { course: course } : {};
       if (wantState) { payload.with_state = 1; }
+      function assignmentRowAction(row) {
+        var id = assignmentIdOf(row);
+        if (!id) { return el('span', 'hint-text', '—'); }
+        if (!canSubmit) {
+          if (platName === 'chaoxing') {
+            /* 不跳工具页：就地展开作答面板（题目信息 + 日志 + 分数） */
+            var rowState = String(row.state || '');
+            var retakeId = String(row.retake_exam_id || '');
+            if (row.retake === true && retakeId && rowState !== '已过期') {
+              /* 平台允许重考：已完成也能再进一次（分数按平台规则取） */
+              return btn(rowState === '已完成' ? '重考' : '做考试', 'btn-sm', function () {
+                chaoxingWorkspace(platName, chaoxingHost, {
+                  action: 'exam',
+                  id: retakeId,
+                  title: (row.title || retakeId) + (rowState === '已完成' ? '（重考）' : ''),
+                  relation_id: String(row.answer_id || row.retake_relation_id || ''),
+                  retake: true,
+                  deadline: String(row.deadline || ''),
+                  course: String(courseField.value || '').trim() || (row.course || '')
+                });
+              });
+            }
+            if (rowState === '已完成' || rowState === '已过期') {
+              /* 状态列已经写着「已完成/已过期」，这里不再重复，只留说明 */
+              var doneTag = el('span', 'hint-text', '—');
+              doneTag.title = rowState === '已完成'
+                ? '已交卷；这场没有重考入口（或平台已关闭重考）'
+                : '已过截止时间，不能再作答';
+              return doneTag;
+            }
+            var isQuiz = String(id).indexOf('quiz:') === 0;
+            return btn(isQuiz ? '做测验' : '做考试', 'btn-sm', function () {
+              chaoxingWorkspace(platName, chaoxingHost, {
+                action: isQuiz ? 'quiz' : 'exam',
+                id: id,
+                title: row.title || id,
+                deadline: String(row.deadline || ''),
+                course: String(courseField.value || '').trim() || (row.course || '')
+              });
+            });
+          }
+          var tag = el('span', 'hint-text', '不可提交');
+          tag.title = gate.why;
+          return tag;
+        }
+        return btn('提交', 'btn-sm', function () {
+          openSubmitFlow(platName, id, row, canSubmit);
+        });
+      }
+
       function renderAssignments(env) {
         if (seq !== state.pageSeq) { return; }
         clear(host);
@@ -3687,55 +3737,7 @@
               openAssignmentAt(platName, navigable, index, canSubmit);
             },
             empty: '这个平台没有返回作业。',
-            rowAction: function (row) {
-              var id = assignmentIdOf(row);
-              if (!id) { return el('span', 'hint-text', '—'); }
-              if (!canSubmit) {
-                if (platName === 'chaoxing') {
-                  /* 不跳工具页：就地展开作答面板（题目信息 + 日志 + 分数） */
-                  var rowState = String(row.state || '');
-                  var retakeId = String(row.retake_exam_id || '');
-                  if (row.retake === true && retakeId && rowState !== '已过期') {
-                    /* 平台允许重考：已完成也能再进一次（分数按平台规则取） */
-                    return btn(rowState === '已完成' ? '重考' : '做考试', 'btn-sm', function () {
-                      chaoxingWorkspace(platName, chaoxingHost, {
-                        action: 'exam',
-                        id: retakeId,
-                        title: (row.title || retakeId) + (rowState === '已完成' ? '（重考）' : ''),
-                        relation_id: String(row.answer_id || row.retake_relation_id || ''),
-                        retake: true,
-                        deadline: String(row.deadline || ''),
-                        course: String(courseField.value || '').trim() || (row.course || '')
-                      });
-                    });
-                  }
-                  if (rowState === '已完成' || rowState === '已过期') {
-                    /* 状态列已经写着「已完成/已过期」，这里不再重复，只留说明 */
-                    var doneTag = el('span', 'hint-text', '—');
-                    doneTag.title = rowState === '已完成'
-                      ? '已交卷；这场没有重考入口（或平台已关闭重考）'
-                      : '已过截止时间，不能再作答';
-                    return doneTag;
-                  }
-                  var isQuiz = String(id).indexOf('quiz:') === 0;
-                  return btn(isQuiz ? '做测验' : '做考试', 'btn-sm', function () {
-                    chaoxingWorkspace(platName, chaoxingHost, {
-                      action: isQuiz ? 'quiz' : 'exam',
-                      id: id,
-                      title: row.title || id,
-                      deadline: String(row.deadline || ''),
-                      course: String(courseField.value || '').trim() || (row.course || '')
-                    });
-                  });
-                }
-                var tag = el('span', 'hint-text', '不可提交');
-                tag.title = gate.why;
-                return tag;
-              }
-              return btn('提交', 'btn-sm', function () {
-                openSubmitFlow(platName, id, row, canSubmit);
-              });
-            }
+            rowAction: assignmentRowAction
           }),
           {
             aside: pill(rows.length + ' 条', 'pill-mute')
@@ -3975,6 +3977,7 @@
                 if (idx < 0) { inspectRow(platName, row, '作业记录'); return; }
                 openAssignmentAt(platName, navigable, idx, canSubmit);
               },
+              rowAction: assignmentRowAction,
               empty: '这些课程下没有作业 / 任务。'
             }),
             { aside: pill(collected.length + ' 条', 'pill-mute') }));
