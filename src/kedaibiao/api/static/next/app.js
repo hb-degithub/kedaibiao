@@ -6467,6 +6467,15 @@
       '平台密码只在登录那一刻使用，换完 cookie 就丢；这里不会保存它。'));
     body.appendChild(fieldWrap('平台密码', pass, '账号 ' + (a.display || a.username)));
     body.appendChild(actionRow([submit, msg]));
+    body.appendChild(hintBlock([
+      '这个平台的登录会弹验证码？用「验证码登录」：先自动识别图片码，识别不出再把图给你输入。',
+      '目前验证码登录只接了已核实登录页的平台（超星学习通）；其它平台会明确提示暂不支持，不会假装成功。'
+    ]));
+    body.appendChild(actionRow([
+      btn('用验证码登录', 'btn-sm', function () {
+        openCaptchaLogin({ platform: a.platform, username: a.username });
+      })
+    ]));
     openInspector({
       title: '重新登录',
       sub: platformLabel(a.platform) + ' · ' + (a.display || a.username),
@@ -6526,6 +6535,9 @@
     var body = el('div', '');
     body.appendChild(form);
     body.appendChild(actionRow([submit, msg]));
+    body.appendChild(hintBlock([
+      '如果这个平台登录会弹验证码，改用右上角「验证码登录」：先自动试，不行再让你看图输入。'
+    ]));
     openInspector({ title: '新增账号', sub: '平台 + 用户名 + 密码', body: body });
   }
 
@@ -6535,16 +6547,18 @@
 
   /* 后端行为：先自动识别图片码（用已配的大模型），识别不出/码不对就把验证码
      图交回来，由人输入。这里只负责：开会话、轮询状态、把图与输入框摆出来。 */
-  function openCaptchaLogin() {
+  function openCaptchaLogin(prefill) {
+    prefill = prefill || {};
     var platSel = el('select');
     state.platforms.forEach(function (p) {
       var o = el('option', '', (p.display_name || p.name) + '（' + p.name + '）');
       o.value = p.name;
       platSel.appendChild(o);
     });
-    if (state.platform) { platSel.value = state.platform; }
+    if (prefill.platform) { platSel.value = prefill.platform; }
+    else if (state.platform) { platSel.value = state.platform; }
 
-    var username = input('text', '', '平台用户名 / 手机号');
+    var username = input('text', prefill.username || '', '平台用户名 / 手机号');
     var password = input('password', '', '平台密码');
     var msg = el('span', 'hint-text', '');
     var sessionHost = el('div', '');
