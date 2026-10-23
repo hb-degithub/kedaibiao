@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import logging
 import unittest
 from typing import Any
@@ -219,6 +221,48 @@ class StudyTaskRequestTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(NeusoftError):
             await list_study_tasks(client, "")
         self.assertEqual(transport.requests, [])
+
+
+class StudyTaskDeadlineTest(unittest.TestCase):
+    """学习任务的截止时间来自 ``closeTime``（毫秒时间戳）。
+
+    之前完全没解析 deadline，控制台「截止」列永远是「—」，用户没法判断
+    哪些作业快到期了。
+    """
+
+    def test_close_time_becomes_deadline(self) -> None:
+        tasks = parse_study_tasks({"list": [{
+            "ctlId": "ctl-1", "resName": "作业1", "type": 3,
+            "closeTime": 1789919999000, "openTime": 1788331198000,
+        }]})
+        self.assertEqual(len(tasks), 1)
+        self.assertIsNotNone(tasks[0].deadline)
+        assert tasks[0].deadline is not None
+        self.assertEqual(tasks[0].deadline.strftime("%Y-%m-%d %H:%M"), "2026-09-20 23:59")
+        self.assertIsNotNone(tasks[0].available_from)
+
+    def test_missing_or_zero_close_time_is_none(self) -> None:
+        for row in (
+            {"ctlId": "a", "type": 3},
+            {"ctlId": "b", "type": 3, "closeTime": 0},
+            {"ctlId": "c", "type": 3, "closeTime": None},
+            {"ctlId": "d", "type": 3, "closeTime": "abc"},
+            {"ctlId": "e", "type": 3, "closeTime": True},
+        ):
+            with self.subTest(row=row):
+                tasks = parse_study_tasks({"list": [row]})
+                self.assertIsNone(tasks[0].deadline, "缺失/0/非法一律当没有，不猜时间")
+
+    def test_assignment_carries_deadline(self) -> None:
+        from kedaibiao.platforms.neusoft.adapter import _to_core_assignment
+        from kedaibiao.platforms.neusoft.homework import StudyTask
+
+        task = StudyTask(
+            test_id="ctl-1", name="作业1", task_type=3, deadline=datetime(2026, 9, 20, 23, 59)
+        )
+        assignment = _to_core_assignment(task)
+        self.assertEqual(assignment.deadline, datetime(2026, 9, 20, 23, 59))
+        self.assertEqual(assignment.title, "作业1")
 
 
 class PaperParseTest(unittest.TestCase):

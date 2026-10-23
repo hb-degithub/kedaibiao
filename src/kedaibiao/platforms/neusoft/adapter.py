@@ -581,6 +581,7 @@ def _to_core_assignment(task: homework.StudyTask) -> Assignment:
         title=task.name or task.test_id,
         kind=kind,
         course_name=task.course_name,
+        deadline=task.deadline,
         finished=task.is_completed,
         progress=1.0 if task.is_completed else 0.0,
         raw=dict(task.raw),

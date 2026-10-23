@@ -2575,6 +2575,10 @@ def _assignments_table(
                 )
             )
             + (f"{note_hint}" if note_hint else "")
+            + (
+                "已过截止时间的作业标为「已过期」；部分平台仍允许补交，以平台为准。"
+                if any(row.get("state") == "已过期" for row in rows) else ""
+            )
             + _skipped_note(failures, courses)
         ),
         columns=[
@@ -2868,22 +2872,39 @@ def ensure_generic_actions(platform: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+_STATE_LABELS = {
+    "done": "已完成",
+    "expired": "已过期",
+    "todo": "未完成",
+    "quiz": "章节测验",
+}
+
+
 def _assignment_state(item: Any, *, with_state: bool) -> str:
-    """作业行的状态文案：能确定就说确定，不能就显示「—」。"""
+    """作业行的状态文案：能确定就说确定，不能就显示「—」。
+
+    判定顺序（后一步只在前一步判不出来时才用）：
+
+    1. 平台给了**语义化**状态（学习通 ``todo/done/expired/quiz``）→ 直接用；
+    2. 已完成（回读确认过）→ 已完成；
+    3. **过了截止时间**且未完成 → 已过期（东软这类平台只给数字 status，
+       数字含义未经证实，用截止时间反而可靠）；
+    4. 平台给了任意状态说明它确实在列「待做」→ 未完成；
+    5. 要求回读状态 → 未完成；否则「—」。
+    """
     raw = item.raw or {}
     status = str(raw.get("status") or "").strip()
+    if status in _STATE_LABELS:
+        return _STATE_LABELS[status]
+    if item.finished:
+        return "已完成"
+    deadline = getattr(item, "deadline", None)
+    if deadline is not None and deadline < datetime.now():
+        return "已过期"
     if status:
-        # 平台自己给了状态（学习通：考试 tab 的待做/已完成/已过期）
-        return {
-            "done": "已完成",
-            "expired": "已过期",
-            "todo": "未完成",
-            "quiz": "章节测验",
-        }.get(
-            status, "未完成" if not item.finished else "已完成"
-        )
+        return "未完成"
     if with_state:
-        return "已完成" if item.finished else "未完成"
+        return "未完成"
     return "—"
 
 

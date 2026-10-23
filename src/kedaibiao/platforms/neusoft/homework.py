@@ -25,6 +25,7 @@ import html
 import logging
 import re
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -56,6 +57,10 @@ class StudyTask:
     course_name: str = ""
     study_status: int = 0
     open_time: str = ""
+    #: 截止时间（平台 ``closeTime``，毫秒时间戳转成本地时间）。缺失就是 ``None``。
+    deadline: datetime | None = None
+    #: 开放时间（平台 ``openTime``）。只是展示用，不参与判定。
+    available_from: datetime | None = None
     #: 平台原始类型：2 = 单元测试 / 测验，3 = 作业（两者都用 testId 取卷）
     task_type: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
@@ -186,6 +191,28 @@ def core_question_type(platform_type: Any) -> QuestionType:
 # --------------------------------------------------------------------------
 
 
+def _deadline_of(row: dict[str, Any], *, key: str = "closeTime") -> datetime | None:
+    """把平台的毫秒时间戳转成本地 datetime；0 / 空 / 非法一律当缺失。
+
+    为什么不能把 0 当成有效时间：业务上不存在 1970 年截止的作业，
+    ``0`` 更可能是「服务端没给」。当成缺失最多显示「—」，
+    当成有效值却会把作业判成已过期。
+    """
+    raw = row.get(key)
+    if isinstance(raw, bool):
+        return None
+    try:
+        ms = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if ms <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(ms / 1000)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def parse_study_tasks(payload: Any) -> list[StudyTask]:
     """解析学习任务分页，**留作业（3）与单元测试 / 测验（2）**。
 
@@ -217,6 +244,8 @@ def parse_study_tasks(payload: Any) -> list[StudyTask]:
                 course_name=as_str(row.get("teachCourseName")),
                 study_status=as_int(row.get("studyStatus")),
                 open_time=as_str(row.get("openTime")),
+                deadline=_deadline_of(row),
+                available_from=_deadline_of(row, key="openTime"),
                 task_type=task_type,
                 raw=dict(row),
             )

@@ -654,6 +654,36 @@ class TestActions(ServiceTestBase):
             out = self.service.run_action(GOOD, "assignments", {"with_state": 1})
         self.assertEqual(out["rows"][0]["state"], "已完成")
 
+    def test_assignment_state_uses_deadline_when_platform_status_is_numeric(self) -> None:
+        """平台只给数字 status 时，用截止时间判「已过期」比猜数字含义可靠。"""
+        from datetime import datetime, timedelta
+        from types import SimpleNamespace
+
+        from kedaibiao.api.actions import _assignment_state
+
+        past = SimpleNamespace(
+            finished=False, raw={"status": 4}, deadline=datetime.now() - timedelta(days=1)
+        )
+        future = SimpleNamespace(
+            finished=False, raw={"status": 3}, deadline=datetime.now() + timedelta(days=1)
+        )
+        done = SimpleNamespace(finished=True, raw={}, deadline=None)
+        unknown = SimpleNamespace(finished=False, raw={}, deadline=None)
+
+        self.assertEqual(_assignment_state(past, with_state=False), "已过期")
+        self.assertEqual(_assignment_state(future, with_state=False), "未完成")
+        self.assertEqual(_assignment_state(done, with_state=False), "已完成")
+        self.assertEqual(_assignment_state(unknown, with_state=False), "—")
+        # 学习通那种语义化状态优先于截止时间推断
+        self.assertEqual(
+            _assignment_state(
+                SimpleNamespace(finished=False, raw={"status": "todo"},
+                                deadline=datetime.now() - timedelta(days=1)),
+                with_state=False,
+            ),
+            "未完成",
+        )
+
     def test_assignments_courses_only_phase_lists_courses(self) -> None:
         """两阶段读取的第一阶段：只读课程清单（给前端算进度分母）。"""
         with mock.patch.dict(os.environ, _creds(GOOD), clear=True):
