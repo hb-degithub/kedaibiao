@@ -3485,6 +3485,42 @@ class ConsoleService:
             )
         return answers
 
+    async def _missing_assignment_hint(
+        self,
+        adapter: Any,
+        platform: str,
+        assignment_id: str,
+        skipped_courses: list[str],
+    ) -> str:
+        """作业在列表里定位不到时，尽量说清「为什么」。
+
+        典型场景（品课实测 2026-10-26）：作业所属课程已结束/归档，列表接口对
+        那门课回 6569，作业本身却是**过期**状态 —— 用户看到「找不到作业」会
+        以为是程序问题。这里再探一次详情，把过期/已提交讲清楚。
+        """
+        probe = getattr(adapter, "fetch_submission_state", None)
+        if probe is not None:
+            try:
+                from kedaibiao.core.models import Assignment as _A
+
+                state = await probe(_A(remote_id=assignment_id, title=""))
+                if getattr(state, "expired", False):
+                    return (
+                        f"作业 {assignment_id} 已过期（平台 expired=true），交不上去。"
+                        "过期的作业仍在列表里显示，但平台不再接受作答。"
+                    )
+                if getattr(state, "submitted", False):
+                    return f"作业 {assignment_id} 平台显示已提交（submitted=true），不需要再交。"
+            except Exception:  # noqa: BLE001 - 探测失败就退回通用文案
+                log.debug("探测作业状态失败", exc_info=True)
+        if skipped_courses:
+            return (
+                f"在 {platform} 里找不到作业 {assignment_id!r}；"
+                f"有 {len(skipped_courses)} 门课程读取失败（例：{skipped_courses[0]}），"
+                "作业可能属于已结束/归档的课程。"
+            )
+        return ""
+
     async def _submit_one(
         self,
         platform: str,
@@ -3515,18 +3551,51 @@ class ConsoleService:
                 )
 
             target = None
+            skipped_courses: list[str] = []
             for course in await adapter.list_courses():
-                for item in await adapter.list_assignments(course):
+                try:
+                    items = await adapter.list_assignments(course)
+                except Exception as exc:  # noqa: BLE001 - 单门课失败不该让整次定位失败
+                    allowed = getattr(adapter, "skippable_course_errors", ())
+                    if allowed and isinstance(exc, allowed):
+                        # 品课 6569「课程不存在」就属于这种：课程已归档/换班，
+                        # 其它课程里的作业仍要能定位到。
+                        skipped_courses.append(f"{course.name or course.remote_id}（{exc}）")
+                        self._plog(platform, "warn",
+                                   f"! 课程读取失败已跳过：{course.name or course.remote_id}")
+                        continue
+                    raise
+                for item in items:
                     if item.remote_id == assignment_id:
                         target = item
                         break
                 if target is not None:
                     break
             if target is None:
+                hint = await self._missing_assignment_hint(
+                    adapter, platform, assignment_id, skipped_courses
+                )
                 raise ConsoleError(
-                    f"在 {platform} 里找不到作业 {assignment_id!r}",
+                    hint or f"在 {platform} 里找不到作业 {assignment_id!r}",
                     kind="not_found", status=404,
                 )
+
+            # 平台侧已过期就别再花时间出计划：过期作业在列表里仍会显示，
+            # 但平台不接受作答（品课实测：expired=true 与 submitted 独立）。
+            state_probe = getattr(adapter, "fetch_submission_state", None)
+            if state_probe is not None and target is not None:
+                try:
+                    state = await state_probe(target)
+                except Exception:  # noqa: BLE001 - 探测失败不拦（提交时还有守卫）
+                    state = None
+                if getattr(state, "expired", False):
+                    deadline_text = _text_or_empty(str(getattr(target, "deadline", "") or ""))
+                    raise ConsoleError(
+                        f"作业 {assignment_id!r} 已过期，平台不再接受作答"
+                        + (f"（截止 {deadline_text}）" if deadline_text else "")
+                        + "。它仍会出现在列表里，但已经交不上去。",
+                        kind="bad_request", status=400,
+                    )
 
             # 原生作答链路的平台（iTEST）：取题/交卷都在浏览器里做，
             # 不走通用的 fetch_questions → answerer → submit 三段式。

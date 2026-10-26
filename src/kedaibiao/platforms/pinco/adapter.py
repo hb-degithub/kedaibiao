@@ -437,24 +437,55 @@ class PincoAdapter(PlatformAdapter):
         data = await self.client().post_action(ep.ACTION_CLASS_LIST, {})
         return parsing.parse_classes(data)
 
-    async def list_assignments(self, course: Course) -> list[Assignment]:
+    async def list_assignments(
+        self, course: Course, *, with_state: bool = False
+    ) -> list[Assignment]:
         """某门课的作业列表（``TaskKind.HOMEWORK``）。
 
         实测确认走通的就是这一条：``GetV1StudenthomeworkList {courseId, page,
         pageSize}`` → ``data.content[]``。学习任务是课程材料，在
         :meth:`list_learning_tasks` 里，两条链路分开、互不混入。
+
+        ``with_state=True`` 时**逐条**再读一次详情，补上列表接口没有的三件事：
+
+        - ``expired``（列表不给）—— 过期作业不该继续显示成「未完成」；
+        - ``deadline``（列表不给）—— 「截止」列才有值；
+        - ``submitted``（列表字段缺失时的权威值）。
+
+        逐条读意味着 N 次请求，所以只在明确要求「准确状态」时才开
+        （控制台「读取完成状态」开关）。
         """
         self._require_session()
         # 参数必须带 courseId + page + pageSize —— 缺参数会 401 illegal argument。
         # 服务端 pageSize 封顶 20，只取第一页会让第 21 条起静默消失（提交也定位不到），
         # 所以和其它列表一样按页取全。
-        return await self._paged(
+        items = await self._paged(
             ep.ACTION_HOMEWORK_LIST,
             {ep.FIELD_COURSE_ID: course.remote_id},
             lambda data: parsing.parse_assignments(
                 data, course=course, default_kind=TaskKind.HOMEWORK
             ),
         )
+        if not with_state:
+            return items
+
+        for item in items:
+            try:
+                state = await self.fetch_submission_state(item)
+            except Exception as exc:  # noqa: BLE001 - 单条探测失败不影响整页
+                self.log.debug("品课作业状态读取失败 %s: %s", item.remote_id, exc)
+                continue
+            item.finished = bool(state.submitted)
+            if state.expired:
+                # 复用通用状态映射（"_assignment_state" 认 expired → 已过期）
+                item.raw = {**(item.raw or {}), "status": "expired"}
+            elif state.submitted:
+                item.raw = {**(item.raw or {}), "status": "done"}
+            else:
+                item.raw = {**(item.raw or {}), "status": "todo"}
+            if item.deadline is None:
+                item.deadline = parsing.parse_deadline(state.raw)
+        return items
 
     async def list_learning_tasks(self, course: Course) -> list[Assignment]:
         """学习任务 = **课程材料**（PPT / PDF / 视频）。实测确认。

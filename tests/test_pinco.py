@@ -2610,3 +2610,51 @@ class TestSessionInjection(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ListAssignmentsWithStateTest(unittest.IsolatedAsyncioTestCase):
+    """``with_state=True`` 逐条补状态：过期/已提交/截止时间（列表接口都不给）。
+
+    实测（2026-10-26）：品课列表接口只有 ``submitted``，没有 ``expired`` 和
+    ``deadline``。结果就是**过期作业一直显示成「未完成」**，用户以为还能交。
+    """
+
+    async def test_fills_expired_status_and_deadline(self) -> None:
+        adapter, transport, _, _ = make_adapter()
+        # 三条作业：已提交 / 未提交 / 已过期
+        transport.actions[ep.ACTION_HOMEWORK_DETAIL] = Replies([
+            {"submitted": True, "expired": False, "canSubmitted": False,
+             "deadline": 1766159940000},
+            {"submitted": False, "expired": False, "canSubmitted": True,
+             "deadline": 1797695940000},
+            {"submitted": False, "expired": True, "canSubmitted": False,
+             "deadline": 1766159940000},
+        ])
+        items = await adapter.list_assignments(
+            Course(remote_id="1326193414086569984", name="示例课程 A"), with_state=True
+        )
+        by_id = {item.remote_id: item for item in items}
+        self.assertEqual(by_id[SUBMITTED_HW].raw.get("status"), "done")
+        self.assertEqual(by_id[OPEN_HW].raw.get("status"), "todo")
+        self.assertEqual(by_id[EXPIRED_HW].raw.get("status"), "expired",
+                         "过期作业必须能被标出来，否则界面显示成「未完成」")
+        self.assertIsNotNone(by_id[EXPIRED_HW].deadline, "截止时间要从详情补上")
+        self.assertTrue(by_id[SUBMITTED_HW].finished)
+
+    async def test_default_does_not_fetch_state(self) -> None:
+        """不开 with_state 时不该逐条打详情 —— 那是 N 次请求。"""
+        adapter, transport, _, _ = make_adapter()
+        await adapter.list_assignments(
+            Course(remote_id="1326193414086569984", name="示例课程 A")
+        )
+        self.assertNotIn(ep.ACTION_HOMEWORK_DETAIL, transport.action_names())
+
+    async def test_single_probe_failure_does_not_break_page(self) -> None:
+        adapter, transport, _, _ = make_adapter()
+        transport.actions[ep.ACTION_HOMEWORK_DETAIL] = FakeReply(
+            raw=b"<html>login</html>", status=200
+        )
+        items = await adapter.list_assignments(
+            Course(remote_id="1326193414086569984", name="示例课程 A"), with_state=True
+        )
+        self.assertEqual(len(items), 3, "单条探测失败不能把整页作业弄没")
