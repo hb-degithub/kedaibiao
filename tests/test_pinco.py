@@ -783,9 +783,31 @@ class TestClient(unittest.IsolatedAsyncioTestCase):
             {ep.ACTION_SUBMIT_HOMEWORK: {"success": True}}
         )
         await adapter.client().post_action(
-            ep.ACTION_SUBMIT_HOMEWORK, {}, dangerous=True
+            ep.ACTION_SUBMIT_HOMEWORK,
+            {"studentHomeworkId": "h1", "answers": [{"questionId": "q1", "answerContent": "A"}]},
+            dangerous=True,
         )
         self.assertEqual(transport.action_names(), [ep.ACTION_SUBMIT_HOMEWORK])
+
+    async def test_submit_action_without_answer_body_is_refused(self) -> None:
+        """护栏：只有 id、没有答案体的提交请求一律不发。
+
+        事故背景（2026-10-28）：拿 ``{"studentHomeworkId": …}`` 当探针打提交接口，
+        平台**不报错**，而是当成空答案提交收下 —— 作业被记 0 分且 canRedo=false。
+        所以客户端层必须拦住这类请求。
+        """
+        from kedaibiao.platforms.pinco.errors import PincoError
+
+        adapter, transport, _, _ = make_adapter(
+            {ep.ACTION_SUBMIT_HOMEWORK: {"success": True}}
+        )
+        with self.assertRaises(PincoError):
+            await adapter.client().post_action(
+                ep.ACTION_SUBMIT_HOMEWORK,
+                {"studentHomeworkId": "h1"},
+                dangerous=True,
+            )
+        self.assertEqual(transport.action_names(), [], "被拒绝时不该发出任何请求")
 
     async def test_health_check_uses_rest_current_time(self) -> None:
         """健康检查走实测可用的 REST 接口，不碰那个恒 500 的死 action。"""

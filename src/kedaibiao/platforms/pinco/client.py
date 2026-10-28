@@ -32,7 +32,7 @@ from typing import Any
 from kedaibiao.net.http import ResponseNotJson
 from kedaibiao.platforms.pinco import endpoints as ep
 from kedaibiao.platforms.pinco import parsing
-from kedaibiao.platforms.pinco.errors import PincoProtocolError
+from kedaibiao.platforms.pinco.errors import PincoError, PincoProtocolError
 
 log = logging.getLogger(__name__)
 
@@ -107,12 +107,43 @@ class PincoClient:
         互转规则还没交付，猜一条路径会静默打到别的接口上。
         """
         self._check_dangerous(action, dangerous)
+        self._check_submit_shape(action, payload)
         if protocol is ep.Protocol.REST:
             url = ep.rest_url(ep.rest_path_for_action(action))
         else:
             url = ep.action_url(action)
         resp = await self._http.post_json(url, payload or {}, headers=self.headers())
         return self._unwrap(resp, action=action, family=protocol)
+
+    @staticmethod
+    def _check_submit_shape(action: str, payload: dict[str, Any] | None) -> None:
+        """提交类 action 的**结构护栏**：没有答案体的请求一律不发。
+
+        事故背景（2026-10-28）：为了探请求体结构，直接拿 ``{"studentHomeworkId": …}``
+        打 ``PostV1StudenthomeworkByStudentHomeworkIdSubmit`` —— 平台**没有报错**，
+        而是当成「空答案提交」收下了：score=0、submitted=true、canRedo=false，
+        作业就此交掉且不能重做。
+
+        所以宁可在这里拦住：提交类 action 必须带**非空的列表/对象字段**
+        （答案体），否则直接拒绝发送。真正的提交走 ``adapter.submit``，
+        它还有复核计划、置信度、平台状态三道守卫。
+        """
+        submit_actions = {
+            ep.ACTION_SUBMIT_HOMEWORK,
+            ep.ACTION_SUBMIT_CHAPTER_TASK,
+            ep.ACTION_SUBMIT_COURSE_GROUP_TASK,
+        }
+        if action not in submit_actions:
+            return
+        body = payload or {}
+        has_payload = any(
+            isinstance(value, (list, dict)) and value for value in body.values()
+        )
+        if not has_payload:
+            raise PincoError(
+                f"拒绝发送：{action} 的请求体里没有任何答案内容（只带了 id 之类）。"
+                "缺少结构时平台会把请求当成「空答案提交」收下，作业会被记 0 分且不能重做。"
+            )
 
     async def post_action(
         self, action: str, payload: dict[str, Any] | None = None, *, dangerous: bool = False

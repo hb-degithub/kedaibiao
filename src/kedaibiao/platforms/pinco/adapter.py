@@ -803,6 +803,9 @@ class PincoAdapter(PlatformAdapter):
         if not self.submit_payload_confirmed:
             raise PincoError(
                 "提交请求体的结构尚未由真实样本确认（TODO(endpoint)），拒绝发出写请求。"
+                "⚠️ 不要绕过这里直接调 client.post_action 试探：2026-10-28 实测，"
+                "只带 studentHomeworkId 的请求会被平台当成空答案提交收下（0 分且不能重做），"
+                "见 docs/incident-2026-10-28-pinco-probe.md。"
                 "守卫已经放行，但「交出去的东西对不对」还没验证过 —— "
                 "交错的答案比不交更糟。"
             )
