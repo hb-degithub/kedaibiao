@@ -1671,6 +1671,129 @@ async def _pinco_signin(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+async def _pinco_submit(adapter: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """交作业：**取题 → 计划 → （人工确认后）保存答案 → 校验 → 提交 → 回读**。
+
+    这条是系统里的「完整链路」入口：``confirm`` 留空只出计划（干跑），
+    填 true 才真的写。三道闸门一个都不少：
+
+    - 计划里只要有「需人工/低置信度」的题 → 拒绝交（宁可交不上去，也不交错）；
+    - 保存答案失败或回读校验不一致 → 中止，不交白卷；
+    - 提交后回读平台状态，把 submitted / score 一起返回。
+    """
+    from kedaibiao.platforms.pinco.guard import SubmissionRefused
+    from kedaibiao.platforms.pinco.models import PlanState
+
+    name = _pinco_platform(adapter)
+    assignment_id = _pinco_require(params, "assignment_id", "作业号")
+    course = str(params.get("course") or "").strip()
+    confirm = str(params.get("confirm") or "").strip().lower() in {
+        "1", "true", "yes", "是", "确认", "交卷",
+    }
+
+    plan = await adapter.plan()
+    item = plan.find(assignment_id)
+    if item is not None and course:
+        cname = str(getattr(item, "course_name", "") or "")
+        cid = str(getattr(item, "course_id", "") or "")
+        if course not in cname and course != cid:
+            raise ActionInputError(
+                f"作业 {assignment_id!r} 不在课程 {course!r} 下（实际：{cname or cid or '未知'}）"
+            )
+    if item is None:
+        raise ActionInputError(
+            f"计划里没有作业 {assignment_id!r}：先确认作业号，或用 course 限定课程"
+        )
+
+    human = list(getattr(item, "human_questions", []) or [])
+    base_rows = [{
+        "assignment_id": item.assignment_id,
+        "title": str(getattr(item, "title", "") or "")[:40],
+        "course": str(getattr(item, "course_name", "") or "")[:24],
+        "state": str(getattr(item.state, "value", item.state)),
+        "questions": len(getattr(item, "questions", []) or []),
+        "human": len(human),
+        "reason": str(getattr(item, "reason", "") or "")[:60],
+    }]
+    columns = [
+        column("assignment_id", "作业号", mono=True),
+        column("title", "作业"),
+        column("course", "课程"),
+        column("state", "计划状态"),
+        column("questions", "题数"),
+        column("human", "需人工"),
+        column("reason", "说明"),
+    ]
+
+    if not confirm:
+        return table(
+            platform=name, action="submit", label="交作业（干跑：只出计划）",
+            columns=columns, rows=base_rows,
+            note="这是干跑：只取题生成计划，没有保存答案、没有提交。"
+                 "核对无误后加 confirm=true 才真的交。",
+            meta={"dry_run": True, "digest_hint": "控制台复核链路会带 digest 二次校验"},
+        )
+
+    if getattr(item, "state", None) is PlanState.NEEDS_HUMAN or human:
+        detail_text = "；".join(
+            f"{(getattr(q, 'stem', '') or '')[:24]}（{getattr(q, 'reason', '')}）"
+            for q in human[:5]
+        )
+        raise ActionInputError(
+            f"作业 {assignment_id!r} 有 {len(human)} 道题需要人工处理，整份不能自动交："
+            f"{detail_text or '有题目需人工'}"
+        )
+    if getattr(item, "state", None) is not PlanState.PLANNED:
+        raise ActionInputError(
+            f"作业 {assignment_id!r} 的计划状态是 "
+            f"{getattr(item.state, 'value', item.state)}，只有 planned 才能交"
+        )
+
+    try:
+        adapter.confirm_plan(plan)
+    except SubmissionRefused as exc:
+        raise ActionInputError(f"复核计划被拒绝：{exc}") from exc
+
+    from kedaibiao.api.service import _pinco_submission_payload
+
+    assignment, answers = _pinco_submission_payload(item)
+    result = await adapter.submit(assignment, answers)
+
+    readback: dict[str, Any] = {}
+    try:
+        state = await adapter.fetch_submission_state(assignment)
+        readback = {
+            "submitted": getattr(state, "submitted", None),
+            "expired": getattr(state, "expired", None),
+            "score": getattr(state, "score", None),
+        }
+    except Exception:  # noqa: BLE001 - 回读失败不影响「已提交」这个事实
+        readback = {}
+
+    rows = [{
+        "assignment_id": assignment_id,
+        "title": str(getattr(item, "title", "") or "")[:40],
+        "ok": "是" if getattr(result, "ok", False) else "否",
+        "submitted": str(readback.get("submitted")),
+        "score": "" if result.score is None else str(result.score),
+        "message": str(getattr(result, "message", "") or "")[:80],
+    }]
+    return table(
+        platform=name, action="submit", label="交作业（已提交）",
+        columns=[
+            column("assignment_id", "作业号", mono=True),
+            column("title", "作业"), column("ok", "提交成功"),
+            column("submitted", "平台侧已提交"), column("score", "得分"),
+            column("message", "说明"),
+        ],
+        rows=rows,
+        note="链路：计划 → 保存答案 → 回读校验 → 提交 → 回读平台状态。"
+             "任何一步失败都会中止，不会交白卷。",
+        meta={"dry_run": False, "readback": readback,
+              "answered": sum(1 for a in answers if not getattr(a, "is_empty", lambda: False)())},
+    )
+
+
 def _register_pinco() -> None:
     register(
         ActionSpec(
@@ -1750,6 +1873,28 @@ def _register_pinco() -> None:
             mutates=True,
         ),
         _pinco_progress,
+    )
+    register(
+        ActionSpec(
+            platform="pinco",
+            name="submit",
+            label="交作业（完整链路）",
+            description=(
+                "取题 → 计划 →（confirm=true 后）逐题保存答案 → 回读校验"
+                " → 提交 → 回读平台状态。"
+                "需人工/低置信度的题一律拒绝；默认干跑（只出计划，不写）。"
+            ),
+            params=(
+                ActionParam("assignment_id", "作业号", required=True),
+                ActionParam("course", "课程号", hint="留空 = 全部课程（只用于定位）"),
+                ActionParam(
+                    "confirm", "确认交卷",
+                    hint="填 true 才真的保存答案并提交（不可逆）；留空 = 干跑",
+                ),
+            ),
+            mutates=True,
+        ),
+        _pinco_submit,
     )
     register(
         ActionSpec(

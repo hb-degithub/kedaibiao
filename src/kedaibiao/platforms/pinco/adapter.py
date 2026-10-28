@@ -20,6 +20,7 @@ import http.cookiejar
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -873,7 +874,26 @@ class PincoAdapter(PlatformAdapter):
                 ok=False,
                 message=f"提交结果不明，请到平台核实后再决定是否重交：{exc}",
             )
-        return parsing.parse_submit_result(data, assignment_id=assignment.remote_id)
+        result = parsing.parse_submit_result(data, assignment_id=assignment.remote_id)
+        # 提交接口回的是空对象 {}，分数在详情里 —— 回读一次把「到底交成没交成、
+        # 得多少分」补齐，否则调用方只能显示「提交成功（分数未知）」。
+        try:
+            detail = await self.client().post_action(
+                ep.ACTION_HOMEWORK_DETAIL,
+                {ep.FIELD_STUDENT_HOMEWORK_ID: assignment.remote_id},
+            )
+            state = parsing.parse_submission_state(
+                detail, assignment_id=assignment.remote_id
+            )
+            if state.score is not None:
+                result = replace(result, score=float(state.score))
+            if not state.submitted:
+                self.log.warning(
+                    "提交回包成功，但回读显示 submitted=false（%s）", assignment.remote_id
+                )
+        except Exception as exc:  # noqa: BLE001 - 回读失败不影响「请求已发出」这个事实
+            self.log.warning("提交后回读平台状态失败（%s）：%s", assignment.remote_id, exc)
+        return result
 
     async def _save_answers(
         self, assignment: Assignment, answers: list[Answer]
