@@ -778,15 +778,27 @@ class TestClient(unittest.IsolatedAsyncioTestCase):
             await adapter.client().post_action(ep.ACTION_SUBMIT_HOMEWORK, {})
         self.assertEqual(transport.calls, [], "被拦下的动作不该发出任何请求")
 
-    async def test_dangerous_action_allowed_with_flag(self) -> None:
+    async def test_submit_action_requires_answer_saved_token(self) -> None:
+        """提交类 action 只认「答案已保存并回读校验」的凭据，不认请求体形状。"""
+        from kedaibiao.platforms.pinco.client import client_submit_gate
+
         adapter, transport, _, _ = make_adapter(
             {ep.ACTION_SUBMIT_HOMEWORK: {"success": True}}
         )
-        await adapter.client().post_action(
-            ep.ACTION_SUBMIT_HOMEWORK,
-            {"studentHomeworkId": "h1", "answers": [{"questionId": "q1", "answerContent": "A"}]},
-            dangerous=True,
-        )
+        with self.assertRaises(PincoError):
+            await adapter.client().post_action(
+                ep.ACTION_SUBMIT_HOMEWORK,
+                {"studentHomeworkId": "h1"},
+                dangerous=True,
+            )
+        self.assertEqual(transport.action_names(), [], "没有凭据时一个请求都不该发")
+
+        with client_submit_gate():
+            await adapter.client().post_action(
+                ep.ACTION_SUBMIT_HOMEWORK,
+                {"studentHomeworkId": "h1"},
+                dangerous=True,
+            )
         self.assertEqual(transport.action_names(), [ep.ACTION_SUBMIT_HOMEWORK])
 
     async def test_submit_action_without_answer_body_is_refused(self) -> None:
@@ -1111,6 +1123,13 @@ class TestSubmitGuard(unittest.IsolatedAsyncioTestCase):
         )
         adapter, transport, _, _ = make_adapter()
         adapter.submit_payload_confirmed = True
+        # 提交前的两步：逐题保存答案 + 回读校验（协议见 endpoints.ACTION_ANSWER_SAVE）
+        transport.actions[ep.ACTION_ANSWER_SAVE] = {}
+        transport.actions[ep.ACTION_HOMEWORK_QUESTIONS] = {
+            "singleChoices": [
+                {"questionId": "q1", "answer": {"solution": "A"}},
+            ],
+        }
         plan = await solving.PlanBuilder(answerer=_FixedAnswerer(answer)).build(
             [(Assignment(remote_id="hw-1", title="第一章作业"), [question])]
         )
@@ -1239,18 +1258,48 @@ class TestSubmitGuard(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(result.ok)
         self.assertEqual(result.score, 95.0)
-        writes = [name for name in transport.action_names() if SUBMIT_ACTION_MARKER in name]
-        self.assertEqual(writes, [ep.ACTION_SUBMIT_HOMEWORK])
+        names = transport.action_names()
+        self.assertIn(ep.ACTION_ANSWER_SAVE, names, "提交前必须先逐题保存答案")
+        self.assertLess(names.index(ep.ACTION_ANSWER_SAVE), names.index(ep.ACTION_SUBMIT_HOMEWORK),
+                        "保存必须发生在提交之前")
+        writes = [name for name in names
+                  if name in (ep.ACTION_ANSWER_SAVE, ep.ACTION_SUBMIT_HOMEWORK)]
+        self.assertEqual(writes, [ep.ACTION_ANSWER_SAVE, ep.ACTION_SUBMIT_HOMEWORK])
 
     async def test_submit_refused_when_payload_shape_unconfirmed(self) -> None:
-        """结构没验证过就不发写请求 —— 交错的答案比不交更糟。"""
+        """协议未标记确认时不发写请求（默认已确认，这里是显式关掉的情况）。"""
         adapter, transport, plan, answer, _ = await self._setup()
         adapter.submit_payload_confirmed = False
         adapter.confirm_plan(plan)
         with self.assertRaises(PincoError) as cm:
             await adapter.submit(Assignment(remote_id="hw-1", title="第一章作业"), [answer])
-        self.assertIn("尚未由真实样本确认", str(cm.exception))
+        self.assertIn("未标记为已确认", str(cm.exception))
         self.assertFalse(transport.wrote_anything())
+
+    async def test_submit_aborted_when_answer_save_fails(self) -> None:
+        """保存答案失败就绝不提交 —— 提交体不带答案，少存一题就是交白卷。"""
+        adapter, transport, plan, answer, _ = await self._setup()
+        adapter.confirm_plan(plan)
+        transport.actions[ep.ACTION_ANSWER_SAVE] = FakeReply(
+            {"code": 500, "message": "保存失败"}, status=500
+        )
+        result = await adapter.submit(Assignment(remote_id="hw-1", title="第一章作业"), [answer])
+        self.assertFalse(result.ok)
+        self.assertIn("答案保存失败", result.message)
+        self.assertNotIn(ep.ACTION_SUBMIT_HOMEWORK, transport.action_names(),
+                         "保存失败时绝不能发出提交")
+
+    async def test_submit_aborted_when_readback_mismatch(self) -> None:
+        """回读答案与要交的不一致（存档没生效）→ 中止，不交白卷。"""
+        adapter, transport, plan, answer, _ = await self._setup()
+        adapter.confirm_plan(plan)
+        transport.actions[ep.ACTION_HOMEWORK_QUESTIONS] = {
+            "singleChoices": [{"questionId": "q1", "answer": {"solution": ""}}],
+        }
+        result = await adapter.submit(Assignment(remote_id="hw-1", title="第一章作业"), [answer])
+        self.assertFalse(result.ok)
+        self.assertIn("回读校验不一致", result.message)
+        self.assertNotIn(ep.ACTION_SUBMIT_HOMEWORK, transport.action_names())
 
     async def test_second_submit_in_same_session_is_refused(self) -> None:
         adapter, transport, plan, answer, _ = await self._setup()
@@ -1260,8 +1309,8 @@ class TestSubmitGuard(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(guard.SubmissionRefused) as cm:
             await adapter.submit(assignment, [answer])
         self.assertEqual(cm.exception.reason, guard.REFUSAL_ALREADY_SENT)
-        writes = [name for name in transport.action_names() if SUBMIT_ACTION_MARKER in name]
-        self.assertEqual(len(writes), 1, "第二次提交绝不能真的发出去")
+        submits = [n for n in transport.action_names() if n == ep.ACTION_SUBMIT_HOMEWORK]
+        self.assertEqual(len(submits), 1, "第二次提交绝不能真的发出去")
 
     async def test_network_failure_reports_unknown_and_blocks_retry(self) -> None:
         adapter, transport, plan, answer, _ = await self._setup()
@@ -2298,10 +2347,14 @@ class TestDeadEndpoints(unittest.TestCase):
         ):
             self.assertIs(ep.evidence_of(name), ep.Evidence.MEASURED, name)
 
-    def test_submit_payload_still_unconfirmed(self) -> None:
-        """提交报文结构仍未验证 —— 这道闸门不能因为读路径打通就放开。"""
+    def test_submit_payload_confirmed_with_evidence(self) -> None:
+        """提交协议已于 2026-10-28 由学生端调用点 + 一次真实提交确认。
+
+        协议：先逐题 ``...QuestionByQuestionIdAnswer`` 保存，再
+        ``...Submit {studentHomeworkId}`` —— 提交体只有 id。
+        """
         adapter, _, _, _ = make_adapter()
-        self.assertFalse(PincoAdapter.submit_payload_confirmed)
+        self.assertTrue(PincoAdapter.submit_payload_confirmed)
 
     def test_page_size_uses_server_cap(self) -> None:
         self.assertEqual(ep.DEFAULT_PAGE_SIZE, 20, "服务端 pageSize 封顶 20")

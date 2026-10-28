@@ -470,3 +470,21 @@ H5 判成功的写法是 `code === 200`，与 Web RPC 家族「`statusCode` 为 
 
 > 一句话给实现者：**端点、头、CSRF 要求已经能写了；请求体一个字都还不能定** ——
 > 最需要的是 §7 的 **C1（一次提交的请求体 + 响应体）**，它同时解锁提交与闸门两侧。
+
+## 9. 已确认：提交流程（2026-10-28 实测跑通）
+
+学生端 `notice.js` 调用点 + 一次真实提交（数电第2次课，22/26）双重确认：
+
+| 步骤 | action | 请求体 |
+| --- | --- | --- |
+| ① 逐题保存答案 | `PostV1StudenthomeworkByStudentHomeworkIdQuestionByQuestionIdAnswer` | `{studentHomeworkId, questionId, attachments: [], content}` |
+| ② 回读校验 | `GetV1StudenthomeworkByStudentHomeworkIdQuestions` | `{studentHomeworkId}` → `singleChoices[].answer.solution` |
+| ③ 提交 | `PostV1StudenthomeworkByStudentHomeworkIdSubmit` | `{studentHomeworkId}` |
+
+关键事实：
+
+- **提交体只有 id**：答案不随提交走，所以「先保存」不是可选步骤；
+  不保存直接提交 = 交白卷（0 分、`canRedo=false`）；
+- `content` 对选择题就是**选项字母**（`"D"`，多选逗号分隔）；
+- 保存是幂等的，可以重复上报同一题；
+- 提交后 `submitted=true`，客观题立即出分（`score`/`standardScore` 可回读）。

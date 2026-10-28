@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from kedaibiao.net.http import ResponseNotJson
@@ -35,6 +37,42 @@ from kedaibiao.platforms.pinco import parsing
 from kedaibiao.platforms.pinco.errors import PincoError, PincoProtocolError
 
 log = logging.getLogger(__name__)
+
+
+class _SubmitGate:
+    """提交前置条件：答案已保存并回读校验。
+
+    单独一个对象而不是 client 属性，是为了在进程内能明确 `reset()`：
+    一次提交成功后必须清掉凭据，避免下一个作业「借」到上一次的通行证。
+    """
+
+    answer_saved = False
+
+    @classmethod
+    def mark_answers_saved(cls) -> None:
+        cls.answer_saved = True
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.answer_saved = False
+
+
+#: 提交守卫的进程级凭据（见 :class:`_SubmitGate`）。
+_SUBMIT_GATE = _SubmitGate
+
+
+@contextmanager
+def client_submit_gate() -> Iterator[None]:
+    """在 ``with`` 块内允许提交类 action 发出（用完立刻失效）。
+
+    用法严格限定在「答案已保存并回读校验通过」之后的一行调用 ——
+    不给整段流程开闸，避免顺手把第二个作业也交出去。
+    """
+    _SUBMIT_GATE.mark_answers_saved()
+    try:
+        yield
+    finally:
+        _SUBMIT_GATE.reset()
 
 
 class PincoClient:
@@ -135,14 +173,14 @@ class PincoClient:
         }
         if action not in submit_actions:
             return
-        body = payload or {}
-        has_payload = any(
-            isinstance(value, (list, dict)) and value for value in body.values()
-        )
-        if not has_payload:
+        # 提交体**只有 id**（官方学生端就是这么发的），所以不能靠请求体形状判断
+        # 「有没有答案」—— 改用显式凭据：调用方逐题保存答案并回读校验通过后，
+        # 才允许置位 `answers_ready`。
+        if not getattr(_SUBMIT_GATE, "answer_saved", False):
             raise PincoError(
-                f"拒绝发送：{action} 的请求体里没有任何答案内容（只带了 id 之类）。"
-                "缺少结构时平台会把请求当成「空答案提交」收下，作业会被记 0 分且不能重做。"
+                f"拒绝发送：{action} 之前没有「答案已保存并回读校验」的凭据。"
+                "提交接口只带 id，平台会把没有答案的提交当成空卷收下（0 分且不能重做）。"
+                "正确顺序：逐题保存答案 → 回读校验 → 再提交。"
             )
 
     async def post_action(

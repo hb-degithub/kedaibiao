@@ -210,8 +210,27 @@ ACTION_CLASS_COURSES = "GetV1StudentClassresourcesCourse"
 EVIDENCE["ACTION_COURSE_WORKBENCH"] = Evidence.MEASURED
 EVIDENCE["ACTION_CLASS_COURSES"] = Evidence.STATIC
 
-#: ⚠️ 提交类 action —— 写操作，不可撤销。静态提取，**从未调用过**。
-#: 只有经过人工复核的计划才能把它们发出去（见 guard.py）。
+#: 逐题保存答案（学生端「每答一题就上报」的那条）。
+#:
+#: **实测形态**（官方学生端 `notice.js` 调用点，2026-10-28 核到）::
+#:
+#:     PostV1StudenthomeworkByStudentHomeworkIdQuestionByQuestionIdAnswer
+#:     {studentHomeworkId, questionId, attachments: [], content: "<选项字母>"}
+#:
+#: 保存是幂等的（同一题重复上报只覆盖），提交前必须先逐题保存 ——
+#: 提交接口本身**只带 studentHomeworkId**，答案体不随提交走。
+ACTION_ANSWER_SAVE = "PostV1StudenthomeworkByStudentHomeworkIdQuestionByQuestionIdAnswer"
+EVIDENCE["ACTION_ANSWER_SAVE"] = Evidence.MEASURED
+
+#: ⚠️ 提交类 action —— 写操作，不可撤销。
+#:
+#: **实测形态**（官方学生端 `notice.js` 调用点，2026-10-28 核到）::
+#:
+#:     PostV1StudenthomeworkByStudentHomeworkIdSubmit  {studentHomeworkId}
+#:
+#: 注意：**请求体只有 id**。没有先保存答案就调用它 = 交白卷（0 分、canRedo=false，
+#: 见 docs/incident-2026-10-28-pinco-probe.md）。所以守卫要求在 submit 之前
+#: 逐题保存成功、并且回读校验一致。
 ACTION_SUBMIT_HOMEWORK = "PostV1StudenthomeworkByStudentHomeworkIdSubmit"
 ACTION_SUBMIT_CHAPTER_TASK = "PostV1StudentChapterTaskSubmit"
 ACTION_SUBMIT_COURSE_GROUP_TASK = "PostV1CourseGroupTaskByCourseGroupTaskIdSubmit"
@@ -269,6 +288,7 @@ EVIDENCE["ACTION_ATTENDANCE_ATTEND"] = Evidence.MEASURED
 #: 抓取/计划路径不可能顺手把它们发出去。
 DANGEROUS_ACTIONS = frozenset(
     {
+        ACTION_ANSWER_SAVE,
         ACTION_SUBMIT_HOMEWORK,
         ACTION_SUBMIT_CHAPTER_TASK,
         ACTION_SUBMIT_COURSE_GROUP_TASK,

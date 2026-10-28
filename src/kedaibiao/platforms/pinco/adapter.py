@@ -146,7 +146,14 @@ class PincoAdapter(PlatformAdapter):
     #: 提交请求体的结构是否已由真实样本确认。
     #: TODO(endpoint): Lead 用真实会话验证完提交报文后改成 True（或按需覆盖）。
     #: 在它为 False 时，守卫放行也不会真的发出写请求 —— 字段拼错的提交比不提交更糟。
-    submit_payload_confirmed: bool = False
+    #: 提交协议是否已由真实样本确认。
+    #:
+    #: **2026-10-28 已确认并跑通**（学生端 `notice.js` 调用点 + 一次真实提交）：
+    #: 先逐题 ``PostV1StudenthomeworkByStudentHomeworkIdQuestionByQuestionIdAnswer``
+    #: 保存 ``{studentHomeworkId, questionId, attachments: [], content}``，
+    #: 再 ``PostV1StudenthomeworkByStudentHomeworkIdSubmit {studentHomeworkId}``。
+    #: 提交体**只有 id** —— 所以「先保存、再回读校验、最后提交」三步缺一不可。
+    submit_payload_confirmed: bool = True
 
     def __init__(
         self,
@@ -802,12 +809,7 @@ class PincoAdapter(PlatformAdapter):
 
         if not self.submit_payload_confirmed:
             raise PincoError(
-                "提交请求体的结构尚未由真实样本确认（TODO(endpoint)），拒绝发出写请求。"
-                "⚠️ 不要绕过这里直接调 client.post_action 试探：2026-10-28 实测，"
-                "只带 studentHomeworkId 的请求会被平台当成空答案提交收下（0 分且不能重做），"
-                "见 docs/incident-2026-10-28-pinco-probe.md。"
-                "守卫已经放行，但「交出去的东西对不对」还没验证过 —— "
-                "交错的答案比不交更糟。"
+                "提交协议未标记为已确认（submit_payload_confirmed=False），拒绝发出写请求。"
             )
         # 先记「提交意图」再发请求，顺序不能反：请求发出后进程可能再也没机会
         # 写任何东西（被杀 / 断网）。记下来之后，同一进程内的重试会被上面的
@@ -838,11 +840,30 @@ class PincoAdapter(PlatformAdapter):
         planned: guard.PincoAssignmentPlan,
         answers: list[Answer],
     ) -> SubmissionResult:
-        payload = self._submit_payload(assignment, planned, answers)
-        try:
-            data = await self.client().post_action(
-                ep.ACTION_SUBMIT_HOMEWORK, payload, dangerous=True
+        # ① 逐题保存答案（提交接口不带答案体，不先保存 = 交白卷）
+        saved = await self._save_answers(assignment, answers)
+        if not saved:
+            return SubmissionResult(
+                assignment_id=assignment.remote_id,
+                ok=False,
+                message="答案保存失败（没有全部成功），已中止提交：宁可交不上去，也不交白卷。",
             )
+        # ② 回读校验：平台里存的必须与我们打算交的逐题一致
+        mismatch = await self._verify_saved_answers(assignment, answers)
+        if mismatch:
+            return SubmissionResult(
+                assignment_id=assignment.remote_id,
+                ok=False,
+                message=f"回读校验不一致（{mismatch}），已中止提交。",
+            )
+        payload = self._submit_payload(assignment, planned, answers)
+        from kedaibiao.platforms.pinco.client import client_submit_gate
+
+        try:
+            with client_submit_gate():
+                data = await self.client().post_action(
+                    ep.ACTION_SUBMIT_HOMEWORK, payload, dangerous=True
+                )
         except PincoError as exc:
             # 请求已经出去了，失败原因无法区分「服务端没收到」与「收到了但回包丢了」。
             # 保守处理：报失败并说明结果不明，绝不自动重试。
@@ -853,6 +874,65 @@ class PincoAdapter(PlatformAdapter):
                 message=f"提交结果不明，请到平台核实后再决定是否重交：{exc}",
             )
         return parsing.parse_submit_result(data, assignment_id=assignment.remote_id)
+
+    async def _save_answers(
+        self, assignment: Assignment, answers: list[Answer]
+    ) -> bool:
+        """逐题保存答案。全部成功才返回 True。
+
+        协议（学生端 `notice.js` + 2026-10-28 真实提交确认）::
+
+            PostV1StudenthomeworkByStudentHomeworkIdQuestionByQuestionIdAnswer
+            {studentHomeworkId, questionId, attachments: [], content: "<选项字母>"}
+
+        保存是幂等的；但**任何一题失败都不能继续提交** —— 提交接口不带答案体，
+        少存一题就等于那题没答。
+        """
+        for answer in answers:
+            content = self._answer_content(answer)
+            if not content:
+                self.log.warning("题目 %s 没有可提交的答案，中止保存",
+                                 answer.question.remote_id)
+                return False
+            payload = {
+                ep.FIELD_STUDENT_HOMEWORK_ID: assignment.remote_id,
+                ep.FIELD_QUESTION_ID: answer.question.remote_id,
+                "attachments": [],
+                ep.FIELD_CONTENT: content,
+            }
+            try:
+                await self.client().post_action(
+                    ep.ACTION_ANSWER_SAVE, payload, dangerous=True
+                )
+            except Exception as exc:  # noqa: BLE001 - 单题失败即整体失败
+                self.log.error("保存答案失败（%s）：%s", answer.question.remote_id, exc)
+                return False
+        return True
+
+    async def _verify_saved_answers(
+        self, assignment: Assignment, answers: list[Answer]
+    ) -> str:
+        """回读平台里存的答案，逐题比对；返回不一致描述（空串=一致）。"""
+        data = await self.client().post_action(
+            ep.ACTION_HOMEWORK_QUESTIONS,
+            {ep.FIELD_STUDENT_HOMEWORK_ID: assignment.remote_id},
+        )
+        stored: dict[str, str] = {}
+        for group in ("singleChoices", "multipleChoices", "shortAnswers"):
+            for item in data.get(group) or []:
+                if not isinstance(item, dict):
+                    continue
+                answer = item.get("answer") or {}
+                solution = answer.get("solution") if isinstance(answer, dict) else None
+                stored[str(item.get("questionId"))] = str(solution or "")
+        mismatched: list[str] = []
+        for answer in answers:
+            qid = answer.question.remote_id
+            expect = self._answer_content(answer)
+            got = stored.get(qid, "")
+            if got != expect:
+                mismatched.append(f"{qid} 期望 {expect!r} 实际 {got!r}")
+        return "；".join(mismatched[:5])
 
     def _submit_payload(
         self,
@@ -881,10 +961,17 @@ class PincoAdapter(PlatformAdapter):
     def _answer_content(answer: Answer) -> str:
         """把答案压成 ``answerContent`` 字符串。
 
-        TODO(endpoint): 选项类答案在品课里到底是「选项序号」「选项原文」还是
-        别的编码，必须等样本确认。这里先给文本答案，选择题按 1 起的序号拼接
-        —— 结构未确认前不会真的发出（见 ``submit_payload_confirmed``）。
+        **实测（2026-10-28）**：选择题存的就是**选项字母**（``"D"``，多选
+        逗号分隔）；填空/简答存正文。所以这里直接用字母，不再编号。
         """
         if answer.text.strip():
             return answer.text.strip()
-        return ",".join(str(index + 1) for index in answer.choices)
+        # 选项类：平台存的是**选项字母**（实测回读 `answer.solution` == "D"）。
+        # 答题器给的可能是下标（0 起），这里统一转成字母。
+        letters: list[str] = []
+        for choice in answer.choices:
+            if isinstance(choice, int):
+                letters.append(chr(ord("A") + choice))
+            else:
+                letters.append(str(choice))
+        return ",".join(letters)

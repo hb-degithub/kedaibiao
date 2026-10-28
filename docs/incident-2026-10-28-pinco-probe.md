@@ -57,3 +57,34 @@
 - 探针一律跑在**离线假 Transport** 上，不打真实账号；
 - 绕过 `adapter.submit()` 直连 `client.post_action(dangerous=True)` 属于事故级操作，
   必须有人明确授权并接受不可逆后果。
+
+## 追加（同日晚）：诊断更正 + 协议确认
+
+事后从官方学生端 bundle（`notice.js`）里找到了**真实调用点**，诊断要更正：
+
+```js
+// 逐题保存（每答一题就发）
+PostV1StudenthomeworkByStudentHomeworkIdQuestionByQuestionIdAnswer
+  {studentHomeworkId, questionId, attachments: [], content: "D"}
+
+// 交卷（请求体只有 id）
+PostV1StudenthomeworkByStudentHomeworkIdSubmit  {studentHomeworkId}
+```
+
+也就是说：**我发的那条请求本身是「正确」的提交报文**，错在「还没保存任何答案就提交」。
+平台不是宽容，是本来就这么设计 —— 答案走另一条接口。
+
+随后用正确顺序在「数电第2次课」上跑通：
+
+```
+逐题保存 7 题 → 回读校验一致（D D D A C D A）→ 提交 → submitted=true，score=22/26
+```
+
+### 据此改的工程约束
+
+- `submit_payload_confirmed` 默认 **True**（协议已确认），仍可显式关闭做保守模式；
+- `adapter.submit()` 变成三步：**保存答案 → 回读校验 → 提交**；任一步失败即中止，
+  绝不「先交上去再说」；
+- `client._SubmitGate`：提交类 action 必须持有「答案已保存并回读校验」的进程内凭据，
+  凭据只在提交那一行生效（`client_submit_gate()` 上下文管理器）用完即失效；
+- 事故的 0 分那份（数电第1次课）仍需老师撤回/允许重做，代码改不了平台状态。

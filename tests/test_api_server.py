@@ -862,7 +862,8 @@ class TestPincoReviewChainOverHttp(ServerTestBase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_plan_then_submit_stops_at_unconfirmed_gate(self) -> None:
+    def test_plan_then_submit_stops_at_disabled_gate(self) -> None:
+        """闸门显式关闭时（保守模式），HTTP 层返回 501 + 可读原因。"""
         status, body, _ = self.call(
             "/api/platforms/pinco/plan", method="POST", json_body={}
         )
@@ -880,7 +881,7 @@ class TestPincoReviewChainOverHttp(ServerTestBase):
         self.assertEqual(status, 501)
         data = json.loads(body)
         self.assertEqual(data["kind"], "not_supported")
-        self.assertIn("未确认", data["error"])
+        self.assertIn("submit_payload_confirmed", data["error"])
         self.assertEqual(self.runtime.adapters[-1].submitted, [])
 
     def test_stale_digest_is_400(self) -> None:

@@ -1432,16 +1432,21 @@ class TestPincoReviewChain(ServiceTestBase):
 
     # -- 提交闸门 ---------------------------------------------------------
 
-    def test_unconfirmed_payload_becomes_not_supported(self) -> None:
-        """报文结构未由真实样本确认时，必须是清楚的中文 not_supported。"""
+    def test_disabled_gate_becomes_not_supported(self) -> None:
+        """显式关闭闸门（保守模式）时，必须是清楚的中文 not_supported。
+
+        协议本身已于 2026-10-28 确认并跑通；这道开关留着是为了保守场景
+        （例如某天平台改了提交形状），关掉时仍然要给出可读原因。
+        """
+        FakePincoAdapter.submit_payload_confirmed = False
+        self.addCleanup(setattr, FakePincoAdapter, "submit_payload_confirmed", True)
         out = self.plan()
         with self.assertRaises(ConsoleError) as cm:
             self.submit("a1", out["digest"])
         exc = cm.exception
         self.assertEqual(exc.kind, "not_supported")
         self.assertEqual(exc.status, 501)
-        self.assertIn("未确认", str(exc))
-        self.assertIn("尚未由真实样本确认", str(exc))
+        self.assertIn("submit_payload_confirmed", str(exc))
         self.assertEqual(self.runtime.adapters[-1].submitted, [], "闸门必须挡住写请求")
 
     def test_submits_when_payload_is_confirmed(self) -> None:

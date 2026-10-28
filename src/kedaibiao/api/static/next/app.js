@@ -1776,23 +1776,23 @@
     },
     {
       id: 'pinco-live-submit',
-      title: '品课真提交（放开写闸门）',
-      status: '待跑一次抓包',
-      tone: 'pill-warn',
+      title: '品课真提交（已打通）',
+      status: '已实测提交成功',
+      tone: 'pill-ok',
       platform: 'pinco',
-      summary: '复核链已经能走通，但最后一步仍被「提交报文未确认」挡住。',
-      why: 'adapter.submit_payload_confirmed = False：守卫放行后仍然拒绝发写请求，'
-        + '因为交错的答案比不交更糟。抓包工具已就绪，跑一次即可解锁。',
+      summary: '提交协议已由学生端 + 一次真实提交确认：先逐题保存答案，再提交。',
+      why: '提交接口的请求体**只有 studentHomeworkId**，答案靠「逐题保存」接口落库；'
+        + '所以现在的链路是「保存 → 回读校验 → 提交」，任何一步不过都不交。',
       plan: [
-        'python3 scripts/pinco_submit_capture.py --url "<作业页 URL>"：'
-          + '在页面点提交，请求被截获并中止（不会真的交）。',
-        '把抓到的请求体与 _submit_payload 对齐，确认后把开关设为 True。',
-        '开启后先跑一次「计划 → 复核 → 提交」，核对平台侧确实落库。'
+        '作业页顶部「提交计划（复核）」→ 逐题核对（需人工的题必须处理）',
+        '点「确认真交」：后台先逐题保存答案并回读校验，一致后才发提交',
+        '提交后回读平台状态（submitted / score）并显示在结果里'
       ],
-      gaps: ['提交报文结构未由真实样本确认'],
-      risks: ['一旦开错，交出去的答案可能是错的；必须先抓包再开。'],
-      refs: ['scripts/pinco_submit_capture.py', 'platforms/pinco/adapter.py'],
-      decision: '工具已备好；抓一次包、核对字段后再开闸门。'
+      gaps: ['图片选项题仍需人工确认（平台把选项做成图片）'],
+      risks: ['提交体只有 id：若「保存答案」有一步失败，交了就是白卷（0 分且不能重做），'
+        + '所以保存失败或回读不一致都会中止提交。'],
+      refs: ['platforms/pinco/adapter.py', 'docs/incident-2026-10-28-pinco-probe.md'],
+      decision: '2026-10-28 已实测提交成功（22/26）；协议已固化进适配器与守卫。'
     },
     {
       id: 'neusoft-images',
@@ -3506,7 +3506,7 @@
       return {
         label: '提交走「提交计划（复核）」',
         tone: 'pill-mute',
-        why: '品课只接受「计划 → 人工复核 → digest 提交」，行内直提会被守卫拒绝；'
+        why: '品课提交已打通：走「计划 → 人工复核 → 保存答案 → 提交」，行内直提会被守卫拒绝；'
           + '入口是作业页顶上那颗「提交计划（复核）」。'
       };
     }

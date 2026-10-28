@@ -3806,9 +3806,9 @@ class ConsoleService:
         - 一致 → ``confirm_plan(plan)`` 登记复核凭证，再从计划里还原答案并提交；
         - 不一致 → 400「计划已变化，请重新生成并复核」，**不会**按新内容偷偷交。
 
-        存在的意义：品课提交报文的结构还没有真实样本确认（``submit_payload_confirmed
-        = False``），所以现在这条路走到最后会被那道闸门挡住 —— 但挡住的方式是
-        一条清楚的中文错误（``not_supported``），而不是把原始异常糊到用户脸上。
+        提交协议已于 2026-10-28 由学生端调用点 + 一次真实提交确认：
+        「逐题保存答案 → 回读校验 → 提交（请求体只有 studentHomeworkId）」。
+        ``submit_payload_confirmed`` 仍是可关闭的闸门（测试/保守场景用）。
         """
         assignment_id = str(assignment_id or "").strip()
         plan_digest = str(plan_digest or "").strip()
@@ -4085,10 +4085,9 @@ class ConsoleService:
         """
         if not getattr(adapter, "submit_payload_confirmed", True):
             return ConsoleError(
-                "品课提交未执行：提交报文结构尚未由真实样本确认"
-                "（submit_payload_confirmed=False），程序拒绝发出写请求。"
-                "计划已复核、守卫已放行，但「交出去的东西对不对」还没验证过 —— "
-                "未确认的报文不发。请先用真实抓包核对提交字段，再打开这道闸门。"
+                "品课提交未执行：submit_payload_confirmed 被显式关闭"
+                "（保守模式下拒绝发出写请求）。协议本身已确认："
+                "逐题保存答案 → 回读校验 → 提交。"
                 f"（原始信息：{exc}）",
                 kind="not_supported",
                 status=501,
