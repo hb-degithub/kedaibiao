@@ -831,6 +831,8 @@ class DurationReport:
     received_frames: list[str] = field(default_factory=list)
     error: str = ""
     warnings: list[str] = field(default_factory=list)
+    #: 提前结束的原因（空串 = 按计划跑完）。``cancelled`` = 用户点了「停止」。
+    stopped: str = ""
 
     @property
     def ok(self) -> bool:
@@ -924,6 +926,7 @@ class SessionDurationReporter:
         clock: Clock | None = None,
         sleeper: Sleeper | None = None,
         wall_clock_ms: Callable[[], int] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> None:
         if not isinstance(ping_interval, (int, float)) or isinstance(ping_interval, bool):
             raise DurationConfigError(f"ping_interval 必须是数字: {ping_interval!r}")
@@ -966,6 +969,9 @@ class SessionDurationReporter:
         self._clock: Clock = clock or time.monotonic
         self._sleeper: Sleeper = sleeper or time.sleep
         self._wall_clock_ms: Callable[[], int] = wall_clock_ms or _system_clock_ms
+        #: 外部取消钩子：返回 True 就提前结束心跳（用户点「停止」时用）。
+        #: 提前结束会少记账 —— 这是用户自己的选择，不是 bug。
+        self._should_stop: Callable[[], bool] | None = should_stop
         #: 本轮已计入的 r_set 时间戳（去重用），每次 run 重置
         self._seen_r_set: set[int] = set()
 
@@ -1183,6 +1189,9 @@ class SessionDurationReporter:
                 now = self._clock()
                 if now >= deadline:
                     break
+                if self._should_stop is not None and self._should_stop():
+                    report.stopped = "cancelled"
+                    break
                 wait = min(next_ping, deadline) - now
                 if wait > 0:
                     self._sleeper(wait)
@@ -1262,6 +1271,7 @@ def report_duration(
     sleeper: Sleeper | None = None,
     wall_clock_ms: Callable[[], int] | None = None,
     raise_on_error: bool = False,
+    should_stop: Callable[[], bool] | None = None,
 ) -> DurationReport:
     """一次学习时长上报（默认干跑）。
 
@@ -1291,6 +1301,7 @@ def report_duration(
         clock=clock,
         sleeper=sleeper,
         wall_clock_ms=wall_clock_ms,
+        should_stop=should_stop,
     )
     return reporter.run(
         seconds, confirm=confirm, frames_verified=frames_verified, raise_on_error=raise_on_error
@@ -1464,6 +1475,8 @@ class DurationPoolReport:
     per_room: dict[str, float] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: 提前结束的原因（空串 = 按计划跑完）。``cancelled`` = 用户点了「停止」。
+    stopped: str = ""
 
     @property
     def ok(self) -> bool:
@@ -1496,6 +1509,11 @@ def plan_duration_pool(
     )
 
 
+#: 刷时长池的默认进度回调间隔（秒）。
+#: 10 分钟的任务里约 40 条进度：够让人看出「还在跑」，又不至于刷屏。
+PROGRESS_INTERVAL_SECONDS = 15.0
+
+
 def run_duration_pool(
     open_id: str,
     token: str,
@@ -1505,11 +1523,18 @@ def run_duration_pool(
     confirm: bool = False,
     transport_factory: Callable[[], Any] | None = None,
     reporter: Callable[..., Any] | None = None,
+    on_progress: Callable[[float, float, int], None] | None = None,
+    progress_interval: float = PROGRESS_INTERVAL_SECONDS,
+    should_stop: Callable[[], bool] | None = None,
 ) -> DurationPoolReport:
     """多房间刷时长：每个房间一条连接（各自 kick 一次 + 心跳），汇总记账。
 
     ``confirm=False``（默认）只出计划，**不建任何连接**。
     实测：单房间 0 记账；6 房间 150 秒合计 509 秒。
+
+    ``on_progress(elapsed, total, alive_rooms)``：**边等边回报进度**。没有它的话
+    这个函数会一口气阻塞 ``seconds`` 秒（默认 10 分钟），调用方的日志界面看起来
+    就像卡死了 —— 2026-11-16 用户就是这么以为的。
     """
     plan = plan_duration_pool(open_id, token, seconds=seconds, rooms=rooms)
     report = DurationPoolReport(plan=plan, dry_run=not confirm, warnings=list(plan.warnings))
@@ -1521,6 +1546,7 @@ def run_duration_pool(
             open_id, token, seconds, confirm=True,
             enable_kick=True, module=module, module_group=group,
             transport_factory=transport_factory,
+            should_stop=should_stop,
         )
     )
     import threading
@@ -1539,8 +1565,32 @@ def run_duration_pool(
     ]
     for thread in threads:
         thread.start()
-    for thread in threads:
-        thread.join()
+
+    # 边等边回报：workers 要跑满 seconds 秒，这段时间调用方必须有东西可看。
+    import time as _time
+
+    started = _time.monotonic()
+    total = max(0.0, float(seconds))
+    interval = max(1.0, float(progress_interval))
+    next_at = started + interval
+    while True:
+        for thread in threads:
+            thread.join(timeout=0.5)
+        alive = [thread for thread in threads if thread.is_alive()]
+        if not alive:
+            break
+        if should_stop is not None and should_stop():
+            # 用户点了「停止」：workers 自己会在下一次心跳发现并退出，
+            # 这里只负责不再空等 —— 记账按已经收到的算。
+            report.stopped = "cancelled"
+            for thread in threads:
+                thread.join(timeout=3.0)
+            break
+        now = _time.monotonic()
+        if on_progress is not None and now >= next_at:
+            next_at = now + interval
+            with contextlib.suppress(Exception):
+                on_progress(min(now - started, total), total, len(alive))
 
     for name, item in results.items():
         credited = float(getattr(item, "credited_seconds", 0) or 0)

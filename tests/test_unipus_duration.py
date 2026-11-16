@@ -1125,3 +1125,84 @@ class TestConcurrencyOption(unittest.TestCase):
         low = duration.plan_duration_pool("oid", "tok", seconds=600, rooms=4)
         high = duration.plan_duration_pool("oid", "tok", seconds=600, rooms=10)
         self.assertLess(low.estimated_ratio, high.estimated_ratio)
+
+
+class TestPoolProgressAndStop(unittest.TestCase):
+    """刷时长池的「进度回报」与「手动停止」。
+
+    用户 2026-11-16 报的：勾了「只刷时长」后日志停在「未勾选提交」那一行，
+    10 分钟没有任何输出，以为卡死。根因是这个池子一口气阻塞 seconds 秒、
+    零进度日志。下面三条锁住修复后的行为。
+    """
+
+    def test_progress_callback_fires_while_waiting(self) -> None:
+        import threading
+        import time as _time
+
+        release = threading.Event()
+        seen: list[tuple[float, float, int]] = []
+
+        def slow_reporter(module: str, group: str):
+            release.wait(timeout=10)
+            return duration.DurationReport(
+                plan=duration.plan_duration_pool("oid", "tok", seconds=60, rooms=1),
+                dry_run=False, connected=True, credited_seconds=1.0,
+            )
+
+        def worker() -> None:
+            duration.run_duration_pool(
+                "oid", "tok", seconds=60, rooms=2, confirm=True,
+                reporter=slow_reporter,
+                on_progress=lambda e, t, a: seen.append((e, t, a)),
+                progress_interval=1.0,
+            )
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        _time.sleep(2.5)
+        self.assertTrue(seen, "等待期间必须有过进度回报，否则界面看起来像卡死")
+        self.assertEqual(seen[0][1], 60.0, "总量应当是目标秒数")
+        release.set()
+        thread.join(timeout=10)
+
+    def test_should_stop_ends_waiting_early(self) -> None:
+        import threading
+        import time as _time
+
+        release = threading.Event()
+        started = _time.monotonic()
+
+        def slow_reporter(module: str, group: str):
+            release.wait(timeout=10)
+            return duration.DurationReport(
+                plan=duration.plan_duration_pool("oid", "tok", seconds=600, rooms=1),
+                dry_run=False, connected=True,
+            )
+
+        stop = threading.Event()
+        box: list[duration.DurationPoolReport] = []
+
+        thread = threading.Thread(
+            target=lambda: box.append(duration.run_duration_pool(
+                "oid", "tok", seconds=600, rooms=2, confirm=True,
+                reporter=slow_reporter,
+                should_stop=stop.is_set,
+                progress_interval=1.0,
+            )),
+            daemon=True,
+        )
+        thread.start()
+        _time.sleep(1.5)
+        stop.set()
+        thread.join(timeout=15)
+        release.set()
+        self.assertTrue(box, "停止后必须返回报告，而不是一直挂着")
+        self.assertEqual(box[0].stopped, "cancelled", "要标明「是被停止的」")
+        self.assertLess(_time.monotonic() - started, 20, "不该等满 600 秒")
+
+    def test_report_can_carry_stopped_reason(self) -> None:
+        report = duration.DurationReport(
+            plan=duration.plan_duration_pool("oid", "tok", seconds=60, rooms=1),
+            dry_run=False,
+        )
+        self.assertEqual(report.stopped, "", "默认不是被停止的")

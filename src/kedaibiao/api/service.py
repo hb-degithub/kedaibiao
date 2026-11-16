@@ -4728,23 +4728,48 @@ class ConsoleService:
                 unipus_endpoints.UnipusApp.UCONTENT
             )[unipus_endpoints.UCONTENT_AUTH_HEADER]
             counts["targets"] = 0
+            # 先把「要干什么」喊出来：这个池子会一口气阻塞 minutes 分钟，
+            # 不先交代清楚，日志会停在上一行看起来像卡死（2026-11-16 用户就这么以为）。
+            plan_preview = duration_mod.plan_duration_pool(
+                adapter.client().session.open_id,
+                token,
+                seconds=minutes * 60,
+                rooms=int(rooms or 6),
+            )
+            self._job_log(
+                job_id, "info",
+                f"· 开始刷时长：目标 {minutes} 分钟（{minutes * 60} 秒），"
+                f"{len(plan_preview.rooms)} 个房间并发"
+                + ("（超过安全区 20，可能握手被拒）" if len(plan_preview.rooms) > 20 else ""),
+            )
+            for line in plan_preview.warnings:
+                self._job_log(job_id, "warn", f"⚠️ {line}")
+            if confirm:
+                self._job_log(
+                    job_id, "info",
+                    "· 连接中：入房 → kick → 每 20s 心跳；期间每 15 秒回报一次进度，"
+                    "整段跑完才出记账结果",
+                )
+
+            def _pool_progress(elapsed: float, total: float, alive: int) -> None:
+                self._job_log(
+                    job_id, "info",
+                    f"  …刷时长进行中：已等 {elapsed:.0f}s / 目标 {total:.0f}s"
+                    f"（{alive} 个房间仍在跑；点「停止」会提前结束，记账按已收到的算）",
+                )
+
             pool_report = duration_mod.run_duration_pool(
                 adapter.client().session.open_id,
                 token,
                 seconds=minutes * 60,
                 rooms=int(rooms or 6),
                 confirm=confirm,
+                on_progress=_pool_progress if confirm else None,
+                should_stop=lambda: self._cancelled(job_id),
             )
             counts["rooms"] = len(pool_report.plan.rooms)
-            self._job_log(
-                job_id, "info",
-                f"· 并发数（房间）：{len(pool_report.plan.rooms)}"
-                + ("（超过安全区 20，可能握手被拒）" if len(pool_report.plan.rooms) > 20 else ""),
-            )
             counts["credited_seconds"] = int(pool_report.credited_seconds)
             counts["r_set"] = pool_report.r_set_updates
-            for line in pool_report.plan.warnings:
-                self._job_log(job_id, "warn", f"⚠️ {line}")
             if not confirm:
                 self._job_log(job_id, "info", f"· 干跑计划：{pool_report.plan.summary()}")
                 self._job_log(
@@ -4763,6 +4788,12 @@ class ConsoleService:
                 for err in pool_report.errors[:3]:
                     self._job_log(job_id, "warn", f"    {err}")
             counts["targets"] = len(pool_report.plan.rooms)
+            if getattr(pool_report, "stopped", "") == "cancelled":
+                stopped_any = True
+                self._job_log(
+                    job_id, "warn",
+                    "⚠️ 刷时长被手动停止：本次提前结束，记账只算已收到的那部分",
+                )
             report = pool_report
             prefix = "已停止" if stopped_any else "完成"
             summary = (
