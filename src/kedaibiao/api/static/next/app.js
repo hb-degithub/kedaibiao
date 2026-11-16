@@ -2213,6 +2213,17 @@
         if (!busy) { b.classList.remove('btn-primary'); }
       });
       stopBtn.hidden = !busy;
+      if (!busy) {
+        /* 两个「真跑」按钮是 btnArmored：点一次会把标签改成「执行中…」，
+           跑完必须自己复位 —— 否则任务早就结束了，按钮上还挂着「执行中…」，
+           看起来像卡住（2026-11-16 用户报的就是这个）。 */
+        submitLive.textContent = '提交未完成（真交）';
+        durationLive.textContent = '刷时长（真跑）';
+        submitDry.textContent = '提交未完成（干跑）';
+        durationDry.textContent = '刷时长（干跑）';
+        submitLive.classList.remove('btn-primary');
+        durationLive.classList.remove('btn-primary');
+      }
     }
 
     function appendLog(line) {

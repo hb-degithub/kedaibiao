@@ -457,6 +457,17 @@ def main() -> int:
         result.check(page.get_by_role("button", name="提交未完成（真交）").is_enabled(),
                      "干跑结束后真交按钮恢复可用")
 
+        print("· 刷课真跑结束后按钮必须复位（2026-11-16 报过「一直显示执行中」）")
+        page.get_by_role("button", name="刷时长（真跑）").click()
+        page.wait_for_timeout(200)
+        page.get_by_role("button", name="确认：真刷时长").click()
+        page.wait_for_timeout(2200)
+        foot_buttons = [t.strip() for t in page.locator(".auto-foot button").all_inner_texts()]
+        result.check(not any("执行中" in t for t in foot_buttons),
+                     "任务结束后没有按钮仍显示「执行中…」", str(foot_buttons))
+        result.check("刷时长（真跑）" in foot_buttons,
+                     "真跑按钮文案已复位", str(foot_buttons))
+
         print("· iTEST 一键自动化")
         page.goto(entry + "/#/assignments/itest", wait_until="domcontentloaded")
         page.wait_for_timeout(900)
