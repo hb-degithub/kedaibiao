@@ -4541,10 +4541,7 @@ class ConsoleService:
                     f"（服务端没有标准答案；能得完成分但内容不是人写的）",
                 )
             restore_adapter_session(adapter, cookie_file)
-            self._job_log(job_id, "info", "$ 恢复登录会话…")
-            if not asyncio.run(adapter.refresh_session(credentials)):
-                raise RuntimeError("登录失败：请到「账号」页重新登录一次")
-            self._job_log(job_id, "ok", "✓ 会话就绪")
+            self._restore_session(job_id, adapter, credentials)
 
             course = None
             for item in asyncio.run(adapter.list_courses()):
@@ -4957,12 +4954,7 @@ class ConsoleService:
             )
             adapter = runtime.make_adapter(platform)
             restore_adapter_session(adapter, cookie_file)
-            self._job_log(job_id, "info", "$ 恢复登录会话…")
-            if not asyncio.run(adapter.refresh_session(credentials)):
-                raise RuntimeError(
-                    "登录失败：会话无效且无法自动登录，请到「账号」页重新登录一次"
-                )
-            self._job_log(job_id, "ok", "✓ 会话就绪")
+            self._restore_session(job_id, adapter, credentials)
 
             courses = asyncio.run(adapter.list_courses())
             if course:
@@ -5166,6 +5158,65 @@ class ConsoleService:
             job["cancel_requested"] = True
         self._job_log(job_id, "warn", "· 收到停止请求：处理完当前这一组就停")
         return _jsonable(self._jobs_by_id.get(job_id) or job)
+
+    #: 会话恢复遇到这些迹象时值得重试 —— 都是**网络层**抖动，与凭据无关。
+    _TRANSIENT_MARKERS = (
+        "name resolution",
+        "temporary failure",
+        "getaddrinfo",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection refused",
+        "eof occurred",
+        "sslerror",
+    )
+
+    def _is_transient_network_error(self, exc: BaseException) -> bool:
+        """这个异常是不是「网络抖一下」而不是凭据/协议问题。
+
+        ``TransportError`` 是 ``OSError`` 子类（见 pigai 适配器注释的同一约定），
+        DNS 失败、超时、连接重置都落在这一类。2026-11-16 实测：命中
+        ``Temporary failure in name resolution`` 时整轮刷课直接失败，
+        而几秒后同一域名解析正常 —— 重试一次就能救回来。
+        """
+        text = f"{type(exc).__name__}: {exc}".lower()
+        if isinstance(exc, OSError) and not isinstance(exc, (FileNotFoundError,)):
+            return True
+        return any(marker in text for marker in self._TRANSIENT_MARKERS)
+
+    def _restore_session(
+        self, job_id: str, adapter: Any, credentials: Any, *, what: str = "恢复登录会话"
+    ) -> None:
+        """恢复会话；网络抖动重试 2 次（共 3 次），失败给可操作的提示。"""
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            suffix = f"（第 {attempt} 次）" if attempt > 1 else ""
+            self._job_log(job_id, "info", f"$ {what}…{suffix}")
+            try:
+                if asyncio.run(adapter.refresh_session(credentials)):
+                    self._job_log(job_id, "ok", "✓ 会话就绪")
+                    return
+                raise RuntimeError("登录失败：请到「账号」页重新登录一次")
+            except Exception as exc:  # noqa: BLE001 - 分类后再决定重试还是上抛
+                transient = self._is_transient_network_error(exc)
+                if transient and attempt < attempts:
+                    wait = 2 * attempt
+                    self._job_log(
+                        job_id, "warn",
+                        f"⚠️ 网络抖动（{type(exc).__name__}: {exc}），{wait} 秒后重试",
+                    )
+                    if self._sleep_interruptible(job_id, wait):
+                        raise RuntimeError("用户已停止任务") from exc
+                    continue
+                if transient:
+                    raise RuntimeError(
+                        f"网络异常（连不上平台）：{type(exc).__name__}: {exc}. "
+                        "已重试 3 次。请检查本机网络/DNS/代理后重试；这不是账号问题，"
+                        "不需要重新登录。"
+                    ) from exc
+                raise
+        raise RuntimeError("会话恢复失败")
 
     def _cancelled(self, job_id: str) -> bool:
         with self._lock:
