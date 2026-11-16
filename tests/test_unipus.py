@@ -1278,6 +1278,20 @@ class TestParseGroupState(unittest.TestCase):
         )
         self.assertEqual(state.score, ())
 
+    def test_blank_score_string_is_not_a_protocol_error(self) -> None:
+        """2026-11-16 实测：没做过的组 ``state.score`` 回**空字符串**。
+
+        以前这里当 JSON 解析 → 抛「不是合法 JSON」，把整门课（视听说教程3 /
+        综合教程3）的任务统计都弄失败。空串语义 = 没有计分点，必须能解析。
+        """
+        for blank in ("", "   "):
+            with self.subTest(raw=blank):
+                state = parsing.parse_group_state(
+                    progress_response(state={"state": 0, "score": blank}).json()
+                )
+                self.assertEqual(state.score, (), "空串按「没有计分点」处理")
+                self.assertFalse(state.finished, "没做过仍然是没有 first_pass")
+
 
 class TestParseRequiredLeafs(unittest.TestCase):
     def test_happy_path(self) -> None:
@@ -2035,3 +2049,37 @@ class TestAdapterQuestions(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGroupStateRetry(unittest.IsolatedAsyncioTestCase):
+    """读取单任务状态：并发读多门课偶发被重定向到登录页，必须重试一次。
+
+    2026-11-16 实测：控制台一次读 10 门课，3 门报「返回的是 HTML 页面而不是 JSON」，
+    串行重试就成功 —— 那是并发抖动，不是真的会话失效。
+    """
+
+    async def test_retries_once_on_html_redirect(self) -> None:
+        client, fake = make_client(
+            UnipusProtocolError("progress/v2 返回的是 HTML 页面而不是 JSON，多半是鉴权失败"),
+            progress_response(state={"state": 1, "score": "[1,1]"}),
+        )
+        state = await client.fetch_group_state("course-v2:x", "g1")
+        self.assertEqual(state.score, (1, 1))
+        self.assertEqual(len(fake.calls), 2, "应当重试一次并成功")
+
+    async def test_does_not_retry_on_plain_protocol_error(self) -> None:
+        client, fake = make_client(
+            UnipusProtocolError("state.score 期望数组或字符串化 JSON 数组"),
+        )
+        with self.assertRaises(UnipusProtocolError):
+            await client.fetch_group_state("course-v2:x", "g1")
+        self.assertEqual(len(fake.calls), 1, "非瞬时错误不该重试")
+
+    async def test_gives_up_after_second_failure(self) -> None:
+        client, fake = make_client(
+            UnipusProtocolError("返回的是 HTML 页面而不是 JSON"),
+            UnipusProtocolError("返回的是 HTML 页面而不是 JSON"),
+        )
+        with self.assertRaises(UnipusProtocolError):
+            await client.fetch_group_state("course-v2:x", "g1")
+        self.assertEqual(len(fake.calls), 2, "最多两次（原请求 + 一次重试）")

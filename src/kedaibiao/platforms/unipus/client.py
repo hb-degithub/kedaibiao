@@ -377,16 +377,41 @@ class UnipusClient:
         )
         return parsing.parse_answers(body)
 
+    #: 判断「这次的失败值得重试一次」的迹象。实测两类：
+    #: 1. ``... 返回的是 HTML 页面而不是 JSON`` —— 被重定向到登录页。多门课**并发**
+    #:    读取时偶发（2026-11-16：一次读 10 门课，3 门被重定向），串行重试即成功；
+    #: 2. ``urlopen error timed out`` —— 网络抖动。
+    #: 真正的会话失效重试也救不回来，多一次请求的代价远小于「整门课读不出来」。
+    _RETRYABLE_MARKERS = ("返回的是 HTML 页面而不是 JSON", "timed out")
+
     async def fetch_group_state(self, course_instance_id: str, group_id: str) -> GroupState:
-        """单任务状态（真源）。"""
-        body = await self.request(
-            UnipusApp.UCONTENT,
-            "GET",
-            endpoints.UCONTENT_GROUP_PROGRESS,
-            family=UnipusApp.UCONTENT.value,
-            path_params={"course_id": course_instance_id, "group_id": group_id},
-        )
-        return parsing.parse_group_state(body)
+        """单任务状态（真源）。
+
+        失败时**重试一次**：并发读取多门课会偶发被重定向到登录页 / 超时，
+        不重试的话一门课的整页统计就废了（见 ``_RETRYABLE_MARKERS``）。
+        """
+        last: Exception | None = None
+        for attempt in range(2):
+            try:
+                body = await self.request(
+                    UnipusApp.UCONTENT,
+                    "GET",
+                    endpoints.UCONTENT_GROUP_PROGRESS,
+                    family=UnipusApp.UCONTENT.value,
+                    path_params={"course_id": course_instance_id, "group_id": group_id},
+                )
+                return parsing.parse_group_state(body)
+            except UnipusError as exc:
+                last = exc
+                if attempt or not any(
+                    marker in str(exc) for marker in self._RETRYABLE_MARKERS
+                ):
+                    raise
+                self.logger.info(
+                    "任务状态读取失败，重试一次（%s/%s）：%s", course_instance_id, group_id, exc
+                )
+        assert last is not None
+        raise last
 
     async def fetch_required_leafs(
         self, course_instance_id: str, group_ids: tuple[str, ...]

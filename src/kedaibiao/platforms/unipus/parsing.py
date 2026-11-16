@@ -1052,7 +1052,11 @@ def parse_group_state(body: Any) -> GroupState:
     if isinstance(raw_score, str):
         # 2026-10-20 实测：线上 ``state.score`` 是**字符串化的 JSON 数组**
         # （如 ``"[1,1,1]"``），不是规格里记的数组。两种都接受。
-        raw_score = loads_json(raw_score, what="state.score")
+        #
+        # 2026-11-16 实测（视听说教程3 / 综合教程3）：没做过的组会回**空字符串**
+        # ``""``。以前这里直接当 JSON 解析 → 抛「不是合法 JSON」，把整门课
+        # 的统计都弄失败。空串的语义是「没有计分点」，不是协议错误。
+        raw_score = loads_json(raw_score, what="state.score") if raw_score.strip() else []
     if isinstance(raw_score, list):
         for entry in raw_score:
             value = as_optional_int(entry, field_name="state.score[]")
