@@ -10,7 +10,7 @@
 平台差异全部关在适配器里，核心调度一行都不用改。
 
 **当前状态：v0.1.0 —— 框架 + 6 个真实平台适配器。** 核心层与题库层零第三方依赖，
-离线单测全绿（`pytest -q` 2108 项 / 约 30 秒；`make test` 走 unittest，1979 项）；
+离线单测全绿（`pytest -q` 2159 项 / 约 43 秒；`make test` 走 unittest，2048 项）；
 U校园、东软智慧教育、超星学习通、iTEST、批改网、希沃品课均已接入。
 每个平台「实测到哪一步、哪些只有静态证据」写在
 [docs/verification/](docs/verification/) 与 [docs/research/](docs/research/) 里 ——
@@ -316,8 +316,8 @@ PYTHONPATH=src python3 -m kedaibiao web
 改完前端想确认没写坏交互，跑自带的测试（都不碰真实平台账号）：
 
 ```bash
-timeout 600 .venv/bin/python -m pytest -q            # 2108 单测（约 30 秒，离线）
-python3 scripts/api_matrix_check.py                  # 后端路由/安全/并发 125 项（自起临时服务）
+timeout 600 .venv/bin/python -m pytest -q            # 2159 单测（约 43 秒，离线）
+python3 scripts/api_matrix_check.py                  # 后端路由/安全/并发 134 项（自起临时服务）
 python3 scripts/ui_matrix_check.py  --base http://127.0.0.1:8765 --username admin --password '…'
 python3 scripts/ui_smoke_next.py    --base http://127.0.0.1:8765 --username admin --password '…'
 ```
@@ -679,6 +679,35 @@ make install-browser   # playwright + chromium，浏览器型平台需要
   不重复触发分析），仍无分才停 —— 结论文案会说明「稿已交、只是分数没出」，
   不需要重新提交。
 
+### U校园刷时长（房间池）：能记时长，但推不动门户进度
+
+控制台「课程 → 刷课 → 刷时长（真跑）」，或 `action unipus duration`。
+
+- **多房间才记账**：单房间实测 0 记账，6 房间 150 秒记 509 秒；10 分钟 × 6 房间
+  实测 **2526~2569 秒（约 4.2 倍）**，`r_set` 276~283 条；
+- **有进度、能停**：等待期间每 15 秒回一条「已等 Ns / 目标 Ns」，点「停止」会真的
+  提前结束（心跳循环每拍检查一次），并标注「本次提前结束，记账只算已收到的」；
+- **跑完按钮会复位**：四个按钮（干跑 / 真跑 / 真交）在任务结束时恢复原文案，
+  不会一直挂着「执行中…」；
+- **⚠️ 不会推进门户进度条**：房间池记的是**账号级时长**，门户
+  `finishPointNum/totalPointNum` 记的是**班级任务点完成数**，两套账不互通。
+  实测刷满 42 分钟后，视听说教程2 仍是 `0/33`（33 个必修组里 19 个在 ucontent
+  侧已满分/内容组，门户仍算 0）。证据见
+  [docs/verification/unipus-brush.md](docs/verification/unipus-brush.md) §10；
+- 另有 14 个必修组本来没满分（含口语录音组，要真实录音），即使口径对齐也过不了。
+
+### 网络抖动与会话恢复
+
+平台调用会偶发 DNS 失败 / 超时 / 被重定向到登录页，这类**不是账号问题**：
+
+- 会话恢复（`_restore_session`）：网络类异常重试 **3 次**（2s / 4s 退避，可被「停止」
+  打断），用尽后提示「网络异常（连不上平台）…不是账号问题，不需要重新登录」；
+  凭据被拒、协议错误**不重试**（重试没用，只会白打请求）；
+- 单任务状态读取（`fetch_group_state`）：对「返回 HTML 而不是 JSON」「timed out」
+  重试一次，避免并发读多门课时一门课的统计整页失败；
+- 平台把没做过的组的 `score` 回成**空字符串**时有容错：按「没有计分点」处理，
+  不再抛「不是合法 JSON」。
+
 ### 大模型配置中心（控制台「工具」页）
 
 模型配置是**全局唯一**的：所有平台共用同一份，适配器只声明「会不会用模型」，
@@ -969,8 +998,10 @@ extra 目前没用到 —— 控制台是标准库 `http.server`，存储是 `sq
   - [x] 超星：字体混淆解码 + 视觉模型答题 + 逐题回读，默认干跑
   - [x] 东软排版（2026-10-22）：图片资源跳过且不占 `limit`（单独记 `unsupported`）；
         课程 / 学习任务 / 考勤按 `total` + 短页翻页，服务端忽略 `pageNo` 时安全停止
-  - [ ] 品课真提交：抓包工具已备好（`scripts/pinco_submit_capture.py`，抓取即中止、
-        不会真的交），抓到一次真实报文并核对字段后再开 `submit_payload_confirmed`
+  - [x] 品课真提交（2026-10-28）：协议已实测确认 —— **保存答案 → 回读校验 → 提交**
+        （提交体只有 `studentHomeworkId`，答案靠逐题保存接口落库）。见
+        [docs/research/pinco-write-protocol.md](docs/research/pinco-write-protocol.md) §9；
+        控制台「提交计划（复核）」、CLI `action pinco submit`、定时任务共用同一链路
   - [ ] 剩余：口语评测（U校园）、上传题、纯学习组 —— 只有模块与闸门，线上行为未实测
 - [x] **M3 调度与观测**：Web 控制台（v2 `/` + v1 `/classic`，接口共用）、
       通知渠道（console / webhook / SMTP 邮件，Server 酱 · 钉钉 · 飞书 · Bark 都能套）、执行留痕与题库
@@ -979,6 +1010,8 @@ extra 目前没用到 —— 控制台是标准库 `http.server`，存储是 `sq
   - [x] 失败重试面板（2026-10-22）：运行日志页把最近失败按平台聚合，提供「干跑重跑 / 真跑重跑」；真跑需二次确认，语义是重跑整条流水线、已完成作业跳过（`skip_finished=true`）
 - [x] **M4 多平台**：适配器契约已被 **6 个平台**验证（U校园、东软、超星、iTEST、批改网、
       希沃品课），新增平台不需要改核心调度
+- [x] **M5 稳定性（2026-11）**：刷时长池进度回报与真停止、任务结束按钮复位、
+      空 `score` 容错、单任务状态读取重试、会话恢复网络重试；品课交作业完整链路进系统
 
 **M1 的验收标准是「只读跑通」** —— 在没有任何一次写操作的前提下，把某个平台的
 课程与作业清单完整拉下来并落库。
