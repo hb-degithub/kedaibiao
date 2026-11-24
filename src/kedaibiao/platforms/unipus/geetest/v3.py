@@ -27,6 +27,17 @@ ajax.php  → geetest_validate / geetest_seccode
 
 - **Node**（算 w 必需；缺了会抛 :class:`GeetestUnavailable`）
 - **Pillow**（缺口定位；缺了退化为纯 Python 的粗定位）
+
+## ⚠️ 适用范围（2026-11-25 实测）
+
+本模块的 ``compute_w`` 依赖 vendored ``jiyan.js``，对应的是**更早一代**的极验 v3。
+unipus 线上现在用 ``gt.0.4.9`` + ``slide.7.9.3`` + ``gct.js``（payload 带
+``gct_path`` / ``type=multiline``），``compute_w`` 算出的 ``w`` 服务端不认：
+``ajax.php`` 直接回 ``{"message":"fail"}``，而图片还原与缺口定位是对的。
+
+调研结论与替代路线见 ``docs/research/geetest-oss.md``：开源实现都不手写 ``w``，
+而是**运行时取平台自己的 JS 来算**。在用上新路线之前，登录请走
+「本机浏览器登录 + ``kedaibiao capture unipus --cookie``」。
 """
 
 from __future__ import annotations
