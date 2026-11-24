@@ -184,10 +184,20 @@ class UnipusAdapter(PlatformAdapter):
                 on_event=self.log.info,
             )
         except Exception as exc:  # noqa: BLE001 - 浏览器/驱动异常一律翻成登录失败
+            self.last_session_error = f"浏览器求解登录异常：{type(exc).__name__}: {exc}"
             self.log.warning("浏览器求解登录异常: %s: %s", type(exc).__name__, exc)
             return False
         if not result.ok:
-            self.log.warning("浏览器求解登录失败: %s", result.message or "未返回原因")
+            # 注意：**这不是「账号密码不对」**。走到这里说明密码那一步已经过了，
+            # 卡住的是极验滑块（1506 之后转来的）。回给用户的话必须说清楚，
+            # 否则他会一直去改密码（2026-11-24 实测踩过）。
+            reason = result.message or "未返回原因"
+            self.last_session_error = (
+                "平台要求极验滑块验证码，自动求解没通过"
+                f"（{reason}）。密码本身是对的 —— 可以先用本机浏览器登录一次，"
+                "再用 `kedaibiao capture unipus --cookie '…'` 把会话导进来。"
+            )
+            self.log.warning("浏览器求解登录失败: %s", reason)
             return False
         self._adopt_cookies(result.cookies)
         # 浏览器会话里的 jwt cookie 就是门户 JWT，直接用它补齐会话

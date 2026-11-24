@@ -454,6 +454,11 @@ class Browser:
 
         空闲 ``settle`` 秒没有新消息就认为「不会有响应了」，总时长不超过 ``timeout``。
         找不到就返回空 dict —— 由调用方决定重试还是报错。
+
+        ⚠️ **一次调用只返回第一个命中**：``Network.getResponseBody`` 走的是
+        ``call()``，它会把等待期间到达的事件丢掉。所以「先收一个再看正文够不够、
+        不够继续等下一个」这种用法在这里不成立 —— 需要更精确的 ``url_pattern``
+        （例如极验要 ``is_next=true`` 那次，而不是笼统的 ``get.php``）。
         """
         ws = self.connect()
         tracked: dict[str, str] = {}

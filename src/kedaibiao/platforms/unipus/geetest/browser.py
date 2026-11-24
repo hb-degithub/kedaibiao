@@ -50,8 +50,17 @@ log = logging.getLogger(__name__)
 #: 页面自己那次取图请求（含图片素材的那一次）
 GET_PHP_MARK = "get.php"
 
+#: **带图**的那一次（``is_next=true``）。见 :func:`trigger_captcha` 的说明。
+GET_PHP_NEXT_MARK = "is_next=true"
+
 #: Unipus SSO 登录页（各平台跳到这里）
 SSO_LOGIN = "https://sso.unipus.cn/sso/login"
+
+#: 判定「真的登录上了」的会话 cookie 名。空 cookie 集就是没登录 ——
+#: 2026-11-24 实测：入口错时页面会跳到 www.unipus.cn 首页，只有两个统计 cookie。
+_SESSION_COOKIE_HINTS = frozenset({
+    "jwt", "TGC", "CASTGC", "SESSION", "token", "ssoToken", "sso_token",
+})
 
 
 class CaptchaSolutionError(RuntimeError):
@@ -112,6 +121,13 @@ def _parse_jsonp(text: str) -> dict[str, Any]:
 
 #: 在登录页里填表并点「登录」的脚本。
 #: 用页面自己的按钮触发（而不是 form.submit()）—— 否则会绕过页面的加密与验证码逻辑。
+#: 只探测表单在不在，**不提交**（提交交给 capture_response 的 trigger_script，
+#: 否则点击那一瞬间的网络事件会被 call() 丢掉）。
+_PROBE_FORM = """
+(() => !!(document.querySelector('input[name=username], #username')
+          && document.querySelector('input[name=password], #password')))()
+"""
+
 _FILL_AND_SUBMIT = """
 (() => {
   document.querySelectorAll('input[type=checkbox]').forEach(b => { if (!b.checked) b.click(); });
@@ -150,21 +166,32 @@ def trigger_captcha(
     time.sleep(4.0)
 
     script = _FILL_AND_SUBMIT % (json.dumps(username), json.dumps(password))
+    # 先用一次普通求值确认页面结构（这一步不点提交，只探测表单在不在）
+    probe = _PROBE_FORM
     try:
-        outcome = browser.evaluate(script)
+        has_form = browser.evaluate(probe)
     except CDPError as exc:
-        raise CaptchaSolutionError(f"填表失败：{exc}") from exc
-    if outcome != "clicked":
-        raise CaptchaSolutionError(f"登录页结构不符（{outcome}）—— 可能已改版")
+        raise CaptchaSolutionError(f"探测登录页失败：{exc}") from exc
+    if not has_form:
+        raise CaptchaSolutionError("登录页结构不符（找不到用户名/密码输入框）—— 可能已改版")
 
-    # 点完之后才开始等：极验会在稍后发出 is_next 那次请求
-    deadline = time.monotonic() + wait
-    while time.monotonic() < deadline:
+    # 关键：**点提交与监听必须在同一个读窗口里**。
+    # ``browser.evaluate()`` 走的是 ``call()``，它会丢弃事件；如果先 evaluate 再
+    # capture，极验那两发 get.php 早已发完，抓到的永远是空（2026-11-24 实测）。
+    # ``trigger_script`` 就是为这种场景准备的：由 capture_response 自己发点击。
+    # 极验 2026-11 的形态是**两发** get.php：
+    #   ① api.geetest.com/get.php            → 只有配置（无 slice）
+    #   ② api.geevisit.com/get.php?is_next=  → 才带背景图/滑块图
+    # 所以必须直接匹配第 ②，不能笼统抓 "get.php"（抓到第 ① 就没图可用）。
+    for pattern in (GET_PHP_NEXT_MARK, GET_PHP_MARK):
         captured = browser.capture_response(
-            GET_PHP_MARK, timeout=max(1.0, deadline - time.monotonic()), settle=2.0,
+            pattern, trigger_script=script, timeout=max(3.0, wait), settle=2.0,
         )
-        if captured.get("body") and '"slice"' in captured["body"]:
+        body = captured.get("body") or ""
+        if '"slice"' in body:
             return captured
+        if captured:
+            break   # 抓到了但没有图：别再空等第二种
     return {}
 
 
@@ -297,8 +324,15 @@ def save_session(session: CaptchaSolution, cookies: list[dict[str, Any]],
 # --------------------------------------------------------------------------
 
 #: 各平台的 SSO 登录入口（都跳到 sso.unipus.cn）
+#: 各平台的**登录入口**。unipus 必须直接指向 SSO 并带 ``service``：
+#: 访问 ``https://ucontent.unipus.cn/`` 会被重定向到 ``www.unipus.cn`` 首页
+#: 而不是登录页（2026-11-24 实测：填表脚本返回 ``no-form``，随后「URL 不在
+#: sso/login」被误判成登录成功）。``service`` 用门户地址，登录后才会下发门户 JWT。
 PLATFORM_ENTRIES = {
-    "unipus": "https://ucontent.unipus.cn/",
+    "unipus": (
+        "https://sso.unipus.cn/sso/login?service="
+        "https%3A%2F%2Fuai.unipus.cn%2Fportal"
+    ),
     "pinco": "https://pinco.seewo.com/",
     "itest": "https://itestcloud.unipus.cn/utest/itest/login",
 }
@@ -375,38 +409,48 @@ def login_via_browser(
         browser.navigate(entry)
         time.sleep(4.0)
 
-        # 先直接填表点登录：风控放行的话根本不会弹验证码
-        browser.evaluate(_FILL_AND_SUBMIT % (_json.dumps(username), _json.dumps(password)))
-        emit("已提交登录，等待结果…")
-        landed = ""
-        for _ in range(int(wait_after / 2) + 1):
-            time.sleep(2.0)
+        # 只点一次：把「提交」放进抓包的**同一个读窗口**里。
+        #
+        # 不能先 evaluate 再 capture —— 极验的两次 get.php 会在 evaluate 返回前
+        # 就发完，那些事件被 call() 丢掉，后面再听就永远等不到（2026-11-24 实测：
+        # 报「停在登录页但没抓到极验素材」，其实是早就发过了）。
+        script = _FILL_AND_SUBMIT % (_json.dumps(username), _json.dumps(password))
+        captured = browser.capture_response(
+            GET_PHP_NEXT_MARK,
+            trigger_script=script,
+            timeout=max(6.0, wait_after),
+            settle=2.0,
+        )
+
+        def _landed_url() -> str:
             try:
-                landed = str(browser.evaluate("location.href"))
+                return str(browser.evaluate("location.href"))
             except CDPError:
-                break
-            if "sso/login" not in landed:
-                break
+                return ""
 
-        if "sso/login" not in landed:
-            emit(f"直接登录成功（{landed[:60]}）")
-            result.ok = True
-            result.cookies = [c.to_dict() for c in browser.cookies()]
-            if cookie_file:
-                save_session(None, result.cookies, cookie_file)  # type: ignore[arg-type]
-            return result
+        def _has_session(cookies: list[Any]) -> bool:
+            return any(c.name in _SESSION_COOKIE_HINTS for c in cookies)
 
-        # 还停在登录页 → 大概率弹了验证码，抓素材解一次
-        emit("仍在登录页 —— 抓取验证码素材…")
-        captured = browser.capture_response("get.php", timeout=20, settle=4)
         if not captured.get("body") or '"slice"' not in captured["body"]:
+            # 没弹验证码 —— 风控放行，这次点击本身就是一次真登录。
+            landed = _landed_url()
+            cookies = browser.cookies()
+            if _has_session(cookies):
+                emit(f"直接登录成功（{landed[:60]}）")
+                result.ok = True
+                result.cookies = [c.to_dict() for c in cookies]
+                if cookie_file:
+                    save_session(None, result.cookies, cookie_file)  # type: ignore[arg-type]
+                return result
+            emit(f"没弹验证码但也没拿到会话（{landed[:60]}）")
             result.message = (
-                "停在登录页但没抓到极验素材。可能不是验证码问题"
-                "（账号密码错、或被限流），或页面结构变了。"
+                "既没抓到极验素材、也没有会话 cookie："
+                "可能账号或密码不对、被限流，或登录页改版了"
             )
             return result
 
         result.needed_captcha = True
+        landed = _landed_url() or entry
         emit("求解中…")
         solution = solution_from_capture(captured, referer=landed)
         result.solution = solution
@@ -452,7 +496,7 @@ def login_via_browser(
             save_session(None, result.cookies, cookie_file)  # type: ignore[arg-type]
         result.message = "登录成功（验证码已自动求解）"
         return result
-    except (CDPError, CaptchaSolutionError, SsoLoginResult) as exc:
+    except (CDPError, CaptchaSolutionError) as exc:
         result.message = f"{type(exc).__name__}: {exc}"
         return result
     except Exception as exc:  # noqa: BLE001
