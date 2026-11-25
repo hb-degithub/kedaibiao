@@ -537,12 +537,24 @@ class Browser:
         return base64.b64decode(result.get("data", ""))
 
     def mouse(self, kind: str, x: float, y: float, *, button: str = "left",
-              click_count: int = 1) -> None:
-        """发一次鼠标事件。``kind`` ∈ pressed / released / moved。"""
-        self.call("Input.dispatchMouseEvent", {
+              click_count: int = 1, buttons: int | None = None) -> None:
+        """发一次鼠标事件。``kind`` ∈ pressed / released / moved。
+
+        ``buttons`` 是**按下的按键位掩码**（左键=1）。拖拽过程中的 ``mouseMoved``
+        必须带 ``buttons=1``，否则页面拿不到「按着拖动」的状态 —— 滑块组件的
+        mousemove 处理器会认为没在拖，轨迹因此无效（极验会回「怪兽吃了拼图」）。
+        """
+        params: dict[str, Any] = {
             "type": f"mouse{kind.capitalize()}",
             "x": x, "y": y, "button": button, "clickCount": click_count,
-        })
+        }
+        if buttons is not None:
+            params["buttons"] = buttons
+        elif kind == "pressed":
+            params["buttons"] = 1 if button == "left" else 2
+        elif kind == "moved":
+            params["buttons"] = 0
+        self.call("Input.dispatchMouseEvent", params)
 
     def click(self, x: float, y: float) -> None:
         self.mouse("pressed", x, y)
@@ -563,8 +575,9 @@ class Browser:
             tx, ty = target
             for step in range(1, steps + 1):
                 ratio = step / steps
+                # buttons=1：拖拽中的移动必须带「左键按着」，否则页面不认这是拖动
                 self.mouse("moved", previous[0] + (tx - previous[0]) * ratio,
-                           previous[1] + (ty - previous[1]) * ratio)
+                           previous[1] + (ty - previous[1]) * ratio, buttons=1)
             previous = (tx, ty)
         self.mouse("released", previous[0], previous[1])
 

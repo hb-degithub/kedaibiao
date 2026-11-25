@@ -125,11 +125,11 @@ def _drag_to(cdp, start: tuple[float, float], dx: int) -> None:
         delay = (total_ms / steps) * (0.6 + ratio) / 1000.0
         time.sleep(delay)
         elapsed += delay
-        cdp.mouse("moved", x, y)
+        cdp.mouse("moved", x, y, buttons=1)
     # 松手前停一下，再补两帧微调（人总会抖一下）
     time.sleep(random.uniform(0.12, 0.25))
     for _ in range(2):
-        cdp.mouse("moved", x0 + dx + random.uniform(-0.8, 0.8), y0)
+        cdp.mouse("moved", x0 + dx + random.uniform(-0.8, 0.8), y0, buttons=1)
         time.sleep(random.uniform(0.03, 0.07))
     cdp.mouse("released", x0 + dx, y0)
 
